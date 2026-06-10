@@ -1,0 +1,25 @@
+# 真实订单数据：绝不提交（含客户姓名/电话/地址等个人信息）
+raw_data/
+*.xlsx
+*.ods
+*.csv
+
+# 允许提交脱敏样例（放在 samples/ 下，显式加白）
+!samples/
+!samples/*.xlsx
+!samples/*.csv
+
+# 输出产物
+output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.python-version
+
+# macOS / 编辑器
+.DS_Store
+.idea/
+.vscode/
