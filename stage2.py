@@ -212,19 +212,32 @@ def build_shortage(marked, erp, mmdd, outdir):
 TAG_RE = re.compile(r"^(账单|开发票)\d{4}")
 
 
+ID_NAMES = ("external id", "id", "外部id", "外部 id")
+
+
+def find_id_col(df):
+    """找出 External ID 列(兼容 External ID / ID / id / 外部ID)。找不到返回 None。"""
+    for c in df.columns:
+        if str(c).strip().lower() in ID_NAMES:
+            return c
+    return None
+
+
 def has_id_col(df):
-    return any(str(c).strip().lower() == "id" for c in df.columns)
+    return find_id_col(df) is not None
 
 
 def build_billing(src, shipped_keys, mmdd, outdir):
-    """从含 ID 的来源(订单导出 或 账单模板导出)生成账单上传表。
-    去重到订单级；Terms = 账单MMDD + 原值(剥离旧标签)；只留实际发货订单。"""
+    """从含 External ID 的来源(订单导出 或 账单模板导出)生成账单上传表。
+    去重到订单级；Terms = 账单MMDD + 原值(剥离旧标签)；只留实际发货订单。
+    保留来源的 ID 列原名(External ID / ID)，回传 Odoo 时按其匹配。"""
     df = src.copy()
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
+    idc = find_id_col(df)
     # 去重到订单级(订单导出是逐行的；first 跳过空值取订单头行的 ID/Date/Terms)
     agg = df.groupby("Order Reference", sort=False).agg(**{
-        "Order Date":          ("Order Date", "first"),
-        "ID":                  ("ID", "first"),
+        "Order Date":           ("Order Date", "first"),
+        idc:                    (idc, "first"),
         "Terms and conditions": ("Terms and conditions", "first"),
     }).reset_index()
     agg["_key"] = last15(agg["Order Reference"])
@@ -232,7 +245,7 @@ def build_billing(src, shipped_keys, mmdd, outdir):
         agg = agg[agg["_key"].isin(shipped_keys)]
     raw = agg["Terms and conditions"].astype(str).str.replace(TAG_RE, "", regex=True)
     agg["Terms and conditions"] = f"账单{mmdd}" + raw
-    out = agg[["Order Date", "ID", "Order Reference", "Terms and conditions"]]
+    out = agg[["Order Date", idc, "Order Reference", "Terms and conditions"]]
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, len(out.columns))

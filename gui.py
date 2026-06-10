@@ -178,7 +178,7 @@ class App:
         if not self.mmdd.get().strip():
             messagebox.showwarning("缺少日期", "请填写日期 MMDD（如 0611）")
             return
-        self._write("【阶段二】生成 B/C/D/缺货记录…")
+        self._write("【阶段二】生成 系统履约单号 / 发货表 / 账单上传 / 缺货记录…")
 
         def work():
             return stage2.run(self.mmdd.get().strip(), self.erp.get(), self.tmall.get(),
