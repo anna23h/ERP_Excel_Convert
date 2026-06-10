@@ -235,6 +235,39 @@ def build_D(billing_path, shipped_keys, mmdd, outdir):
     return path, len(out)
 
 
+def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output"):
+    """第二阶段核心：生成 B/C/D + 缺货记录。返回结果文字行列表。供 CLI 与 GUI 共用。"""
+    os.makedirs(outdir, exist_ok=True)
+    log = []
+    ng = load_nogoods(nogoods)
+    shipped = get_shipped_orders(erp_path, tmall_path, ng)
+    shipped_keys = set(shipped["_key"])
+    log.append(f"无货清单: {len(ng)} 单")
+    log.append(f"实际发货订单: {len(shipped)} 单 "
+               f"(GW {sum(shipped['channel']=='GW')} / VO {sum(shipped['channel']=='VO')})")
+
+    pB, nB = build_B(shipped, outdir)
+    log.append(f"B 已生成: {pB}  ({nB} 个系统履约单号)")
+
+    pC, cC = build_C(shipped, outdir)
+    log.append(f"C 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
+
+    if billing:
+        pD, nD = build_D(billing, shipped_keys, mmdd, outdir)
+        log.append(f"D 已生成: {pD}  ({nD} 行，标签 账单{mmdd})")
+    else:
+        log.append("D 跳过 (未传账单模板导出)")
+
+    if nogoods:
+        erp = s4.load_erp(erp_path)
+        res = build_shortage(read_marked(nogoods), erp, mmdd, outdir)
+        if res[0]:
+            log.append(f"缺货记录 已生成: {res[0]}  (明细 {res[1]} 行 / SKU {res[2]} 种)")
+        else:
+            log.append("缺货记录 跳过 (返回文件无 SKU 明细)")
+    return log
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mmdd", required=True, help="标签日期 MMDD，如 0610")
@@ -244,36 +277,8 @@ def main():
     ap.add_argument("--billing", default=None)
     ap.add_argument("--outdir", default="output")
     a = ap.parse_args()
-    os.makedirs(a.outdir, exist_ok=True)
-
-    nogoods = load_nogoods(a.nogoods)
-    shipped = get_shipped_orders(a.erp, a.tmall, nogoods)
-    shipped_keys = set(shipped["_key"])
-    print(f"无货清单: {len(nogoods)} 单")
-    print(f"实际发货订单: {len(shipped)} 单 "
-          f"(GW {sum(shipped['channel']=='GW')} / VO {sum(shipped['channel']=='VO')})")
-
-    pB, nB = build_B(shipped, a.outdir)
-    print(f"B 已生成: {pB}  ({nB} 个系统履约单号)")
-
-    pC, cC = build_C(shipped, a.outdir)
-    print(f"C 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
-
-    if a.billing:
-        pD, nD = build_D(a.billing, shipped_keys, a.mmdd, a.outdir)
-        print(f"D 已生成: {pD}  ({nD} 行，标签 账单{a.mmdd})")
-    else:
-        print("D 跳过 (未传 --billing 账单模板导出)")
-
-    # 缺货记录：需返回文件带 SKU 明细(无货勾选页)
-    if a.nogoods:
-        erp = s4.load_erp(a.erp)
-        marked = read_marked(a.nogoods)
-        res = build_shortage(marked, erp, a.mmdd, a.outdir)
-        if res[0]:
-            print(f"缺货记录 已生成: {res[0]}  (明细 {res[1]} 行 / SKU {res[2]} 种)")
-        else:
-            print("缺货记录 跳过 (返回文件无 SKU 明细)")
+    for line in run(a.mmdd, a.erp, a.tmall, a.nogoods, a.billing, a.outdir):
+        print(line)
 
 
 if __name__ == "__main__":
