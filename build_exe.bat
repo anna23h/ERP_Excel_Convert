@@ -1,28 +1,29 @@
 @echo off
-chcp 65001 >nul
 REM ============================================
-REM 在 Windows 上把 VO 拉单工具打包成单文件 exe
-REM 前置：已安装 Python 3 (python.org，安装时勾选 Add to PATH)
-REM 用法：把整个项目拷到本机，双击本文件，或在命令提示符里运行
+REM Build VO tool into a single-file Windows exe.
+REM Prerequisite: Python 3 installed (python.org, check "Add Python to PATH").
+REM Usage: copy the whole project to a Windows PC, then double-click this file.
+REM NOTE: keep this .bat ASCII-only (Chinese in .bat breaks on GBK consoles).
 REM ============================================
 
-echo [1/2] 安装依赖...
+echo [1/2] Installing dependencies...
 python -m pip install -r requirements.txt
 if errorlevel 1 goto fail
 
-echo [2/2] 打包 exe...
-pyinstaller --onefile --windowed --name VO拉单工具 --collect-all openpyxl gui.py
+echo [2/2] Building exe...
+pyinstaller --onefile --windowed --name VOTool --collect-all openpyxl gui.py
 if errorlevel 1 goto fail
 
 echo.
-echo 完成！exe 路径：dist\VO拉单工具.exe
-echo 把该 exe 发给员工，双击即可使用。
+echo Done. exe is at: dist\VOTool.exe
+echo You may rename VOTool.exe to a Chinese name in Explorer if you like.
 pause
 exit /b 0
 
 :fail
 echo.
-echo 打包失败。排查：先用「不带 --windowed」重打看报错；若提示缺 pandas 模块，
-echo 在命令末尾加 --collect-all pandas 再试。
+echo Build failed. Tips:
+echo  - rebuild WITHOUT --windowed to see the real error in the console
+echo  - if it complains about missing pandas modules, append: --collect-all pandas
 pause
 exit /b 1

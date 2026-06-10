@@ -93,7 +93,7 @@ class App:
         fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=3)
         ttk.Label(fr2, text="日期(MMDD):", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
-        b2 = ttk.Button(s2, text="生成 B / C / D / 缺货记录", command=self._run_stage2)
+        b2 = ttk.Button(s2, text="生成 发货表 / 账单 / 缺货记录", command=self._run_stage2)
         b2.pack(side="left", padx=10, pady=8)
         self._buttons.append(b2)
 
