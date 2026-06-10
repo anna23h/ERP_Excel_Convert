@@ -41,5 +41,6 @@ Python + pandas + openpyxl。
 - [x] 第二阶段 B/C/D（`stage2.py`，读返回文件的『无货勾选』页）
 - [x] 缺货记录（明细按SKU合并 + SKU汇总，回连ERP增强库存/条码/货位）
 - [x] 步骤9 文件命名 + 打印格式
+- [x] GUI(`gui.py`) + Windows exe 打包(`build_exe.bat`、`启动说明/打包Windows-exe.md`)：办公室员工双击使用
 - [ ] **步骤6 昨日发货去重（TODO，待补）**：把昨日发货表的 `VO Tracking No` 与今日导出比对，标出/剔除重复运单后再发货，防重复发货。
 - [ ] E 出库表（暂缓，导出/上传机制未确认）

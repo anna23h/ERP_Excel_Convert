@@ -171,14 +171,10 @@ def apply_print(ws, landscape=False, fit_width=False, footer="第 &P 页，共 &
     ws.oddFooter.center.text = footer
 
 
-def main():
-    args = sys.argv[1:]
-    erp_path = args[0] if len(args) > 0 else "raw_data/测试0611erp导出.xlsx"
-    tm_path  = args[1] if len(args) > 1 else "raw_data/天猫测试.xlsx"
-    out_arg  = args[2] if len(args) > 2 else None
-    outdir   = os.path.dirname(out_arg) if out_arg else "output"
+def build(erp_path, tm_path, out_arg=None, outdir="output"):
+    """阶段一核心：生成「拣货表+面单」workbook。返回 (输出路径, 统计字典)。
+    供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
-
     erp = s4.load_erp(erp_path)
     tmall = s4.load_tmall(tm_path)
     merged = s4.merge(erp, tmall)
@@ -211,15 +207,30 @@ def main():
 
     out_path = out_arg or make_output_name(facesheet, outdir)
     wb.save(out_path)
+    stats = {
+        "sku": len(pick_df),
+        "lines": len(face_df),
+        "orders": int(face_df["Order Reference"].nunique()),
+        "multi": int(face_df["Order Reference"].duplicated(keep=False).sum()),
+        "highlight": sum(is_x2(v) for v in face_df["Internal Reference"])
+        + int((pd.to_numeric(face_df["Quantity"], errors="coerce") > 1).sum())
+        + int((face_df["VO Delivery Type"] == "CC").sum()),
+    }
+    return out_path, stats
+
+
+def main():
+    args = sys.argv[1:]
+    erp_path = args[0] if len(args) > 0 else "raw_data/测试0611erp导出.xlsx"
+    tm_path  = args[1] if len(args) > 1 else "raw_data/天猫测试.xlsx"
+    out_arg  = args[2] if len(args) > 2 else None
+    outdir   = os.path.dirname(out_arg) if out_arg else "output"
+    out_path, st = build(erp_path, tm_path, out_arg, outdir)
     print(f"已生成: {out_path}")
-    print(f"  拣货表: {len(pick_df)} 个 SKU")
-    print(f"  面单:   {len(face_df)} 行 / {face_df['Order Reference'].nunique()} 单")
-    multi = face_df['Order Reference'].duplicated(keep=False).sum()
-    print(f"  多品订单行数(已合并 A/B/F): {multi}")
-    hl = sum(is_x2(v) for v in face_df['Internal Reference']) \
-        + int((pd.to_numeric(face_df['Quantity'], errors='coerce') > 1).sum()) \
-        + int((face_df['VO Delivery Type'] == 'CC').sum())
-    print(f"  标黄单元格数: {hl}")
+    print(f"  拣货表: {st['sku']} 个 SKU")
+    print(f"  面单:   {st['lines']} 行 / {st['orders']} 单")
+    print(f"  多品订单行数(已合并 A/B/F): {st['multi']}")
+    print(f"  标黄单元格数: {st['highlight']}")
 
 
 if __name__ == "__main__":
