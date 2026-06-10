@@ -212,24 +212,30 @@ def build_shortage(marked, erp, mmdd, outdir):
 TAG_RE = re.compile(r"^(账单|开发票)\d{4}")
 
 
-def build_D(billing_path, shipped_keys, mmdd, outdir):
-    df = pd.read_excel(billing_path)
-    # 去掉空列(Unnamed / 全空)
+def has_id_col(df):
+    return any(str(c).strip().lower() == "id" for c in df.columns)
+
+
+def build_billing(src, shipped_keys, mmdd, outdir):
+    """从含 ID 的来源(订单导出 或 账单模板导出)生成账单上传表。
+    去重到订单级；Terms = 账单MMDD + 原值(剥离旧标签)；只留实际发货订单。"""
+    df = src.copy()
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
-    df = df.dropna(axis=1, how="all")
-    # 只留实际发货订单
-    df["_key"] = last15(df["Order Reference"])
+    # 去重到订单级(订单导出是逐行的；first 跳过空值取订单头行的 ID/Date/Terms)
+    agg = df.groupby("Order Reference", sort=False).agg(**{
+        "Order Date":          ("Order Date", "first"),
+        "ID":                  ("ID", "first"),
+        "Terms and conditions": ("Terms and conditions", "first"),
+    }).reset_index()
+    agg["_key"] = last15(agg["Order Reference"])
     if shipped_keys:
-        df = df[df["_key"].isin(shipped_keys)]
-    # Terms = 账单MMDD + 原值；若已带旧标签先剥离
-    raw = df["Terms and conditions"].astype(str).str.replace(TAG_RE, "", regex=True)
-    df["Terms and conditions"] = f"账单{mmdd}" + raw
-    cols = [c for c in ["Order Date", "ID", "Order Reference", "Terms and conditions"]
-            if c in df.columns]
-    out = df[cols]
+        agg = agg[agg["_key"].isin(shipped_keys)]
+    raw = agg["Terms and conditions"].astype(str).str.replace(TAG_RE, "", regex=True)
+    agg["Terms and conditions"] = f"账单{mmdd}" + raw
+    out = agg[["Order Date", "ID", "Order Reference", "Terms and conditions"]]
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
-    be.style_sheet(ws, len(cols))
+    be.style_sheet(ws, len(out.columns))
     path = os.path.join(outdir, "账单上传.xlsx")
     wb.save(path)
     return path, len(out)
@@ -239,6 +245,7 @@ def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output")
     """第二阶段核心：生成 B/C/D + 缺货记录。返回结果文字行列表。供 CLI 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
+    erp_df = s4.load_erp(erp_path)            # 只读一次，账单/缺货复用
     ng = load_nogoods(nogoods)
     shipped = get_shipped_orders(erp_path, tmall_path, ng)
     shipped_keys = set(shipped["_key"])
@@ -252,15 +259,18 @@ def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output")
     pC, cC = build_C(shipped, outdir)
     log.append(f"发货表 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
 
-    if billing:
-        pD, nD = build_D(billing, shipped_keys, mmdd, outdir)
-        log.append(f"账单上传 已生成: {pD}  ({nD} 行，标签 账单{mmdd})")
+    # 账单上传：优先用含 ID 的订单导出直接生成；否则用单独的账单模板导出
+    if has_id_col(erp_df):
+        pD, nD = build_billing(erp_df, shipped_keys, mmdd, outdir)
+        log.append(f"账单上传 已生成(来自订单导出含ID): {pD}  ({nD} 行，标签 账单{mmdd})")
+    elif billing:
+        pD, nD = build_billing(pd.read_excel(billing), shipped_keys, mmdd, outdir)
+        log.append(f"账单上传 已生成(来自账单模板导出): {pD}  ({nD} 行，标签 账单{mmdd})")
     else:
-        log.append("账单上传 跳过 (未传账单模板导出)")
+        log.append("账单上传 跳过 (订单导出无ID列且未传账单模板；在 Odoo 订单导出模板勾上 External ID 列即可自动生成)")
 
     if nogoods:
-        erp = s4.load_erp(erp_path)
-        res = build_shortage(read_marked(nogoods), erp, mmdd, outdir)
+        res = build_shortage(read_marked(nogoods), erp_df, mmdd, outdir)
         if res[0]:
             log.append(f"缺货记录 已生成: {res[0]}  (明细 {res[1]} 行 / SKU {res[2]} 种)")
         else:
