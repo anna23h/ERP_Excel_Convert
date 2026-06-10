@@ -101,7 +101,7 @@ def build_B(shipped, outdir):
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, 1)
-    path = os.path.join(outdir, "B_系统履约单号.xlsx")
+    path = os.path.join(outdir, "系统履约单号.xlsx")
     wb.save(path)
     return path, len(out)
 
@@ -120,7 +120,7 @@ def build_C(shipped, outdir):
         first = False
         be.write_df(ws, df)
         be.style_sheet(ws, 2)
-    path = os.path.join(outdir, "C_发货表.xlsx")
+    path = os.path.join(outdir, "发货表.xlsx")
     wb.save(path)
     return path, counts
 
@@ -230,7 +230,7 @@ def build_D(billing_path, shipped_keys, mmdd, outdir):
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, len(cols))
-    path = os.path.join(outdir, "D_账单上传.xlsx")
+    path = os.path.join(outdir, "账单上传.xlsx")
     wb.save(path)
     return path, len(out)
 
@@ -247,16 +247,16 @@ def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output")
                f"(GW {sum(shipped['channel']=='GW')} / VO {sum(shipped['channel']=='VO')})")
 
     pB, nB = build_B(shipped, outdir)
-    log.append(f"B 已生成: {pB}  ({nB} 个系统履约单号)")
+    log.append(f"系统履约单号 已生成: {pB}  ({nB} 个)")
 
     pC, cC = build_C(shipped, outdir)
-    log.append(f"C 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
+    log.append(f"发货表 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
 
     if billing:
         pD, nD = build_D(billing, shipped_keys, mmdd, outdir)
-        log.append(f"D 已生成: {pD}  ({nD} 行，标签 账单{mmdd})")
+        log.append(f"账单上传 已生成: {pD}  ({nD} 行，标签 账单{mmdd})")
     else:
-        log.append("D 跳过 (未传账单模板导出)")
+        log.append("账单上传 跳过 (未传账单模板导出)")
 
     if nogoods:
         erp = s4.load_erp(erp_path)
