@@ -90,6 +90,9 @@ class App:
         s2.pack(fill="x", **pad)
         self._file_row(s2, "返回文件:", self.returned)
         self._file_row(s2, "账单模板:", self.billing, optional=True)
+        ttk.Label(s2, foreground="#888",
+                  text="账单上传：订单导出含 External ID 列时自动生成，无需选账单模板；"
+                       "订单导出无 ID 列时才在上面选账单模板导出。").pack(anchor="w", padx=18)
         fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=3)
         ttk.Label(fr2, text="日期(MMDD):", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
