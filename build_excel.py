@@ -289,14 +289,18 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
     else:
         log.append("无运单清单: 0 单")
 
-    # ---- 已补运单清单 (系统履约单号, 去天猫后台打面单) ----
-    refill = ann[ann["_cat"] == "已补运单"].drop_duplicates("_key")
+    # ---- 已补运单清单 (系统履约单号, 去天猫后台打面单；按店各一份: 分批次下载运单防混淆) ----
+    refill = ann[ann["_cat"] == "已补运单"].drop_duplicates("_key").copy()
     if not refill.empty:
-        out = pd.DataFrame({"系统履约单号": refill["_key"].tolist()})
-        wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-        write_df(ws, out); style_sheet(ws, 1)
-        p = os.path.join(outdir, "已补运单清单.xlsx"); wb.save(p)
-        log.append(f"已补运单清单 已生成: {p}  ({len(out)} 单)")
+        refill["_ch"] = (refill[s4.ERP_ORDER_REF].astype(str)
+                         .str.split("_", n=1).str[0])
+        for ch in sorted(refill["_ch"].unique()):
+            keys = refill[refill["_ch"] == ch]["_key"].tolist()
+            out = pd.DataFrame({"系统履约单号": keys})
+            wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+            write_df(ws, out); style_sheet(ws, 1)
+            p = os.path.join(outdir, f"已补运单清单{ch}.xlsx"); wb.save(p)
+            log.append(f"已补运单清单{ch} 已生成: {p}  ({len(out)} 单)")
     else:
         log.append("已补运单清单: 0 单")
 
