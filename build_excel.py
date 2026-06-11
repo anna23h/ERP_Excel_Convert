@@ -171,66 +171,152 @@ def apply_print(ws, landscape=False, fit_width=False, footer="第 &P 页，共 &
     ws.oddFooter.center.text = footer
 
 
-def build(erp_path, tm_path, out_arg=None, outdir="output"):
-    """阶段一核心：生成「拣货表+面单」workbook。返回 (输出路径, 统计字典)。
+def _load_erps(erp_paths):
+    """接受单个路径或路径列表(VO/GW 各一份)，concat 成一张 ERP 行级表。"""
+    if isinstance(erp_paths, str):
+        erp_paths = [erp_paths]
+    return pd.concat([s4.load_erp(p) for p in erp_paths], ignore_index=True)
+
+
+def _order_level(df, idcol):
+    """ERP 行级 → 订单级(多品合一行，取订单头行)。"""
+    return df.groupby(s4.ERP_ORDER_REF, sort=False).agg(**{
+        "Order Date":           ("Order Date", "first"),
+        idcol:                  (idcol, "first"),
+        "Terms and conditions": ("Terms and conditions", "first"),
+    }).reset_index()
+
+
+def build_upload(orders, idcol, terms, outdir, fname):
+    """通用 ERP 上传表：Order Date | <idcol> | Order Reference | Terms。orders 为订单级。"""
+    out = pd.DataFrame({
+        "Order Date":           orders["Order Date"].values,
+        idcol:                  orders[idcol].values,
+        "Order Reference":      orders[s4.ERP_ORDER_REF].values,
+        "Terms and conditions": terms,
+    })
+    wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+    write_df(ws, out)
+    style_sheet(ws, len(out.columns))
+    path = os.path.join(outdir, fname)
+    wb.save(path)
+    return path, len(out)
+
+
+def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="output"):
+    """阶段一核心(步骤4+7/8/9)：分流 + 生成 4 份交付。返回 (log行列表, stats)。
+
+    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
+    - 取消单 / 无运单清单：ERP 上传表(External ID 匹配键)。
+    - 已补运单清单：系统履约单号(去天猫后台打面单)。
     供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
-    erp = s4.load_erp(erp_path)
-    tmall = s4.load_tmall(tm_path)
-    merged = s4.merge(erp, tmall)
-    facesheet, cancel = s4.classify(merged)
-    # 统一序号：面单与无货勾选共用同一编号，保证两表逐行严格对应(纸质面单↔表格定位)
-    facesheet = facesheet.reset_index(drop=True)
-    facesheet.insert(0, "序号", range(1, len(facesheet) + 1))
+    log = []
+    erp = _load_erps(erp_paths)
+    done = s4.load_done_keys(done_path)
+    cancel_keys = s4.load_cancel_keys(full_tmall_path)
+    ann = s4.classify4(erp, done, cancel_keys)
+    idcol = s4.find_id_col(ann)
 
-    pick_df = build_picking(facesheet)
-    face_df = build_facesheet(facesheet)
+    o = ann.drop_duplicates("_key")
+    log.append("分流(订单级): " + " / ".join(
+        f"{k} {v}" for k, v in o["_cat"].value_counts().items()))
 
-    wb = Workbook()
-    ws_pick = wb.active
-    ws_pick.title = "拣货表"
-    write_df(ws_pick, pick_df)
-    style_sheet(ws_pick, len(pick_df.columns))
-    apply_print(ws_pick, fit_width=True)       # 拣货单：所有列压一页宽
+    # ---- 拣货表 + 面单 (发货集合) ----
+    facesheet = ann[ann["_ship"]].reset_index(drop=True)
+    if facesheet.empty:
+        log.append("⚠ 无发货订单(全部无运单/取消)，未生成拣货表+面单")
+        main_path = None
+    else:
+        facesheet.insert(0, "序号", range(1, len(facesheet) + 1))
+        pick_df = build_picking(facesheet)
+        face_df = build_facesheet(facesheet)
+        wb = Workbook()
+        ws_pick = wb.active; ws_pick.title = "拣货表"
+        write_df(ws_pick, pick_df); style_sheet(ws_pick, len(pick_df.columns))
+        apply_print(ws_pick, fit_width=True)
+        ws_face = wb.create_sheet("面单")
+        write_df(ws_face, face_df); style_sheet(ws_face, len(face_df.columns))
+        highlight_facesheet(ws_face, face_df)
+        merge_multiproduct(ws_face, face_df)
+        apply_print(ws_face, landscape=True)
+        chk_df = build_nogoods_helper(facesheet)
+        ws_chk = wb.create_sheet("无货勾选")
+        write_df(ws_chk, chk_df); style_sheet(ws_chk, len(chk_df.columns))
+        main_path = out_arg or make_output_name(facesheet, outdir)
+        wb.save(main_path)
+        log.append(f"拣货表+面单 已生成: {main_path}  "
+                   f"({len(pick_df)} SKU / {face_df['Order Reference'].nunique()} 单)")
 
-    ws_face = wb.create_sheet("面单")
-    write_df(ws_face, face_df)
-    style_sheet(ws_face, len(face_df.columns))
-    highlight_facesheet(ws_face, face_df)
-    merge_multiproduct(ws_face, face_df)
-    apply_print(ws_face, landscape=True)        # 面单：横向
+    # ---- 取消单 (Terms=平台订单取消, 上传 ERP 作废) ----
+    d = date.today()
+    cancel_df = ann[ann["_cat"] == "取消"]
+    if not cancel_df.empty and idcol:
+        orders = _order_level(cancel_df, idcol)
+        tag = f"{d.year}年{d.month:02d}月{d.day:02d}日平台订单取消"
+        p, n = build_upload(orders, idcol, [tag] * len(orders), outdir, "取消单.xlsx")
+        log.append(f"取消单 已生成: {p}  ({n} 单)")
+    elif not cancel_df.empty:
+        log.append("⚠ 有取消单但 ERP 无 External ID 列，无法生成上传表(请在订单导出勾上 External ID)")
+    else:
+        log.append("取消单: 0 单" + ("" if full_tmall_path else " (未传完整天猫导出，无法识别取消)"))
 
-    chk_df = build_nogoods_helper(facesheet)
-    ws_chk = wb.create_sheet("无货勾选")
-    write_df(ws_chk, chk_df)
-    style_sheet(ws_chk, len(chk_df.columns))  # 无合并，可直接筛选(数字工作页，不打印)
+    # ---- 无运单清单 (Terms='无运单'+原值, 上传 ERP) ----
+    wu_df = ann[ann["_cat"] == "无运单"]
+    if not wu_df.empty and idcol:
+        orders = _order_level(wu_df, idcol)
+        raw = orders["Terms and conditions"].astype(str)
+        terms = raw.where(raw.str.contains(s4.WU_TAG), s4.WU_TAG + raw)  # 已带则不重复加
+        p, n = build_upload(orders, idcol, terms.values, outdir, "无运单清单.xlsx")
+        log.append(f"无运单清单 已生成: {p}  ({n} 单)")
+    elif not wu_df.empty:
+        log.append("⚠ 有无运单订单但 ERP 无 External ID 列，无法生成上传表")
+    else:
+        log.append("无运单清单: 0 单")
 
-    out_path = out_arg or make_output_name(facesheet, outdir)
-    wb.save(out_path)
+    # ---- 已补运单清单 (系统履约单号, 去天猫后台打面单) ----
+    refill = ann[ann["_cat"] == "已补运单"].drop_duplicates("_key")
+    if not refill.empty:
+        out = pd.DataFrame({"系统履约单号": refill["_key"].tolist()})
+        wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+        write_df(ws, out); style_sheet(ws, 1)
+        p = os.path.join(outdir, "已补运单清单.xlsx"); wb.save(p)
+        log.append(f"已补运单清单 已生成: {p}  ({len(out)} 单)")
+    else:
+        log.append("已补运单清单: 0 单")
+
+    # ---- 异常上报(不静默) ----
+    dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()
+    if dup:
+        log.append(f"⚠ 连接键冲突: {dup} 个订单的 Order Reference 后15位与他单相同(可能误判状态)")
+    if not facesheet.empty:
+        empty_dt = facesheet.drop_duplicates("_key")[s4.ERP_DELIVERY].isna().sum()
+        if empty_dt:
+            log.append(f"⚠ 发货订单中 VO Delivery Type 为空: {empty_dt} 单")
+
     stats = {
-        "sku": len(pick_df),
-        "lines": len(face_df),
-        "orders": int(face_df["Order Reference"].nunique()),
-        "multi": int(face_df["Order Reference"].duplicated(keep=False).sum()),
-        "highlight": sum(is_x2(v) for v in face_df["Internal Reference"])
-        + int((pd.to_numeric(face_df["Quantity"], errors="coerce") > 1).sum())
-        + int((face_df["VO Delivery Type"] == "CC").sum()),
+        "ship": int(o["_ship"].sum()),
+        "cancel": int((o["_cat"] == "取消").sum()),
+        "nowaybill": int((o["_cat"] == "无运单").sum()),
+        "refill": int((o["_cat"] == "已补运单").sum()),
+        "main_path": main_path,
     }
-    return out_path, stats
+    return log, stats
 
 
 def main():
     args = sys.argv[1:]
-    erp_path = args[0] if len(args) > 0 else "raw_data/测试0611erp导出.xlsx"
-    tm_path  = args[1] if len(args) > 1 else "raw_data/天猫测试.xlsx"
-    out_arg  = args[2] if len(args) > 2 else None
-    outdir   = os.path.dirname(out_arg) if out_arg else "output"
-    out_path, st = build(erp_path, tm_path, out_arg, outdir)
-    print(f"已生成: {out_path}")
-    print(f"  拣货表: {st['sku']} 个 SKU")
-    print(f"  面单:   {st['lines']} 行 / {st['orders']} 单")
-    print(f"  多品订单行数(已合并 A/B/F): {st['multi']}")
-    print(f"  标黄单元格数: {st['highlight']}")
+    if len(args) < 2:
+        print("用法: python3 build_excel.py <erp[,erp2...]> <面单已完成名单> [完整天猫导出] [out.xlsx]")
+        return
+    erp_paths = args[0].split(",")
+    done_path = args[1]
+    full_tmall = args[2] if len(args) > 2 else None
+    out_arg = args[3] if len(args) > 3 else None
+    outdir = os.path.dirname(out_arg) if out_arg else "output"
+    log, st = build(erp_paths, done_path, full_tmall, out_arg, outdir)
+    for ln in log:
+        print(ln)
 
 
 if __name__ == "__main__":

@@ -48,23 +48,27 @@ class App:
         root.geometry("720x620")
 
         self.erp = tk.StringVar()
-        self.tmall = tk.StringVar()
+        self.done = tk.StringVar()
+        self.full = tk.StringVar()
         self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
         self.returned = tk.StringVar()
         self.billing = tk.StringVar()
+        self.picking = tk.StringVar()
+        self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
         self.mmdd = tk.StringVar(value=date.today().strftime("%m%d"))
         self._buttons = []
 
         self._build_ui()
 
     # ---------- UI ----------
-    def _file_row(self, parent, label, var, optional=False):
+    def _file_row(self, parent, label, var, optional=False, multi=False):
         fr = ttk.Frame(parent)
         fr.pack(fill="x", pady=3)
         ttk.Label(fr, text=label, width=14, anchor="e").pack(side="left")
         ttk.Entry(fr, textvariable=var).pack(side="left", fill="x", expand=True, padx=4)
+        pick = self._pick_files if multi else self._pick_file
         ttk.Button(fr, text="选择…",
-                   command=lambda: self._pick_file(var)).pack(side="left")
+                   command=lambda: pick(var)).pack(side="left")
         if optional:
             ttk.Label(fr, text="选填", foreground="#888").pack(side="left", padx=2)
 
@@ -73,16 +77,21 @@ class App:
 
         common = ttk.LabelFrame(self.root, text="① 输入文件（两阶段共用）")
         common.pack(fill="x", **pad)
-        self._file_row(common, "ERP 导出:", self.erp)
-        self._file_row(common, "天猫全量:", self.tmall)
+        self._file_row(common, "ERP 导出:", self.erp, multi=True)
+        self._file_row(common, "面单已完成名单:", self.done)
+        self._file_row(common, "完整天猫导出:", self.full, optional=True)
+        ttk.Label(common, foreground="#888",
+                  text="ERP 可多选(VO/GW 各一份)。面单已完成名单=天猫筛选导出，定『发货 vs 无运单』；"
+                       "完整天猫导出含取消状态，用于识别取消单(选填，不传则不出取消单)。").pack(anchor="w", padx=18)
         fr = ttk.Frame(common); fr.pack(fill="x", pady=3)
         ttk.Label(fr, text="输出目录:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(fr, text="选择…", command=self._pick_dir).pack(side="left")
 
-        s1 = ttk.LabelFrame(self.root, text="② 阶段一 → 打印给仓库")
+        s1 = ttk.LabelFrame(self.root, text="② 阶段一 → 分流 + 打印给仓库")
         s1.pack(fill="x", **pad)
-        b1 = ttk.Button(s1, text="生成「拣货表 + 面单」", command=self._run_stage1)
+        b1 = ttk.Button(s1, text="生成 拣货表+面单 / 取消单 / 无运单 / 已补运单",
+                        command=self._run_stage1)
         b1.pack(side="left", padx=10, pady=8)
         self._buttons.append(b1)
 
@@ -93,10 +102,21 @@ class App:
         ttk.Label(s2, foreground="#888",
                   text="账单上传：订单导出含 External ID 列时自动生成，无需选账单模板；"
                        "订单导出无 ID 列时才在上面选账单模板导出。").pack(anchor="w", padx=18)
+        fr_pk = ttk.Frame(s2); fr_pk.pack(fill="x", pady=3)
+        ttk.Label(fr_pk, text="出库原始数据:", width=14, anchor="e").pack(side="left")
+        ttk.Entry(fr_pk, textvariable=self.picking).pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Button(fr_pk, text="选择…",
+                   command=lambda: self._pick_files(self.picking)).pack(side="left")
+        ttk.Label(fr_pk, text="选填", foreground="#888").pack(side="left", padx=2)
+        ttk.Label(s2, foreground="#888",
+                  text="出库单：选 stock picking 全量导出(可多选 VO/GW 各一份)，"
+                       "按实际发货订单过滤、Tracking 列覆盖成发货日期，拆成出库单VO/GW。").pack(anchor="w", padx=18)
         fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=3)
         ttk.Label(fr2, text="日期(MMDD):", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
-        b2 = ttk.Button(s2, text="生成 发货表 / 账单 / 缺货记录", command=self._run_stage2)
+        ttk.Label(fr2, text="发货日期(YYYYMMDD):", anchor="e").pack(side="left", padx=(12, 0))
+        ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=4)
+        b2 = ttk.Button(s2, text="生成 发货表 / 账单 / 缺货记录 / 出库单", command=self._run_stage2)
         b2.pack(side="left", padx=10, pady=8)
         self._buttons.append(b2)
 
@@ -112,6 +132,11 @@ class App:
         p = filedialog.askopenfilename(filetypes=EXCEL_TYPES)
         if p:
             var.set(p)
+
+    def _pick_files(self, var):
+        ps = filedialog.askopenfilenames(filetypes=EXCEL_TYPES)
+        if ps:
+            var.set("; ".join(ps))
 
     def _pick_dir(self):
         p = filedialog.askdirectory()
@@ -154,23 +179,26 @@ class App:
         messagebox.showerror("出错", str(e))
 
     # ---------- actions ----------
+    def _erp_list(self):
+        return [p.strip() for p in self.erp.get().split(";") if p.strip()]
+
     def _run_stage1(self):
-        if not self.erp.get() or not self.tmall.get():
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 天猫全量 文件")
+        if not self.erp.get() or not self.done.get():
+            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 面单已完成名单")
             return
-        self._write("【阶段一】生成拣货表+面单…")
+        self._write("【阶段一】分流 + 生成拣货表+面单 / 取消单 / 无运单清单 / 已补运单清单…")
+        erp = self._erp_list()
+        full = self.full.get() or None
 
         def work():
-            out, st = build_excel.build(self.erp.get(), self.tmall.get(),
-                                        outdir=self.outdir.get())
-            return [f"已生成: {out}",
-                    f"  拣货表 {st['sku']} SKU；面单 {st['lines']} 行 / {st['orders']} 单；"
-                    f"多品 {st['multi']} 行；标黄 {st['highlight']} 格"]
+            log, _ = build_excel.build(erp, self.done.get(), full_tmall_path=full,
+                                       outdir=self.outdir.get())
+            return log
         self._bg(work)
 
     def _run_stage2(self):
-        if not self.erp.get() or not self.tmall.get():
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 天猫全量 文件")
+        if not self.erp.get() or not self.done.get():
+            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 面单已完成名单")
             return
         if not self.returned.get():
             messagebox.showwarning("缺少文件", "请选择仓库返回文件（带『无货勾选』页）")
@@ -178,13 +206,18 @@ class App:
         if not self.mmdd.get().strip():
             messagebox.showwarning("缺少日期", "请填写日期 MMDD（如 0611）")
             return
-        self._write("【阶段二】生成 系统履约单号 / 发货表 / 账单上传 / 缺货记录…")
+        self._write("【阶段二】生成 系统履约单号 / 发货表 / 账单上传 / 缺货记录 / 出库单…")
+        picking = [p.strip() for p in self.picking.get().split(";") if p.strip()] or None
+        shipdate = self.shipdate.get().strip() or None
+        erp = self._erp_list()
+        full = self.full.get() or None
 
         def work():
-            return stage2.run(self.mmdd.get().strip(), self.erp.get(), self.tmall.get(),
+            return stage2.run(self.mmdd.get().strip(), erp, self.done.get(), full,
                               nogoods=self.returned.get(),
                               billing=self.billing.get() or None,
-                              outdir=self.outdir.get())
+                              outdir=self.outdir.get(),
+                              picking=picking, shipdate=shipdate)
         self._bg(work)
 
 

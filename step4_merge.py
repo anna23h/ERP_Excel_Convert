@@ -26,6 +26,22 @@ TM_STATUS       = "履约单状态"
 TM_LABEL_STATUS = "面单申请状态"
 
 CANCEL_STATUSES = {"履约取消", "平台申请取消"}
+WU_TAG = "无运单"            # 无运单标记(加在 Terms and conditions 前)
+
+
+def last15(series):
+    return series.astype(str).str[-15:]
+
+
+ID_NAMES = ("external id", "id", "外部id", "外部 id")
+
+
+def find_id_col(df):
+    """找出 External ID 列(兼容 External ID / ID / id / 外部ID)。找不到返回 None。"""
+    for c in df.columns:
+        if str(c).strip().lower() in ID_NAMES:
+            return c
+    return None
 
 
 # 订单级字段：多品订单的续行在 Odoo 导出里留空，需向下填充
@@ -52,6 +68,53 @@ def load_tmall(path):
 
 def merge(erp, tmall):
     return erp.merge(tmall, left_on="_key", right_on=TM_KEY, how="left")
+
+
+def _read_tmall_sheet(path, usecols=None):
+    """天猫导出统一读法：优先 sheet 'file'，否则首个 sheet。"""
+    xl = pd.ExcelFile(path)
+    sheet = "file" if "file" in xl.sheet_names else 0
+    return pd.read_excel(xl, sheet_name=sheet, usecols=usecols)
+
+
+def load_done_keys(path):
+    """面单已完成名单(天猫后台筛选导出) → 15 位单号集合 = 今天有运单可发货的订单。"""
+    if not path:
+        return set()
+    df = _read_tmall_sheet(path)
+    col = TM_KEY if TM_KEY in df.columns else df.columns[0]
+    return set(last15(df[col].dropna()))
+
+
+def load_cancel_keys(path):
+    """完整天猫导出 → 取消单号集合(履约取消/平台申请取消)。"""
+    if not path:
+        return set()
+    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS])
+    df = df[df[TM_STATUS].isin(CANCEL_STATUSES)]
+    return set(last15(df[TM_KEY]))
+
+
+def classify4(erp, done_keys, cancel_keys):
+    """在 ERP(行级，含 _key + Terms and conditions)上打 `_cat` 标签并分流。
+    优先级：取消 > 发货/已补运单 > 无运单。
+    - 取消        : _key ∈ cancel_keys
+    - 发货        : 在面单已完成名单(done_keys)里
+    - 已补运单     : 发货 且 ERP Terms 已含「无运单」(昨日无运单今日补出) — 仍发货
+    - 无运单       : 其余(既不在名单也未取消) — 从拣货/面单剔除
+    返回打了 `_cat` 列的 ERP 副本。`_ship` = _cat ∈ {发货, 已补运单}。"""
+    df = erp.copy()
+    has_wu = df["Terms and conditions"].astype(str).str.contains(WU_TAG)
+    k = df["_key"]
+    is_cancel = k.isin(cancel_keys)
+    is_done = k.isin(done_keys) & ~is_cancel
+    cat = pd.Series("无运单", index=df.index)
+    cat[is_done] = "发货"
+    cat[is_done & has_wu] = "已补运单"
+    cat[is_cancel] = "取消"
+    df["_cat"] = cat
+    df["_ship"] = df["_cat"].isin(["发货", "已补运单"])
+    return df
 
 
 def report(erp, tmall, merged):
