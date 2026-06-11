@@ -15,6 +15,7 @@
   不传则跳过 D。
 """
 import argparse, os, re
+from datetime import date
 import pandas as pd
 from openpyxl import Workbook
 
@@ -81,14 +82,14 @@ def channel_of(order_ref):
     return str(order_ref).split("_", 1)[0]
 
 
-def get_shipped_orders(erp_path, tmall_path, nogoods_keys):
-    """返回实际发货订单(去重到单)的 DataFrame: Order Reference, VO Tracking No, _key, channel"""
-    erp = s4.load_erp(erp_path)
-    tmall = s4.load_tmall(tmall_path)
-    merged = s4.merge(erp, tmall)
-    facesheet, _ = s4.classify(merged)  # 待全集
-    # 去重到订单级
-    orders = (facesheet[[s4.ERP_ORDER_REF, s4.ERP_TRACKING, "_key"]]
+def get_shipped_orders(erp_paths, done_path, full_tmall_path, nogoods_keys):
+    """返回实际发货订单(去重到单)的 DataFrame: Order Reference, VO Tracking No, _key, channel。
+    发货集合 = classify4 的「发货+已补运单」(剔除无运单/取消) − 无货。与阶段一拣货面单同源。"""
+    erp = be._load_erps(erp_paths)
+    ann = s4.classify4(erp, s4.load_done_keys(done_path),
+                       s4.load_cancel_keys(full_tmall_path))
+    ship = ann[ann["_ship"]]
+    orders = (ship[[s4.ERP_ORDER_REF, s4.ERP_TRACKING, "_key"]]
               .drop_duplicates(subset="_key"))
     shipped = orders[~orders["_key"].isin(nogoods_keys)].copy()
     shipped["channel"] = shipped[s4.ERP_ORDER_REF].map(channel_of)
@@ -123,6 +124,64 @@ def build_C(shipped, outdir):
     path = os.path.join(outdir, "发货表.xlsx")
     wb.save(path)
     return path, counts
+
+
+# ---------- E: 出库单 (从 stock picking 全量导出过滤，按店铺拆 VO/GW) ----------
+SCP_RE = re.compile(r"(SCP\d+)")
+PICK_SRC_NAMES = ("Source Document", "Referenzbeleg")
+PICK_TRK_NAMES = ("Tracking Reference", "Tracking-Referenz")
+
+
+def _scp(v):
+    m = SCP_RE.search(str(v))
+    return m.group(1) if m else None
+
+
+def build_E(picking_paths, shipped, shipdate, outdir):
+    """从 stock picking 全量导出(出库原始数据)生成出库单。
+
+    过滤: Source Document 的 SCP ∈ 实际发货订单。沿用 pool 的英文表头与原 Status，
+    仅把 Tracking Reference 统一覆盖成发货日期。按 VO/GW 拆成两个文件。
+    返回 (results{ch:(path,n)}, missing{ch:[scp...]})。"""
+    results, missing = {}, {}
+    if not picking_paths:
+        return results, missing
+    frames = [pd.read_excel(p) for p in picking_paths]
+    pool = pd.concat(frames, ignore_index=True)
+    srccol = next((c for c in pool.columns
+                   if str(c).strip() in PICK_SRC_NAMES), None)
+    if srccol is None:
+        raise ValueError(f"出库原始数据缺少来源单据列(任一: {PICK_SRC_NAMES})")
+    trkcol = next((c for c in pool.columns
+                   if str(c).strip() in PICK_TRK_NAMES), None)
+
+    pool["_scp"] = pool[srccol].map(_scp)
+    pool["_ch"] = pool[srccol].astype(str).str.split("_", n=1).str[0]
+    shipped_scp = {s for s in (_scp(k) for k in shipped["_key"]) if s}
+
+    kept = pool[pool["_scp"].isin(shipped_scp)].copy()
+    if trkcol is not None and shipdate:
+        kept[trkcol] = shipdate
+
+    pool_channels = set(pool["_ch"].unique())
+    for ch in ["VO", "GW"]:
+        sub = kept[kept["_ch"] == ch].drop(columns=["_scp", "_ch"])
+        sub = sub.where(pd.notna(sub), "")   # 空单元格写空串，避免出现字面 nan
+        if not sub.empty:
+            wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+            be.write_df(ws, sub)
+            be.style_sheet(ws, len(sub.columns))
+            path = os.path.join(outdir, f"出库单{ch}.xlsx")
+            wb.save(path)
+            results[ch] = (path, len(sub))
+        # 仅对 pool 覆盖到的店铺报缺(发货订单在 pool 里找不到对应 picking)
+        if ch in pool_channels:
+            want = {s for s in (_scp(k) for k in
+                                shipped[shipped["channel"] == ch]["_key"]) if s}
+            miss = sorted(want - set(pool.loc[pool["_ch"] == ch, "_scp"]))
+            if miss:
+                missing[ch] = miss
+    return results, missing
 
 
 # ---------- 缺货记录 (明细 + SKU 汇总) ----------
@@ -212,15 +271,7 @@ def build_shortage(marked, erp, mmdd, outdir):
 TAG_RE = re.compile(r"^(账单|开发票)\d{4}")
 
 
-ID_NAMES = ("external id", "id", "外部id", "外部 id")
-
-
-def find_id_col(df):
-    """找出 External ID 列(兼容 External ID / ID / id / 外部ID)。找不到返回 None。"""
-    for c in df.columns:
-        if str(c).strip().lower() in ID_NAMES:
-            return c
-    return None
+find_id_col = s4.find_id_col   # 复用 step4_merge 的实现(External ID/ID/外部ID)
 
 
 def has_id_col(df):
@@ -243,7 +294,9 @@ def build_billing(src, shipped_keys, mmdd, outdir):
     agg["_key"] = last15(agg["Order Reference"])
     if shipped_keys:
         agg = agg[agg["_key"].isin(shipped_keys)]
-    raw = agg["Terms and conditions"].astype(str).str.replace(TAG_RE, "", regex=True)
+    raw = (agg["Terms and conditions"].astype(str)
+           .str.replace(TAG_RE, "", regex=True)
+           .str.replace(s4.WU_TAG, "", regex=False))   # 已补运单：剥掉「无运单」恢复原值
     agg["Terms and conditions"] = f"账单{mmdd}" + raw
     out = agg[["Order Date", idc, "Order Reference", "Terms and conditions"]]
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
@@ -254,13 +307,14 @@ def build_billing(src, shipped_keys, mmdd, outdir):
     return path, len(out)
 
 
-def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output"):
-    """第二阶段核心：生成 B/C/D + 缺货记录。返回结果文字行列表。供 CLI 与 GUI 共用。"""
+def run(mmdd, erp_paths, done_path, full_tmall_path=None, nogoods=None, billing=None,
+        outdir="output", picking=None, shipdate=None):
+    """第二阶段核心：生成 B/C/D/E + 缺货记录。返回结果文字行列表。供 CLI 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
-    erp_df = s4.load_erp(erp_path)            # 只读一次，账单/缺货复用
+    erp_df = be._load_erps(erp_paths)         # 只读一次，账单/缺货复用
     ng = load_nogoods(nogoods)
-    shipped = get_shipped_orders(erp_path, tmall_path, ng)
+    shipped = get_shipped_orders(erp_paths, done_path, full_tmall_path, ng)
     shipped_keys = set(shipped["_key"])
     log.append(f"无货清单: {len(ng)} 单")
     log.append(f"实际发货订单: {len(shipped)} 单 "
@@ -271,6 +325,21 @@ def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output")
 
     pC, cC = build_C(shipped, outdir)
     log.append(f"发货表 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
+
+    # E 出库单：从 stock picking 全量导出过滤出实际发货订单
+    if picking:
+        sd = shipdate or date.today().strftime("%Y%m%d")
+        resE, missE = build_E(picking, shipped, sd, outdir)
+        if resE:
+            for ch, (p, n) in resE.items():
+                log.append(f"出库单{ch} 已生成: {p}  ({n} 行，发货日期 {sd})")
+        else:
+            log.append("出库单 跳过 (出库原始数据无匹配的发货订单)")
+        for ch, miss in missE.items():
+            log.append(f"⚠ 出库单{ch}: {len(miss)} 个发货订单在出库原始数据里找不到 picking: "
+                       f"{', '.join(miss[:10])}{' …' if len(miss) > 10 else ''}")
+    else:
+        log.append("出库单 跳过 (未传出库原始数据 --picking)")
 
     # 账单上传：优先用含 ID 的订单导出直接生成；否则用单独的账单模板导出
     if has_id_col(erp_df):
@@ -294,13 +363,20 @@ def run(mmdd, erp_path, tmall_path, nogoods=None, billing=None, outdir="output")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mmdd", required=True, help="标签日期 MMDD，如 0610")
-    ap.add_argument("--erp", default="raw_data/测试0611erp导出.xlsx")
-    ap.add_argument("--tmall", default="raw_data/天猫测试.xlsx")
+    ap.add_argument("--erp", nargs="+", required=True,
+                    help="ERP 导出，可多份(VO/GW 各一份)")
+    ap.add_argument("--done", required=True, help="面单已完成名单(天猫筛选导出)")
+    ap.add_argument("--tmall-full", dest="full", default=None,
+                    help="完整天猫导出(含取消状态)，用于识别取消")
     ap.add_argument("--nogoods", default=None)
     ap.add_argument("--billing", default=None)
+    ap.add_argument("--picking", nargs="*", default=None,
+                    help="出库原始数据(stock picking 全量导出)，可传多个(VO/GW 各一份)")
+    ap.add_argument("--shipdate", default=None, help="发货日期 YYYYMMDD，默认今天")
     ap.add_argument("--outdir", default="output")
     a = ap.parse_args()
-    for line in run(a.mmdd, a.erp, a.tmall, a.nogoods, a.billing, a.outdir):
+    for line in run(a.mmdd, a.erp, a.done, a.full, a.nogoods, a.billing, a.outdir,
+                    a.picking, a.shipdate):
         print(line)
 
 
