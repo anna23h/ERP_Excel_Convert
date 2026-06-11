@@ -203,12 +203,34 @@ def build_upload(orders, idcol, terms, outdir, fname):
     return path, len(out)
 
 
-def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="output"):
-    """阶段一核心(步骤4+7/8/9)：分流 + 生成 4 份交付。返回 (log行列表, stats)。
+def _write_pickface(facesheet, outdir, out_arg=None):
+    """把一个店铺的发货集合写成一个「拣货表+面单+无货勾选」workbook。
+    facesheet 需已含 `序号`。返回 (路径, SKU数, 订单数)。"""
+    pick_df = build_picking(facesheet)
+    face_df = build_facesheet(facesheet)
+    wb = Workbook()
+    ws_pick = wb.active; ws_pick.title = "拣货表"
+    write_df(ws_pick, pick_df); style_sheet(ws_pick, len(pick_df.columns))
+    apply_print(ws_pick, fit_width=True)
+    ws_face = wb.create_sheet("面单")
+    write_df(ws_face, face_df); style_sheet(ws_face, len(face_df.columns))
+    highlight_facesheet(ws_face, face_df)
+    merge_multiproduct(ws_face, face_df)
+    apply_print(ws_face, landscape=True)
+    chk_df = build_nogoods_helper(facesheet)
+    ws_chk = wb.create_sheet("无货勾选")
+    write_df(ws_chk, chk_df); style_sheet(ws_chk, len(chk_df.columns))
+    path = out_arg or make_output_name(facesheet, outdir)
+    wb.save(path)
+    return path, len(pick_df), int(face_df["Order Reference"].nunique())
 
-    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
-    - 取消单 / 无运单清单：ERP 上传表(External ID 匹配键)。
-    - 已补运单清单：系统履约单号(去天猫后台打面单)。
+
+def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="output"):
+    """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
+
+    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)，**按店铺(VO/GW)各出一份**。
+    - 取消单 / 无运单清单：ERP 上传表(External ID 匹配键)，**两店合并一份**。
+    - 已补运单清单：系统履约单号(去天猫后台打面单)，**两店合并一份**。
     供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
@@ -223,31 +245,23 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
     log.append("分流(订单级): " + " / ".join(
         f"{k} {v}" for k, v in o["_cat"].value_counts().items()))
 
-    # ---- 拣货表 + 面单 (发货集合) ----
-    facesheet = ann[ann["_ship"]].reset_index(drop=True)
+    # ---- 拣货表 + 面单 (发货集合，按店铺 VO/GW 各出一份) ----
+    facesheet = ann[ann["_ship"]].copy()
+    main_paths = []
     if facesheet.empty:
         log.append("⚠ 无发货订单(全部无运单/取消)，未生成拣货表+面单")
-        main_path = None
     else:
-        facesheet.insert(0, "序号", range(1, len(facesheet) + 1))
-        pick_df = build_picking(facesheet)
-        face_df = build_facesheet(facesheet)
-        wb = Workbook()
-        ws_pick = wb.active; ws_pick.title = "拣货表"
-        write_df(ws_pick, pick_df); style_sheet(ws_pick, len(pick_df.columns))
-        apply_print(ws_pick, fit_width=True)
-        ws_face = wb.create_sheet("面单")
-        write_df(ws_face, face_df); style_sheet(ws_face, len(face_df.columns))
-        highlight_facesheet(ws_face, face_df)
-        merge_multiproduct(ws_face, face_df)
-        apply_print(ws_face, landscape=True)
-        chk_df = build_nogoods_helper(facesheet)
-        ws_chk = wb.create_sheet("无货勾选")
-        write_df(ws_chk, chk_df); style_sheet(ws_chk, len(chk_df.columns))
-        main_path = out_arg or make_output_name(facesheet, outdir)
-        wb.save(main_path)
-        log.append(f"拣货表+面单 已生成: {main_path}  "
-                   f"({len(pick_df)} SKU / {face_df['Order Reference'].nunique()} 单)")
+        facesheet["_ch"] = (facesheet[s4.ERP_ORDER_REF].astype(str)
+                            .str.split("_", n=1).str[0])
+        chans = sorted(facesheet["_ch"].unique())
+        for ch in chans:
+            sub = (facesheet[facesheet["_ch"] == ch]
+                   .drop(columns="_ch").reset_index(drop=True))
+            sub.insert(0, "序号", range(1, len(sub) + 1))   # 序号按店内独立编号
+            p, nsku, nord = _write_pickface(
+                sub, outdir, out_arg if len(chans) == 1 else None)
+            main_paths.append(p)
+            log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
 
     # ---- 取消单 (Terms=平台订单取消, 上传 ERP 作废) ----
     d = date.today()
@@ -309,7 +323,7 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
         "cancel": int((o["_cat"] == "取消").sum()),
         "nowaybill": int((o["_cat"] == "无运单").sum()),
         "refill": int((o["_cat"] == "已补运单").sum()),
-        "main_path": main_path,
+        "main_paths": main_paths,
     }
     return log, stats
 
