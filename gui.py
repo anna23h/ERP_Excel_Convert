@@ -45,7 +45,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("VO 拉单工具")
-        root.geometry("720x620")
+        root.geometry("860x860")
+        root.minsize(720, 640)
 
         self.erp = tk.StringVar()
         self.done = tk.StringVar()
@@ -73,6 +74,10 @@ class App:
         if optional:
             ttk.Label(fr, text="选填", foreground="#888").pack(side="left", padx=2)
 
+    def _hint(self, parent, text):
+        ttk.Label(parent, text=text, foreground="#888", wraplength=800,
+                  justify="left").pack(anchor="w", padx=18, pady=(0, 2))
+
     def _build_ui(self):
         pad = dict(padx=10, pady=6)
 
@@ -81,9 +86,7 @@ class App:
         self._file_row(common, "ERP 导出:", self.erp, multi=True)
         self._file_row(common, "面单已完成名单:", self.done)
         self._file_row(common, "完整天猫导出:", self.full, optional=True)
-        ttk.Label(common, foreground="#888",
-                  text="ERP 可多选(VO/GW 各一份)。面单已完成名单=天猫筛选导出，定『发货 vs 无运单』；"
-                       "完整天猫导出含取消状态，用于识别取消单(选填，不传则不出取消单)。").pack(anchor="w", padx=18)
+        self._hint(common, "ERP 可多选(VO/GW)。面单已完成名单：定发货范围。完整天猫导出：识别取消单(选填)。")
         fr = ttk.Frame(common); fr.pack(fill="x", pady=3)
         ttk.Label(fr, text="输出目录:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=4)
@@ -101,19 +104,15 @@ class App:
         self._file_row(s2, "有货订单清单:", self.shipped, optional=True, multi=True)
         self._file_row(s2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
         self._file_row(s2, "账单模板:", self.billing, optional=True)
-        ttk.Label(s2, foreground="#888",
-                  text="两个入口二选一(都填则优先有货)：①有货订单清单=真实发货单号(任意列含 SCP 即可)，"
-                       "直接结合 ERP；②无货勾选返回=仓库标无货的文件，发货=拣货候选−无货(需选面单已完成名单)。"
-                       "均可多选作冗余。账单：订单导出含 External ID 时自动生成，无 ID 才选账单模板。").pack(anchor="w", padx=18)
+        self._hint(s2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
+                       "账单模板仅在 ERP 无 External ID 时才选。")
         fr_pk = ttk.Frame(s2); fr_pk.pack(fill="x", pady=3)
         ttk.Label(fr_pk, text="出库原始数据:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr_pk, textvariable=self.picking).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(fr_pk, text="选择…",
                    command=lambda: self._pick_files(self.picking)).pack(side="left")
         ttk.Label(fr_pk, text="选填", foreground="#888").pack(side="left", padx=2)
-        ttk.Label(s2, foreground="#888",
-                  text="出库单：选 stock picking 全量导出(可多选 VO/GW 各一份)，"
-                       "按实际发货订单过滤、Tracking 列覆盖成发货日期，拆成出库单VO/GW。").pack(anchor="w", padx=18)
+        self._hint(s2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
         fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=3)
         ttk.Label(fr2, text="日期(MMDD):", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
@@ -123,12 +122,13 @@ class App:
         b2.pack(side="left", padx=10, pady=8)
         self._buttons.append(b2)
 
-        logfr = ttk.LabelFrame(self.root, text="运行日志")
-        logfr.pack(fill="both", expand=True, **pad)
-        self.log = scrolledtext.ScrolledText(logfr, height=12, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=6, pady=6)
+        # 先放底部按钮，再让日志区占满中间剩余空间(更易看到)
         ttk.Button(self.root, text="打开输出文件夹",
-                   command=lambda: open_folder(self.outdir.get())).pack(pady=4)
+                   command=lambda: open_folder(self.outdir.get())).pack(side="bottom", pady=6)
+        logfr = ttk.LabelFrame(self.root, text="运行日志")
+        logfr.pack(side="bottom", fill="both", expand=True, **pad)
+        self.log = scrolledtext.ScrolledText(logfr, height=18, state="disabled")
+        self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
     # ---------- helpers ----------
     def _pick_file(self, var):
