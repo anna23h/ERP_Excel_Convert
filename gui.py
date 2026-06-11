@@ -97,7 +97,7 @@ class App:
 
         s2 = ttk.LabelFrame(self.root, text="③ 阶段二 → 仓库返回后")
         s2.pack(fill="x", **pad)
-        self._file_row(s2, "返回文件:", self.returned)
+        self._file_row(s2, "返回文件:", self.returned, multi=True)
         self._file_row(s2, "账单模板:", self.billing, optional=True)
         ttk.Label(s2, foreground="#888",
                   text="账单上传：订单导出含 External ID 列时自动生成，无需选账单模板；"
@@ -211,10 +211,11 @@ class App:
         shipdate = self.shipdate.get().strip() or None
         erp = self._erp_list()
         full = self.full.get() or None
+        returned = [p.strip() for p in self.returned.get().split(";") if p.strip()]
 
         def work():
             return stage2.run(self.mmdd.get().strip(), erp, self.done.get(), full,
-                              nogoods=self.returned.get(),
+                              nogoods=returned,
                               billing=self.billing.get() or None,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)

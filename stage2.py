@@ -48,24 +48,31 @@ def _truthy(v):
 NOGOODS_SHEET = "无货勾选"
 
 
-def read_marked(path):
-    """读返回文件中被标记无货的行。多 sheet 时优先读『无货勾选』页。"""
-    xl = pd.ExcelFile(path)
-    sheet = NOGOODS_SHEET if NOGOODS_SHEET in xl.sheet_names else 0
-    df = pd.read_excel(path, sheet_name=sheet)
-    mark = next((c for c in df.columns
-                 if str(c).strip().startswith(MARK_PREFIXES)), None)
-    if mark is not None:
-        df = df[df[mark].apply(_truthy)].copy()
-    return df
+def read_marked(paths):
+    """读返回文件中被标记无货的行。多 sheet 时优先读『无货勾选』页。
+    阶段二按店铺各跑一次；paths 支持多份**仅作冗余**——同一店铺被分多次导出时合并，
+    不用于跨店(VO/GW)合并。"""
+    if isinstance(paths, str):
+        paths = [paths]
+    frames = []
+    for path in paths:
+        xl = pd.ExcelFile(path)
+        sheet = NOGOODS_SHEET if NOGOODS_SHEET in xl.sheet_names else 0
+        df = pd.read_excel(path, sheet_name=sheet)
+        mark = next((c for c in df.columns
+                     if str(c).strip().startswith(MARK_PREFIXES)), None)
+        if mark is not None:
+            df = df[df[mark].apply(_truthy)].copy()
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def load_nogoods(path):
+def load_nogoods(paths):
     """返回无货的 15 位单号集合。
     - 取标记为真(1/✓/x...)的行；取号优先用 系统履约单号 / Order Reference 列。"""
-    if not path:
+    if not paths:
         return set()
-    df = read_marked(path)
+    df = read_marked(paths)
     preferred = [c for c in df.columns
                  if str(c).strip() in ("系统履约单号", "Order Reference")]
     cols = preferred if preferred else [c for c in df.columns
@@ -368,7 +375,9 @@ def main():
     ap.add_argument("--done", required=True, help="面单已完成名单(天猫筛选导出)")
     ap.add_argument("--tmall-full", dest="full", default=None,
                     help="完整天猫导出(含取消状态)，用于识别取消")
-    ap.add_argument("--nogoods", default=None)
+    ap.add_argument("--nogoods", nargs="*", default=None,
+                    help="仓库返回文件(带『无货勾选』页)。阶段二按店各跑一次；"
+                         "可多份做冗余(同店分多次导出时合并)")
     ap.add_argument("--billing", default=None)
     ap.add_argument("--picking", nargs="*", default=None,
                     help="出库原始数据(stock picking 全量导出)，可传多个(VO/GW 各一份)")
