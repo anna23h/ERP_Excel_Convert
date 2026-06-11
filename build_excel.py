@@ -214,7 +214,8 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
     log = []
     erp = _load_erps(erp_paths)
     done = s4.load_done_keys(done_path)
-    cancel_keys = s4.load_cancel_keys(full_tmall_path)
+    status_map = s4.load_status_map(full_tmall_path)   # 完整天猫: 单号→履约单状态(选填)
+    cancel_keys = set(status_map[status_map.isin(s4.CANCEL_STATUSES)].index)
     ann = s4.classify4(erp, done, cancel_keys)
     idcol = s4.find_id_col(ann)
 
@@ -289,6 +290,15 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
     dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()
     if dup:
         log.append(f"⚠ 连接键冲突: {dup} 个订单的 Order Reference 后15位与他单相同(可能误判状态)")
+    # 护栏：发货名单反查完整天猫——若其实是 已发货/已收货/发货后取消，说明名单过期(防重复发货)
+    if len(status_map) and not facesheet.empty:
+        ship_keys = set(facesheet["_key"])
+        bad = status_map[status_map.index.isin(ship_keys)
+                         & status_map.isin(s4.SHIPPED_DONE_STATUSES)]
+        if len(bad):
+            log.append(f"⚠ 发货名单异常: {len(bad)} 单在完整天猫里其实是 "
+                       f"已发货/已收货/发货后取消(名单可能过期，当心重复发货): "
+                       f"{', '.join(list(bad.index)[:8])}{' …' if len(bad) > 8 else ''}")
     if not facesheet.empty:
         empty_dt = facesheet.drop_duplicates("_key")[s4.ERP_DELIVERY].isna().sum()
         if empty_dt:

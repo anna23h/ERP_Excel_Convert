@@ -26,6 +26,8 @@ TM_STATUS       = "履约单状态"
 TM_LABEL_STATUS = "面单申请状态"
 
 CANCEL_STATUSES = {"履约取消", "平台申请取消"}
+# 不该出现在今日发货名单里的状态(已出库/已收货/系统取消)——若混入说明名单过期，防重复发货
+SHIPPED_DONE_STATUSES = {"已发货", "履约完成(已收货)", "发货后取消(系统取消)"}
 WU_TAG = "无运单"            # 无运单标记(加在 Terms and conditions 前)
 
 
@@ -93,6 +95,15 @@ def load_cancel_keys(path):
     df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS])
     df = df[df[TM_STATUS].isin(CANCEL_STATUSES)]
     return set(last15(df[TM_KEY]))
+
+
+def load_status_map(path):
+    """完整天猫导出 → {15位单号: 履约单状态} Series(去重)。无文件则返回空 Series。"""
+    if not path:
+        return pd.Series(dtype=object)
+    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS])
+    df = df.assign(_k=last15(df[TM_KEY])).drop_duplicates("_k")
+    return df.set_index("_k")[TM_STATUS]
 
 
 def classify4(erp, done_keys, cancel_keys):
