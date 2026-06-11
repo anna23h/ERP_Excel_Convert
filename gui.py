@@ -51,7 +51,8 @@ class App:
         self.done = tk.StringVar()
         self.full = tk.StringVar()
         self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
-        self.returned = tk.StringVar()
+        self.shipped = tk.StringVar()      # 有货入口
+        self.nogoods = tk.StringVar()      # 无货勾选入口
         self.billing = tk.StringVar()
         self.picking = tk.StringVar()
         self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
@@ -97,11 +98,13 @@ class App:
 
         s2 = ttk.LabelFrame(self.root, text="③ 阶段二 → 仓库返回后")
         s2.pack(fill="x", **pad)
-        self._file_row(s2, "返回文件:", self.returned, multi=True)
+        self._file_row(s2, "有货订单清单:", self.shipped, optional=True, multi=True)
+        self._file_row(s2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
         self._file_row(s2, "账单模板:", self.billing, optional=True)
         ttk.Label(s2, foreground="#888",
-                  text="账单上传：订单导出含 External ID 列时自动生成，无需选账单模板；"
-                       "订单导出无 ID 列时才在上面选账单模板导出。").pack(anchor="w", padx=18)
+                  text="两个入口二选一(都填则优先有货)：①有货订单清单=真实发货单号(任意列含 SCP 即可)，"
+                       "直接结合 ERP；②无货勾选返回=仓库标无货的文件，发货=拣货候选−无货(需选面单已完成名单)。"
+                       "均可多选作冗余。账单：订单导出含 External ID 时自动生成，无 ID 才选账单模板。").pack(anchor="w", padx=18)
         fr_pk = ttk.Frame(s2); fr_pk.pack(fill="x", pady=3)
         ttk.Label(fr_pk, text="出库原始数据:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr_pk, textvariable=self.picking).pack(side="left", fill="x", expand=True, padx=4)
@@ -197,11 +200,11 @@ class App:
         self._bg(work)
 
     def _run_stage2(self):
-        if not self.erp.get() or not self.done.get():
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 面单已完成名单")
+        if not self.erp.get():
+            messagebox.showwarning("缺少文件", "请先选择 ERP 导出")
             return
-        if not self.returned.get():
-            messagebox.showwarning("缺少文件", "请选择仓库返回文件（带『无货勾选』页）")
+        if not self.shipped.get() and not self.nogoods.get():
+            messagebox.showwarning("缺少文件", "请选择『有货订单清单』或『无货勾选返回』(二选一)")
             return
         if not self.mmdd.get().strip():
             messagebox.showwarning("缺少日期", "请填写日期 MMDD（如 0611）")
@@ -211,11 +214,12 @@ class App:
         shipdate = self.shipdate.get().strip() or None
         erp = self._erp_list()
         full = self.full.get() or None
-        returned = [p.strip() for p in self.returned.get().split(";") if p.strip()]
+        shipped = [p.strip() for p in self.shipped.get().split(";") if p.strip()] or None
+        nogoods = [p.strip() for p in self.nogoods.get().split(";") if p.strip()] or None
 
         def work():
-            return stage2.run(self.mmdd.get().strip(), erp, self.done.get(), full,
-                              nogoods=returned,
+            return stage2.run(self.mmdd.get().strip(), erp, shipped, nogoods,
+                              done_path=self.done.get() or None, full_tmall_path=full,
                               billing=self.billing.get() or None,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)
