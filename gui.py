@@ -54,7 +54,6 @@ class App:
         self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
-        self.billing = tk.StringVar()
         self.picking = tk.StringVar()
         self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
         self.mmdd = tk.StringVar(value=date.today().strftime("%m%d"))
@@ -81,6 +80,18 @@ class App:
     def _build_ui(self):
         pad = dict(padx=10, pady=6)
 
+        # 执行按钮统一样式：加粗、大内边距，和"选择…"等输入控件明显区分
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")          # clam 主题下按钮配色能稳定生效(含 Windows)
+        except tk.TclError:
+            pass
+        style.configure("Action.TButton",
+                        font=("", 13, "bold"), padding=(18, 14),
+                        foreground="white", background="#2563eb")
+        style.map("Action.TButton",
+                  background=[("active", "#1d4ed8"), ("disabled", "#9ca3af")])
+
         common = ttk.LabelFrame(self.root, text="① 输入文件（两阶段共用）")
         common.pack(fill="x", **pad)
         self._file_row(common, "ERP 导出:", self.erp, multi=True)
@@ -94,18 +105,17 @@ class App:
 
         s1 = ttk.LabelFrame(self.root, text="② 阶段一 → 分流 + 打印给仓库")
         s1.pack(fill="x", **pad)
-        b1 = ttk.Button(s1, text="生成 拣货表+面单 / 取消单 / 无运单 / 已补运单",
-                        command=self._run_stage1)
-        b1.pack(side="left", padx=10, pady=8)
+        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 取消单 / 无运单 / 已补运单",
+                        style="Action.TButton", command=self._run_stage1)
+        b1.pack(fill="x", padx=10, pady=10)
         self._buttons.append(b1)
 
         s2 = ttk.LabelFrame(self.root, text="③ 阶段二 → 仓库返回后")
         s2.pack(fill="x", **pad)
         self._file_row(s2, "有货订单清单:", self.shipped, optional=True, multi=True)
         self._file_row(s2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
-        self._file_row(s2, "账单模板:", self.billing, optional=True)
         self._hint(s2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
-                       "账单模板仅在 ERP 无 External ID 时才选。")
+                       "账单上传直接取 ERP 导出里的 External ID 列，无需额外文件。")
         fr_pk = ttk.Frame(s2); fr_pk.pack(fill="x", pady=3)
         ttk.Label(fr_pk, text="出库原始数据:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr_pk, textvariable=self.picking).pack(side="left", fill="x", expand=True, padx=4)
@@ -118,8 +128,9 @@ class App:
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
         ttk.Label(fr2, text="发货日期(YYYYMMDD):", anchor="e").pack(side="left", padx=(12, 0))
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=4)
-        b2 = ttk.Button(s2, text="生成 发货表 / 账单 / 缺货记录 / 出库单", command=self._run_stage2)
-        b2.pack(side="left", padx=10, pady=8)
+        b2 = ttk.Button(s2, text="▶  生成 发货表 / 账单 / 缺货记录 / 出库单",
+                        style="Action.TButton", command=self._run_stage2)
+        b2.pack(fill="x", padx=10, pady=10)
         self._buttons.append(b2)
 
         # 先放底部按钮，再让日志区占满中间剩余空间(更易看到)
@@ -220,7 +231,6 @@ class App:
         def work():
             return stage2.run(self.mmdd.get().strip(), erp, shipped, nogoods,
                               done_path=self.done.get() or None, full_tmall_path=full,
-                              billing=self.billing.get() or None,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)
         self._bg(work)
