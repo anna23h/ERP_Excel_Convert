@@ -55,6 +55,7 @@ class App:
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
         self.picking = tk.StringVar()
+        self.forwarder = tk.StringVar()    # 货代合并：N 份发货表
         self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
         self.mmdd = tk.StringVar(value=date.today().strftime("%m%d"))
         self._buttons = []
@@ -105,7 +106,7 @@ class App:
 
         s1 = ttk.LabelFrame(self.root, text="② 阶段一 → 分流 + 打印给仓库")
         s1.pack(fill="x", **pad)
-        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 取消单 / 无运单 / 已补运单",
+        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
                         style="Action.TButton", command=self._run_stage1)
         b1.pack(fill="x", padx=10, pady=10)
         self._buttons.append(b1)
@@ -132,6 +133,16 @@ class App:
                         style="Action.TButton", command=self._run_stage2)
         b2.pack(fill="x", padx=10, pady=10)
         self._buttons.append(b2)
+
+        s3 = ttk.LabelFrame(self.root, text="④ 货代合并（当天收尾，跨店）")
+        s3.pack(fill="x", **pad)
+        self._file_row(s3, "发货表(可多份):", self.forwarder, multi=True)
+        self._hint(s3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
+                       "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期取上面的『发货日期』栏。")
+        b3 = ttk.Button(s3, text="▶  合并 当天发货表 → 货代清单",
+                        style="Action.TButton", command=self._run_forwarder)
+        b3.pack(fill="x", padx=10, pady=10)
+        self._buttons.append(b3)
 
         # 先放底部按钮，再让日志区占满中间剩余空间(更易看到)
         ttk.Button(self.root, text="打开输出文件夹",
@@ -200,7 +211,7 @@ class App:
         if not self.erp.get() or not self.done.get():
             messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 面单已完成名单")
             return
-        self._write("【阶段一】分流 + 生成拣货表+面单 / 取消单 / 无运单清单 / 已补运单清单…")
+        self._write("【阶段一】分流 + 生成拣货表+面单 / 新订单获单清单 / 回传ERP销售上传表 / 已补运单清单…")
         erp = self._erp_list()
         full = self.full.get() or None
 
@@ -233,6 +244,23 @@ class App:
                               done_path=self.done.get() or None, full_tmall_path=full,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)
+        self._bg(work)
+
+    def _run_forwarder(self):
+        files = [p.strip() for p in self.forwarder.get().split(";") if p.strip()]
+        if not files:
+            messagebox.showwarning("缺少文件", "请选择当天的『发货表』(可多份)")
+            return
+        self._write("【货代合并】合并当天发货表 → 货代清单…")
+        shipdate = self.shipdate.get().strip() or None
+        outdir = self.outdir.get()
+
+        def work():
+            p, n, conf = stage2.build_forwarder(files, outdir, shipdate)
+            lines = [f"货代合并发货表 已生成: {p}  ({n} 单)"]
+            for ref, old, new in conf:
+                lines.append(f"⚠ 运单冲突 {ref}: {old} vs {new}(已保留先出现的)")
+            return lines
         self._bg(work)
 
 

@@ -187,20 +187,37 @@ def _order_level(df, idcol):
     }).reset_index()
 
 
-def build_upload(orders, idcol, terms, outdir, fname):
-    """通用 ERP 上传表：Order Date | <idcol> | Order Reference | Terms。orders 为订单级。"""
+def _wu_add(series):
+    """无运单：Terms 前缀『无运单』(已带则不重复加)。"""
+    raw = series.astype(str)
+    return raw.where(raw.str.contains(s4.WU_TAG), s4.WU_TAG + raw).values
+
+
+def _wu_strip(series):
+    """已补运单：剥掉『无运单』恢复原值。"""
+    return series.astype(str).str.replace(s4.WU_TAG, "", regex=False).str.strip().values
+
+
+def _write_simple(out, outdir, fname, n_cols=None):
+    """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。"""
+    wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+    write_df(ws, out)
+    style_sheet(ws, n_cols or len(out.columns))
+    path = os.path.join(outdir, fname)
+    wb.save(path)
+    return path, len(out)
+
+
+def _upload_terms(cat_df, idcol, terms):
+    """某一类(取消/无运单/已补运单)的 ERP 上传行：订单级 4 列，Terms 取传入值/series。"""
+    orders = _order_level(cat_df, idcol)
     out = pd.DataFrame({
         "Order Date":           orders["Order Date"].values,
         idcol:                  orders[idcol].values,
         "Order Reference":      orders[s4.ERP_ORDER_REF].values,
-        "Terms and conditions": terms,
+        "Terms and conditions": terms(orders) if callable(terms) else terms,
     })
-    wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-    write_df(ws, out)
-    style_sheet(ws, len(out.columns))
-    path = os.path.join(outdir, fname)
-    wb.save(path)
-    return path, len(out)
+    return out
 
 
 def _write_pickface(facesheet, outdir, out_arg=None):
@@ -228,9 +245,11 @@ def _write_pickface(facesheet, outdir, out_arg=None):
 def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="output"):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
-    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)，**按店铺(VO/GW)各出一份**。
-    - 取消单 / 无运单清单：ERP 上传表(External ID 匹配键)，**两店合并一份**。
-    - 已补运单清单：系统履约单号(去天猫后台打面单)，**两店合并一份**。
+    输入单店 ERP（天猫两店混合，经 ∩ERP 收敛到单店），产出全部按店带后缀：
+    - 新订单获单清单：履约单状态=新订单 ∩ ERP 的系统履约单号(去天猫批量获单)。
+    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
+    - 回传ERP销售上传表：取消/无运单/已补运单三类 Terms 写回**合并一张**(External ID 匹配键)。
+    - 已补运单清单：系统履约单号(去天猫后台打面单)。
     供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
@@ -263,31 +282,49 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
             main_paths.append(p)
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
 
-    # ---- 取消单 (Terms=平台订单取消, 上传 ERP 作废) ----
+    # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单；按店各一份) ----
     d = date.today()
-    cancel_df = ann[ann["_cat"] == "取消"]
-    if not cancel_df.empty and idcol:
-        orders = _order_level(cancel_df, idcol)
-        tag = f"{d.year}年{d.month:02d}月{d.day:02d}日平台订单取消"
-        p, n = build_upload(orders, idcol, [tag] * len(orders), outdir, "取消单.xlsx")
-        log.append(f"取消单 已生成: {p}  ({n} 单)")
-    elif not cancel_df.empty:
-        log.append("⚠ 有取消单但 ERP 无 External ID 列，无法生成上传表(请在订单导出勾上 External ID)")
+    if len(status_map):
+        new_keys = set(status_map[status_map == s4.NEW_ORDER_STATUS].index)
+        no = ann.drop_duplicates("_key")
+        no = no[no["_key"].isin(new_keys)].copy()
+        if not no.empty:
+            no["_ch"] = no[s4.ERP_ORDER_REF].astype(str).str.split("_", n=1).str[0]
+            for ch in sorted(no["_ch"].unique()):
+                keys = no[no["_ch"] == ch]["_key"].tolist()
+                p, n = _write_simple(pd.DataFrame({"系统履约单号": keys}),
+                                     outdir, f"新订单获单清单{ch}.xlsx", n_cols=1)
+                log.append(f"新订单获单清单{ch} 已生成: {p}  ({n} 单)")
+        else:
+            log.append("新订单获单清单: 0 单")
     else:
-        log.append("取消单: 0 单" + ("" if full_tmall_path else " (未传完整天猫导出，无法识别取消)"))
+        log.append("新订单获单清单: 跳过 (未传完整天猫导出，无法识别新订单)")
 
-    # ---- 无运单清单 (Terms='无运单'+原值, 上传 ERP) ----
-    wu_df = ann[ann["_cat"] == "无运单"]
-    if not wu_df.empty and idcol:
-        orders = _order_level(wu_df, idcol)
-        raw = orders["Terms and conditions"].astype(str)
-        terms = raw.where(raw.str.contains(s4.WU_TAG), s4.WU_TAG + raw)  # 已带则不重复加
-        p, n = build_upload(orders, idcol, terms.values, outdir, "无运单清单.xlsx")
-        log.append(f"无运单清单 已生成: {p}  ({n} 单)")
-    elif not wu_df.empty:
-        log.append("⚠ 有无运单订单但 ERP 无 External ID 列，无法生成上传表")
+    # ---- 回传ERP销售上传表 (取消/无运单/已补运单 三类 Terms 写回一张，按店各一份) ----
+    tag = f"{d.year}年{d.month:02d}月{d.day:02d}日平台订单取消"
+    cats = {
+        "取消":     (ann[ann["_cat"] == "取消"],     tag),
+        "无运单":    (ann[ann["_cat"] == "无运单"],    lambda o: _wu_add(o["Terms and conditions"])),
+        "已补运单":  (ann[ann["_cat"] == "已补运单"],  lambda o: _wu_strip(o["Terms and conditions"])),
+    }
+    present = {k: df for k, (df, _) in cats.items() if not df.empty}
+    if present and idcol:
+        parts = [_upload_terms(df, idcol, terms)
+                 for k, (df, terms) in cats.items() if not df.empty]
+        allup = pd.concat(parts, ignore_index=True)
+        allup["_ch"] = allup["Order Reference"].astype(str).str.split("_", n=1).str[0]
+        for ch in sorted(allup["_ch"].unique()):
+            sub = allup[allup["_ch"] == ch].drop(columns="_ch")
+            p, n = _write_simple(sub, outdir, f"回传ERP销售上传表{ch}.xlsx")
+            log.append(f"回传ERP销售上传表{ch} 已生成: {p}  ({n} 单)")
+        log.append("  └ 含 " + " / ".join(
+            f"{k} {df['_key'].nunique()}" for k, df in present.items()))
+    elif present:
+        log.append("⚠ 有需回传订单(取消/无运单/已补运单)但 ERP 无 External ID 列，"
+                   "无法生成上传表(请在订单导出勾上 External ID)")
     else:
-        log.append("无运单清单: 0 单")
+        log.append("回传ERP销售上传表: 0 单 (无取消/无运单/已补运单)"
+                   + ("" if full_tmall_path else " (未传完整天猫导出，取消无法识别)"))
 
     # ---- 已补运单清单 (系统履约单号, 去天猫后台打面单；按店各一份: 分批次下载运单防混淆) ----
     refill = ann[ann["_cat"] == "已补运单"].drop_duplicates("_key").copy()
