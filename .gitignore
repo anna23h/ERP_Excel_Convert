@@ -12,6 +12,11 @@ raw_data/
 # 输出产物
 output/
 
+# 多机同步：测试数据/结果走 Syncthing，配置因机器而异
+test-data/
+results/
+config.py
+
 # PyInstaller 打包产物
 build/
 dist/
