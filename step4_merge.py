@@ -26,6 +26,7 @@ TM_STATUS       = "履约单状态"
 TM_LABEL_STATUS = "面单申请状态"
 
 CANCEL_STATUSES = {"履约取消", "平台申请取消"}
+NEW_ORDER_STATUS = "新订单"   # 待批量获单(确认接单)的履约单状态
 # 不该出现在今日发货名单里的状态(已出库/已收货/系统取消)——若混入说明名单过期，防重复发货
 SHIPPED_DONE_STATUSES = {"已发货", "履约完成(已收货)", "发货后取消(系统取消)"}
 WU_TAG = "无运单"            # 无运单标记(加在 Terms and conditions 前)

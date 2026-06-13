@@ -85,6 +85,56 @@ def load_nogoods(paths):
     return keys
 
 
+def _row_key(row, cols, mark):
+    """从一行里按值模式 SCP\\d+ 取连接键(跳过标记列)。找不到返回 None。"""
+    for c in cols:
+        if c == mark:
+            continue
+        m = SCP_RE.search(str(row[c]))
+        if m:
+            return m.group(0)[-15:]
+    return None
+
+
+# 订单级裁决优先级：未确认 > 无货 > 有货(越保守越优先，整单只要有一行更差就降级)
+_RANK = {"未确认": 2, "无货": 1, "有货": 0}
+
+
+def classify_return(paths):
+    """读无货勾选返回表 → {连接键: '有货'/'无货'/'未确认'}（订单级裁决）。
+
+    每行一个 SKU；标记列(『无货/缺货/勾选』开头)按值判定：1/真=无货, 0=有货, 空=未确认。
+    订单级（多品订单）取最保守：任一行未确认→整单未确认；否则任一行无货→整单不发；
+    全部有货(0)才整单发货。无标记列时整表视为无货(异常，仅兜底)。"""
+    if isinstance(paths, str):
+        paths = [paths]
+    agg = {}
+    for path in paths:
+        xl = pd.ExcelFile(path)
+        sheet = NOGOODS_SHEET if NOGOODS_SHEET in xl.sheet_names else 0
+        df = pd.read_excel(path, sheet_name=sheet)
+        mark = next((c for c in df.columns
+                     if str(c).strip().startswith(MARK_PREFIXES)), None)
+        cols = list(df.columns)
+        for _, row in df.iterrows():
+            key = _row_key(row, cols, mark)
+            if key is None:
+                continue
+            if mark is None:
+                st = "无货"
+            else:
+                v = row[mark]
+                if pd.isna(v) or str(v).strip() == "":
+                    st = "未确认"
+                elif _truthy(v):
+                    st = "无货"
+                else:
+                    st = "有货"
+            if key not in agg or _RANK[st] > _RANK[agg[key]]:
+                agg[key] = st
+    return agg
+
+
 def load_shipped_keys(paths):
     """读「有货(真实发货)订单清单」→ 连接键集合(SCP 单号)。
 
@@ -292,6 +342,66 @@ def build_shortage(marked, erp, mmdd, outdir):
     return path, len(detail), len(summary)
 
 
+# ---------- 货代合并发货表 (跨店, 接受 N 份发货表) ----------
+FORWARDER_PREFIX = "IHTCTGMBH+IH"   # 固定前缀，给货代核对用
+
+
+def _find_ref_trk(df):
+    """从一张发货表里定位 (Order Reference 列, Tracking 列)。
+    Order Reference：列名匹配或值含 SCP；Tracking：列名含 tracking/运单，否则取另一列。"""
+    cols = list(df.columns)
+    refcol = next((c for c in cols if str(c).strip() == "Order Reference"), None)
+    if refcol is None:                        # 按值模式兜底：含 SCP 最多的列
+        best, bestn = None, 0
+        for c in cols:
+            n = df[c].astype(str).str.contains("SCP").sum()
+            if n > bestn:
+                best, bestn = c, n
+        refcol = best
+    trkcol = next((c for c in cols if c != refcol and
+                   ("tracking" in str(c).strip().lower() or "运单" in str(c))), None)
+    if trkcol is None:                        # 只有两列时，另一列即运单
+        others = [c for c in cols if c != refcol]
+        trkcol = others[0] if len(others) == 1 else None
+    return refcol, trkcol
+
+
+def build_forwarder(paths, outdir, shipdate=None):
+    """N 份发货表 → 一张跨店合并发货清单(给货代核对)。按 Order Reference 去重；
+    同单不同运单视为冲突报警。返回 (路径, 单数, 冲突列表[(ref, 旧, 新)])。"""
+    pairs, conflicts = {}, []
+    for path in paths:
+        for df in pd.read_excel(path, sheet_name=None).values():
+            if df.empty:
+                continue
+            refcol, trkcol = _find_ref_trk(df)
+            if refcol is None:
+                continue
+            for _, r in df.iterrows():
+                ref = str(r[refcol]).strip()
+                if "SCP" not in ref:
+                    continue
+                trk = "" if (trkcol is None or pd.isna(r[trkcol])) else str(r[trkcol]).strip()
+                if ref in pairs:
+                    if pairs[ref] and trk and pairs[ref] != trk:
+                        conflicts.append((ref, pairs[ref], trk))
+                    elif not pairs[ref] and trk:
+                        pairs[ref] = trk
+                else:
+                    pairs[ref] = trk
+    out = pd.DataFrame({"Order Reference": list(pairs.keys()),
+                        "Tracking number": list(pairs.values())})
+    n = len(out)
+    d = shipdate or date.today().strftime("%Y%m%d")
+    fname = f"{FORWARDER_PREFIX}{d}+{n}.xlsx"
+    wb = Workbook(); ws = wb.active; ws.title = "Sheet2"
+    be.write_df(ws, out)
+    be.style_sheet(ws, 2)
+    path = os.path.join(outdir, fname)
+    wb.save(path)
+    return path, n, conflicts
+
+
 # ---------- D: 开账单上传表 ----------
 TAG_RE = re.compile(r"^(账单|开发票)\d{4}")
 
@@ -360,12 +470,24 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None, done_path=None,
             log.append(f"⚠ {len(miss_erp)} 个有货单号在 ERP 里找不到(未结合): "
                        f"{', '.join(list(miss_erp)[:10])}{' …' if len(miss_erp) > 10 else ''}")
     elif nogoods_files:                        # —— 无货入口(黑名单) ——
-        if cand_keys is None:
-            log.append("✗ 无货入口需要『面单已完成名单』(--done)算拣货候选，未提供，已中止")
-            return log
-        ng = load_nogoods(nogoods_files)
-        shipped_keys = cand_keys - ng
-        log.append(f"[无货入口] 拣货候选 {len(cand_keys)} − 无货 {len(ng)} = 发货 {len(shipped_keys)} 单")
+        # 直接取『有货(0)』作发货，而非候选−无货：漏返回的单不会默认全发，更安全。
+        ret = classify_return(nogoods_files)
+        have = {k for k, v in ret.items() if v == "有货"} & erp_keys
+        ng_marked = {k for k, v in ret.items() if v == "无货"}
+        blank = {k for k, v in ret.items() if v == "未确认"}
+        shipped_keys = have
+        log.append(f"[无货入口] 返回 {len(ret)} 单(命中ERP计)：有货 {len(have)} / "
+                   f"无货 {len(ng_marked)} / 未确认 {len(blank)} → 发货 {len(have)} 单")
+        if blank:
+            bl = sorted(blank)
+            log.append(f"⚠ {len(blank)} 单未确认有无货(标记留空)，已不发货，请核对: "
+                       f"{', '.join(bl[:10])}{' …' if len(bl) > 10 else ''}")
+        if cand_keys is not None:            # 有候选则交叉核对(发了候选外的单很可疑)
+            extra = have - cand_keys
+            if extra:
+                ex = sorted(extra)
+                log.append(f"⚠ {len(extra)} 单标有货但不在拣货候选(名单/取消可能不一致): "
+                           f"{', '.join(ex[:10])}{' …' if len(ex) > 10 else ''}")
     else:
         log.append("✗ 未提供有货清单(shipped)或无货返回文件(nogoods)，无法确定发货集合")
         return log
@@ -441,9 +563,12 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None, done_path=None,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mmdd", required=True, help="标签日期 MMDD，如 0610")
-    ap.add_argument("--erp", nargs="+", required=True,
+    ap.add_argument("--mmdd", default=date.today().strftime("%m%d"),
+                    help="标签日期 MMDD，默认今天")
+    ap.add_argument("--erp", nargs="+",
                     help="ERP 导出，可多份(VO/GW 各一份)")
+    ap.add_argument("--forwarder", nargs="*", default=None,
+                    help="货代合并模式：N 份发货表 → 一张跨店合并发货清单(其余参数忽略)")
     ap.add_argument("--shipped", nargs="*", default=None,
                     help="有货入口：真实发货订单清单(含履约单号/Order Reference 即可)，可多份冗余")
     ap.add_argument("--nogoods", nargs="*", default=None,
@@ -458,6 +583,15 @@ def main():
     ap.add_argument("--shipdate", default=None, help="发货日期 YYYYMMDD，默认今天")
     ap.add_argument("--outdir", default="output")
     a = ap.parse_args()
+    os.makedirs(a.outdir, exist_ok=True)
+    if a.forwarder is not None:                # 货代合并模式(独立步骤)
+        p, n, conf = build_forwarder(a.forwarder, a.outdir, a.shipdate)
+        print(f"货代合并发货表 已生成: {p}  ({n} 单)")
+        for ref, old, new in conf:
+            print(f"⚠ 运单冲突 {ref}: {old} vs {new}(已保留先出现的)")
+        return
+    if not a.erp:
+        ap.error("非货代合并模式需要 --erp")
     for line in run(a.mmdd, a.erp, a.shipped, a.nogoods, a.done, a.full, a.billing,
                     a.outdir, a.picking, a.shipdate):
         print(line)
