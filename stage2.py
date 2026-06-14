@@ -442,23 +442,24 @@ def build_billing(src, shipped_keys, mmdd, outdir):
     return path, len(out)
 
 
-def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None, done_path=None,
+def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
         full_tmall_path=None, billing=None, outdir="output", picking=None, shipdate=None):
     """第二阶段核心：结合 ERP 生成 B/C/D/E(+缺货记录)。两种入口二选一(都给则优先有货)：
 
     - **有货清单**(shipped_files，白名单)：真实发货的履约单号/Order Reference，直接 ∩ ERP 取明细。
-    - **无货勾选**(nogoods_files，黑名单)：仓库返回的无货单，发货 = 拣货候选(需 done) − 无货。
-    done_path/full_tmall_path：无货入口算候选必需；有货入口仅用于缺货记录(可选)。
+    - **无货勾选**(nogoods_files，黑名单)：仓库返回的无货单，发货 = 拣货候选 − 无货。
+    full_tmall_path(完整天猫导出)：无货入口算候选必需；有货入口仅用于缺货记录(可选)。
     返回结果文字行列表。供 CLI 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
     erp_df = be._load_erps(erp_paths)         # 只读一次，发货/账单/缺货复用
     erp_keys = set(erp_df["_key"])
-    # 拣货候选(stage1 发货集合)：无货倒推 & 缺货记录用
+    # 拣货候选(stage1 发货集合)：无货倒推 & 缺货记录用。由完整天猫导出二段式推出。
     cand_keys = None
-    if done_path:
-        ann = s4.classify4(erp_df, s4.load_done_keys(done_path),
-                           s4.load_cancel_keys(full_tmall_path))
+    if full_tmall_path:
+        full = s4.load_full_tmall(full_tmall_path)
+        ann = s4.classify4(erp_df, s4.done_keys_from_full(full),
+                           s4.cancel_keys_from_full(full))
         cand_keys = set(ann[ann["_ship"]]["_key"]) & erp_keys
 
     if shipped_files:                          # —— 有货入口(白名单) ——
@@ -557,7 +558,7 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None, done_path=None,
         else:
             log.append("缺货记录: 0 单(有货已覆盖全部拣货候选)")
     else:
-        log.append("缺货记录 跳过 (有货入口未传 --done，无法算拣货候选)")
+        log.append("缺货记录 跳过 (有货入口未传完整天猫导出，无法算拣货候选)")
     return log
 
 
@@ -572,11 +573,9 @@ def main():
     ap.add_argument("--shipped", nargs="*", default=None,
                     help="有货入口：真实发货订单清单(含履约单号/Order Reference 即可)，可多份冗余")
     ap.add_argument("--nogoods", nargs="*", default=None,
-                    help="无货入口：仓库返回的无货勾选文件，可多份冗余(需配 --done 算拣货候选)")
-    ap.add_argument("--done", default=None,
-                    help="面单已完成名单：无货入口算拣货候选必需；有货入口仅用于缺货记录")
+                    help="无货入口：仓库返回的无货勾选文件，可多份冗余(需配 --tmall-full 算拣货候选)")
     ap.add_argument("--tmall-full", dest="full", default=None,
-                    help="完整天猫导出(含取消状态)，配 --done 精确算拣货候选")
+                    help="完整天猫导出(唯一天猫输入)：二段式推发货范围，无货入口算拣货候选必需")
     ap.add_argument("--billing", default=None)
     ap.add_argument("--picking", nargs="*", default=None,
                     help="出库原始数据(stock picking 全量导出)，可传多个(VO/GW 各一份)")
@@ -592,7 +591,7 @@ def main():
         return
     if not a.erp:
         ap.error("非货代合并模式需要 --erp")
-    for line in run(a.mmdd, a.erp, a.shipped, a.nogoods, a.done, a.full, a.billing,
+    for line in run(a.mmdd, a.erp, a.shipped, a.nogoods, a.full, a.billing,
                     a.outdir, a.picking, a.shipdate):
         print(line)
 

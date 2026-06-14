@@ -80,31 +80,37 @@ def _read_tmall_sheet(path, usecols=None):
     return pd.read_excel(xl, sheet_name=sheet, usecols=usecols)
 
 
-def load_done_keys(path):
-    """面单已完成名单(天猫后台筛选导出) → 15 位单号集合 = 今天有运单可发货的订单。"""
+# 发货前的「活单」履约状态(未发货、未取消)——发货范围的履约闸门
+LIVE_STATUSES = {NEW_ORDER_STATUS, "商家已接单"}
+LABEL_DONE = "已完成"   # 面单申请状态=已完成 → 运单已就绪
+
+
+def load_full_tmall(path):
+    """完整天猫导出(全量、可跨多日) → DataFrame，索引=15位单号，含 履约单状态/面单申请状态。
+    这是阶段一/二唯一的天猫输入：既定发货范围，又给负集分桶(取消/无运单)。
+    全量含历史多日，同一单号保留最后一条。无文件返回空 DataFrame。"""
     if not path:
+        return pd.DataFrame(columns=[TM_STATUS, TM_LABEL_STATUS])
+    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS, TM_LABEL_STATUS])
+    df = df.assign(_k=last15(df[TM_KEY])).drop_duplicates("_k", keep="last")
+    return df.set_index("_k")[[TM_STATUS, TM_LABEL_STATUS]]
+
+
+def done_keys_from_full(full):
+    """发货范围 = 履约单状态∈{新订单,商家已接单} ∧ 面单申请状态=已完成。
+    二段式且有序：①履约闸门在前——剔除已发货/已收货/取消的历史老单(防重复发货)；
+    ②面单条件在后——只留运单已就绪的。两段缺一不可，顺序不能反。"""
+    if full.empty:
         return set()
-    df = _read_tmall_sheet(path)
-    col = TM_KEY if TM_KEY in df.columns else df.columns[0]
-    return set(last15(df[col].dropna()))
+    m = full[TM_STATUS].isin(LIVE_STATUSES) & (full[TM_LABEL_STATUS] == LABEL_DONE)
+    return set(full.index[m])
 
 
-def load_cancel_keys(path):
-    """完整天猫导出 → 取消单号集合(履约取消/平台申请取消)。"""
-    if not path:
+def cancel_keys_from_full(full):
+    """取消单集合(履约取消/平台申请取消)——负集分桶里的「作废」类。"""
+    if full.empty:
         return set()
-    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS])
-    df = df[df[TM_STATUS].isin(CANCEL_STATUSES)]
-    return set(last15(df[TM_KEY]))
-
-
-def load_status_map(path):
-    """完整天猫导出 → {15位单号: 履约单状态} Series(去重)。无文件则返回空 Series。"""
-    if not path:
-        return pd.Series(dtype=object)
-    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS])
-    df = df.assign(_k=last15(df[TM_KEY])).drop_duplicates("_k")
-    return df.set_index("_k")[TM_STATUS]
+    return set(full.index[full[TM_STATUS].isin(CANCEL_STATUSES)])
 
 
 def classify4(erp, done_keys, cancel_keys):
