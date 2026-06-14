@@ -298,8 +298,38 @@ class App:
         self._bg(work)
 
 
+def _enable_dpi_awareness():
+    """Windows 高分屏防模糊：进程声明 DPI 感知，避免被位图拉伸糊化。
+    必须在创建任何 Tk 窗口之前调用。"""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)    # System DPI aware (Win 8.1+)
+    except Exception:
+        try:
+            from ctypes import windll
+            windll.user32.SetProcessDPIAware()     # Vista+ 回落
+        except Exception:
+            pass
+
+
+def _apply_dpi_scaling(root):
+    """按实际 DPI 放大 Tk 字体/控件，避免 DPI 感知后界面整体偏小。"""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        dpi = root.winfo_fpixels("1i")             # 每英寸像素(DPI感知后反映真实缩放)
+        if dpi and dpi > 0:
+            root.tk.call("tk", "scaling", dpi / 72.0)
+    except Exception:
+        pass
+
+
 def main():
+    _enable_dpi_awareness()
     root = tk.Tk()
+    _apply_dpi_scaling(root)
     App(root)
     root.mainloop()
 
