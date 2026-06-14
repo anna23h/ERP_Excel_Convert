@@ -68,13 +68,14 @@ class App:
     def _file_row(self, parent, label, var, optional=False, multi=False):
         fr = ttk.Frame(parent)
         fr.pack(fill="x", pady=4)
-        ttk.Label(fr, text=label, width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Label(fr, text=label, width=self.LABEL_W, anchor="e",
+                  style="Field.TLabel").pack(side="left")
         ttk.Entry(fr, textvariable=var).pack(side="left", fill="x", expand=True, padx=6)
         pick = self._pick_files if multi else self._pick_file
         ttk.Button(fr, text="选择…", width=7,
                    command=lambda: pick(var)).pack(side="left")
         tag = "选填" if optional else "必选"
-        ttk.Label(fr, text=tag, width=4,
+        ttk.Label(fr, text=tag, width=4, font=("", 9),
                   foreground="#9aa0a6" if optional else "#2563eb").pack(side="left", padx=(4, 0))
 
     def _hint(self, parent, text):
@@ -93,16 +94,17 @@ class App:
             style.theme_use("clam")          # clam 下配色稳定生效(含 Windows)
         except tk.TclError:
             pass
-        # 执行按钮：醒目蓝底白字，内边距适中(不臃肿)
+        # 字号层级：区块标题 14 粗 > 字段标签 11 > 灰提示 9；按钮 11 粗(强调色)
         style.configure("Action.TButton",
-                        font=("", 11, "bold"), padding=(12, 9),
+                        font=("", 11, "bold"), padding=(18, 8),
                         foreground="white", background="#2563eb", borderwidth=0)
         style.map("Action.TButton",
                   background=[("active", "#1d4ed8"), ("disabled", "#b6c2d6")])
-        # 区块标题加粗，灰提示字号小一号
-        style.configure("Card.TLabelframe.Label", font=("", 11, "bold"),
-                        foreground="#1f2937")
-        style.configure("Hint.TLabel", foreground="#6b7280", font=("", 9))
+        style.configure("Card.TLabelframe.Label", font=("", 14, "bold"),
+                        foreground="#111827")
+        style.configure("Field.TLabel", font=("", 11), foreground="#111827")
+        style.configure("Hint.TLabel", font=("", 9), foreground="#6b7280")
+        style.configure("TNotebook.Tab", font=("", 11), padding=(14, 7))
 
     def _build_ui(self):
         self._init_styles()
@@ -119,7 +121,8 @@ class App:
         self._file_row(common, "完整天猫导出:", self.full)
         self._hint(common, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
         fr = ttk.Frame(common); fr.pack(fill="x", pady=4)
-        ttk.Label(fr, text="输出目录:", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Label(fr, text="输出目录:", width=self.LABEL_W, anchor="e",
+                  style="Field.TLabel").pack(side="left")
         ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(fr, text="选择…", width=7, command=self._pick_dir).pack(side="left")
         ttk.Label(fr, text="", width=4).pack(side="left", padx=(4, 0))
@@ -141,10 +144,12 @@ class App:
         # 阶段一标签页
         t1 = ttk.Frame(nb, padding=14); nb.add(t1, text="  阶段一 · 打印给仓库  ")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="用①的 ERP + 完整天猫导出，自动分流并生成打印件 / 各类清单。").pack(anchor="w", pady=(0, 10))
-        b1 = ttk.Button(t1, text="▶  生成 拣货表+面单 / 总获单清单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
+                  text="用①的 ERP + 完整天猫导出，自动分流，生成："
+                       "拣货表+面单 / 今日预计发货总获单清单 / 新订单获单清单 / "
+                       "回传ERP上传表 / 已补运单清单。").pack(anchor="w", pady=(0, 10))
+        b1 = ttk.Button(t1, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage1)
-        b1.pack(fill="x")
+        b1.pack(anchor="w")
         self._buttons.append(b1)
 
         # 阶段二标签页
@@ -156,26 +161,30 @@ class App:
         self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
         self._hint(t2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
         fr2 = ttk.Frame(t2); fr2.pack(fill="x", pady=4)
-        ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e",
+                  style="Field.TLabel").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=6)
-        ttk.Label(fr2, text="发货日期(YYYYMMDD):").pack(side="left", padx=(16, 0))
+        ttk.Label(fr2, text="发货日期(YYYYMMDD):",
+                  style="Field.TLabel").pack(side="left", padx=(16, 0))
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
-        b2 = ttk.Button(t2, text="▶  生成 发货表 / 账单 / 缺货记录 / 出库单",
+        self._hint(t2, "生成：发货表 / 账单上传 / 缺货记录 / 出库单。")
+        b2 = ttk.Button(t2, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage2)
-        b2.pack(fill="x", pady=(10, 0))
+        b2.pack(anchor="w", pady=(10, 0))
         self._buttons.append(b2)
 
         # 货代合并标签页
         t3 = ttk.Frame(nb, padding=14); nb.add(t3, text="  货代合并  ")
         self._file_row(t3, "发货表(可多份):", self.forwarder, multi=True)
         fr3 = ttk.Frame(t3); fr3.pack(fill="x", pady=4)
-        ttk.Label(fr3, text="发货日期(YYYYMMDD):", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Label(fr3, text="发货日期(YYYYMMDD):", width=self.LABEL_W, anchor="e",
+                  style="Field.TLabel").pack(side="left")
         ttk.Entry(fr3, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
         self._hint(t3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
                        "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期与阶段二同步。")
-        b3 = ttk.Button(t3, text="▶  合并 当天发货表 → 货代清单",
+        b3 = ttk.Button(t3, text="▶  合并发货表",
                         style="Action.TButton", command=self._run_forwarder)
-        b3.pack(fill="x", pady=(10, 0))
+        b3.pack(anchor="w", pady=(10, 0))
         self._buttons.append(b3)
 
     # ---------- helpers ----------
