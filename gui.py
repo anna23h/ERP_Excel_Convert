@@ -49,7 +49,6 @@ class App:
         root.minsize(720, 640)
 
         self.erp = tk.StringVar()
-        self.done = tk.StringVar()
         self.full = tk.StringVar()
         self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
         self.shipped = tk.StringVar()      # 有货入口
@@ -96,9 +95,8 @@ class App:
         common = ttk.LabelFrame(self.root, text="① 输入文件（两阶段共用）")
         common.pack(fill="x", **pad)
         self._file_row(common, "ERP 导出:", self.erp, multi=True)
-        self._file_row(common, "面单已完成名单:", self.done)
-        self._file_row(common, "完整天猫导出:", self.full, optional=True)
-        self._hint(common, "ERP 可多选(VO/GW)。面单已完成名单：定发货范围。完整天猫导出：识别取消单(选填)。")
+        self._file_row(common, "完整天猫导出:", self.full)
+        self._hint(common, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
         fr = ttk.Frame(common); fr.pack(fill="x", pady=3)
         ttk.Label(fr, text="输出目录:", width=14, anchor="e").pack(side="left")
         ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=4)
@@ -208,16 +206,15 @@ class App:
         return [p.strip() for p in self.erp.get().split(";") if p.strip()]
 
     def _run_stage1(self):
-        if not self.erp.get() or not self.done.get():
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 面单已完成名单")
+        if not self.erp.get() or not self.full.get():
+            messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 完整天猫导出")
             return
         self._write("【阶段一】分流 + 生成拣货表+面单 / 新订单获单清单 / 回传ERP销售上传表 / 已补运单清单…")
         erp = self._erp_list()
         full = self.full.get() or None
 
         def work():
-            log, _ = build_excel.build(erp, self.done.get(), full_tmall_path=full,
-                                       outdir=self.outdir.get())
+            log, _ = build_excel.build(erp, full, outdir=self.outdir.get())
             return log
         self._bg(work)
 
@@ -241,7 +238,7 @@ class App:
 
         def work():
             return stage2.run(self.mmdd.get().strip(), erp, shipped, nogoods,
-                              done_path=self.done.get() or None, full_tmall_path=full,
+                              full_tmall_path=full,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)
         self._bg(work)

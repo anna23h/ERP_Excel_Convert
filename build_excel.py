@@ -242,21 +242,23 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     return path, len(pick_df), int(face_df["Order Reference"].nunique())
 
 
-def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="output"):
+def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
-    输入单店 ERP（天猫两店混合，经 ∩ERP 收敛到单店），产出全部按店带后缀：
+    输入单店 ERP（天猫两店混合，经 ∩ERP 收敛到单店）+ 一份完整天猫导出，产出全部按店带后缀：
     - 新订单获单清单：履约单状态=新订单 ∩ ERP 的系统履约单号(去天猫批量获单)。
     - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
     - 回传ERP销售上传表：取消/无运单/已补运单三类 Terms 写回**合并一张**(External ID 匹配键)。
     - 已补运单清单：系统履约单号(去天猫后台打面单)。
-    供 CLI(main) 与 GUI 共用。"""
+    完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
+    负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
     log = []
     erp = _load_erps(erp_paths)
-    done = s4.load_done_keys(done_path)
-    status_map = s4.load_status_map(full_tmall_path)   # 完整天猫: 单号→履约单状态(选填)
-    cancel_keys = set(status_map[status_map.isin(s4.CANCEL_STATUSES)].index)
+    full = s4.load_full_tmall(full_tmall_path)         # 唯一天猫输入
+    done = s4.done_keys_from_full(full)                # 发货范围(二段式)
+    status_map = full[s4.TM_STATUS] if not full.empty else pd.Series(dtype=object)
+    cancel_keys = s4.cancel_keys_from_full(full)
     ann = s4.classify4(erp, done, cancel_keys)
     idcol = s4.find_id_col(ann)
 
@@ -345,15 +347,8 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
     dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()
     if dup:
         log.append(f"⚠ 连接键冲突: {dup} 个订单的 Order Reference 后15位与他单相同(可能误判状态)")
-    # 护栏：发货名单反查完整天猫——若其实是 已发货/已收货/发货后取消，说明名单过期(防重复发货)
-    if len(status_map) and not facesheet.empty:
-        ship_keys = set(facesheet["_key"])
-        bad = status_map[status_map.index.isin(ship_keys)
-                         & status_map.isin(s4.SHIPPED_DONE_STATUSES)]
-        if len(bad):
-            log.append(f"⚠ 发货名单异常: {len(bad)} 单在完整天猫里其实是 "
-                       f"已发货/已收货/发货后取消(名单可能过期，当心重复发货): "
-                       f"{', '.join(list(bad.index)[:8])}{' …' if len(bad) > 8 else ''}")
+    # 注：发货范围由二段式从活单状态(新订单/商家已接单)推出，已结构性排除已发货/已收货/
+    # 取消的历史单，故无需再做「名单过期」反查护栏。
     if not facesheet.empty:
         empty_dt = facesheet.drop_duplicates("_key")[s4.ERP_DELIVERY].isna().sum()
         if empty_dt:
@@ -372,14 +367,13 @@ def build(erp_paths, done_path, full_tmall_path=None, out_arg=None, outdir="outp
 def main():
     args = sys.argv[1:]
     if len(args) < 2:
-        print("用法: python3 build_excel.py <erp[,erp2...]> <面单已完成名单> [完整天猫导出] [out.xlsx]")
+        print("用法: python3 build_excel.py <erp[,erp2...]> <完整天猫导出> [out.xlsx]")
         return
     erp_paths = args[0].split(",")
-    done_path = args[1]
-    full_tmall = args[2] if len(args) > 2 else None
-    out_arg = args[3] if len(args) > 3 else None
+    full_tmall = args[1]
+    out_arg = args[2] if len(args) > 2 else None
     outdir = os.path.dirname(out_arg) if out_arg else "output"
-    log, st = build(erp_paths, done_path, full_tmall, out_arg, outdir)
+    log, st = build(erp_paths, full_tmall, out_arg, outdir)
     for ln in log:
         print(ln)
 
