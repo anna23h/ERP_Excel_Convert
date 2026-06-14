@@ -284,6 +284,15 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
             main_paths.append(p)
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
 
+    # ---- 今日预计发货总获单清单 (发货集的 系统履约单号 单列；含新订单+商家已接单∧面单已完成) ----
+    # 拿去天猫后台批量获单：覆盖今日要发的全部单(新订单+已接单)，不止新订单那一部分。
+    if not facesheet.empty:
+        for ch in sorted(facesheet["_ch"].unique()):
+            keys = facesheet[facesheet["_ch"] == ch].drop_duplicates("_key")["_key"].tolist()
+            p, n = _write_simple(pd.DataFrame({"系统履约单号": keys}),
+                                 outdir, f"今日预计发货总获单清单{ch}.xlsx", n_cols=1)
+            log.append(f"今日预计发货总获单清单{ch} 已生成: {p}  ({n} 单)")
+
     # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单；按店各一份) ----
     d = date.today()
     if len(status_map):
