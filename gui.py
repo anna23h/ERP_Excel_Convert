@@ -45,8 +45,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("VO 拉单工具")
-        root.geometry("860x860")
-        root.minsize(720, 640)
+        root.geometry("960x860")
+        root.minsize(820, 640)
 
         self.erp = tk.StringVar()
         self.full = tk.StringVar()
@@ -62,93 +62,140 @@ class App:
         self._build_ui()
 
     # ---------- UI ----------
+    LABEL_W = 13   # 标签列统一宽度，左侧对齐
+
     def _file_row(self, parent, label, var, optional=False, multi=False):
         fr = ttk.Frame(parent)
-        fr.pack(fill="x", pady=3)
-        ttk.Label(fr, text=label, width=14, anchor="e").pack(side="left")
-        ttk.Entry(fr, textvariable=var).pack(side="left", fill="x", expand=True, padx=4)
+        fr.pack(fill="x", pady=4)
+        ttk.Label(fr, text=label, width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Entry(fr, textvariable=var).pack(side="left", fill="x", expand=True, padx=6)
         pick = self._pick_files if multi else self._pick_file
-        ttk.Button(fr, text="选择…",
+        ttk.Button(fr, text="选择…", width=7,
                    command=lambda: pick(var)).pack(side="left")
-        if optional:
-            ttk.Label(fr, text="选填", foreground="#888").pack(side="left", padx=2)
+        tag = "选填" if optional else "必选"
+        ttk.Label(fr, text=tag, width=4,
+                  foreground="#9aa0a6" if optional else "#2563eb").pack(side="left", padx=(4, 0))
 
     def _hint(self, parent, text):
-        ttk.Label(parent, text=text, foreground="#888", wraplength=800,
-                  justify="left").pack(anchor="w", padx=18, pady=(0, 2))
+        ttk.Label(parent, text=text, style="Hint.TLabel", wraplength=860,
+                  justify="left").pack(anchor="w", padx=(self.LABEL_W * 7, 0), pady=(0, 4))
 
-    def _build_ui(self):
-        pad = dict(padx=10, pady=6)
+    def _section(self, parent, title):
+        """统一外观的区块：带标题、内边距的 LabelFrame。"""
+        lf = ttk.LabelFrame(parent, text=title, style="Card.TLabelframe", padding=12)
+        lf.pack(fill="x", padx=12, pady=(8, 0))
+        return lf
 
-        # 执行按钮统一样式：加粗、大内边距，和"选择…"等输入控件明显区分
+    def _scrollable(self, parent):
+        """返回一个可纵向滚动的内层 Frame（输入区在矮屏上不裁切）。
+        滚轮仅在指针进入本区时生效，不与日志区抢滚动。"""
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def _wheel(e):
+            step = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
+            canvas.yview_scroll(step, "units")
+        canvas.bind("<Enter>", lambda e: [canvas.bind_all(s, _wheel)
+                                          for s in ("<MouseWheel>", "<Button-4>", "<Button-5>")])
+        canvas.bind("<Leave>", lambda e: [canvas.unbind_all(s)
+                                          for s in ("<MouseWheel>", "<Button-4>", "<Button-5>")])
+        return inner
+
+    def _init_styles(self):
         style = ttk.Style()
         try:
-            style.theme_use("clam")          # clam 主题下按钮配色能稳定生效(含 Windows)
+            style.theme_use("clam")          # clam 下配色稳定生效(含 Windows)
         except tk.TclError:
             pass
+        # 执行按钮：醒目蓝底白字，内边距适中(不臃肿)
         style.configure("Action.TButton",
-                        font=("", 13, "bold"), padding=(18, 14),
-                        foreground="white", background="#2563eb")
+                        font=("", 11, "bold"), padding=(12, 9),
+                        foreground="white", background="#2563eb", borderwidth=0)
         style.map("Action.TButton",
-                  background=[("active", "#1d4ed8"), ("disabled", "#9ca3af")])
+                  background=[("active", "#1d4ed8"), ("disabled", "#b6c2d6")])
+        # 区块标题加粗，灰提示字号小一号
+        style.configure("Card.TLabelframe.Label", font=("", 11, "bold"),
+                        foreground="#1f2937")
+        style.configure("Hint.TLabel", foreground="#6b7280", font=("", 9))
 
-        common = ttk.LabelFrame(self.root, text="① 输入文件（两阶段共用）")
-        common.pack(fill="x", **pad)
+    def _build_ui(self):
+        self._init_styles()
+
+        # 底部固定操作条(始终可见)
+        bottom = ttk.Frame(self.root)
+        bottom.pack(side="bottom", fill="x", padx=12, pady=8)
+        ttk.Button(bottom, text="📂 打开输出文件夹",
+                   command=lambda: open_folder(self.outdir.get())).pack(side="right")
+
+        # 垂直分隔：上=输入控件 / 下=日志，各占独立窗格，日志永远可见且可拖拽调高
+        pw = ttk.PanedWindow(self.root, orient="vertical")
+        pw.pack(fill="both", expand=True)
+
+        top_pane = ttk.Frame(pw)
+        top = self._scrollable(top_pane)     # 输入区放进可滚动容器
+        logfr = ttk.LabelFrame(pw, text="运行日志", style="Card.TLabelframe", padding=6)
+        pw.add(top_pane, weight=3)
+        pw.add(logfr, weight=2)
+
+        self.log = scrolledtext.ScrolledText(logfr, height=10, state="disabled",
+                                             font=("Menlo", 11), wrap="word",
+                                             background="#0f172a", foreground="#e2e8f0",
+                                             insertbackground="#e2e8f0")
+        self.log.pack(fill="both", expand=True)
+
+        # ① 共用输入
+        common = self._section(top, "① 输入文件（两阶段共用）")
         self._file_row(common, "ERP 导出:", self.erp, multi=True)
         self._file_row(common, "完整天猫导出:", self.full)
         self._hint(common, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
-        fr = ttk.Frame(common); fr.pack(fill="x", pady=3)
-        ttk.Label(fr, text="输出目录:", width=14, anchor="e").pack(side="left")
-        ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(fr, text="选择…", command=self._pick_dir).pack(side="left")
+        fr = ttk.Frame(common); fr.pack(fill="x", pady=4)
+        ttk.Label(fr, text="输出目录:", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Entry(fr, textvariable=self.outdir).pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(fr, text="选择…", width=7, command=self._pick_dir).pack(side="left")
+        ttk.Label(fr, text="", width=4).pack(side="left", padx=(4, 0))
 
-        s1 = ttk.LabelFrame(self.root, text="② 阶段一 → 分流 + 打印给仓库")
-        s1.pack(fill="x", **pad)
-        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
+        # ② 阶段一
+        s1 = self._section(top, "② 阶段一 → 分流 + 打印给仓库")
+        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 总获单清单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
                         style="Action.TButton", command=self._run_stage1)
-        b1.pack(fill="x", padx=10, pady=10)
+        b1.pack(fill="x", pady=(6, 2))
         self._buttons.append(b1)
 
-        s2 = ttk.LabelFrame(self.root, text="③ 阶段二 → 仓库返回后")
-        s2.pack(fill="x", **pad)
+        # ③ 阶段二
+        s2 = self._section(top, "③ 阶段二 → 仓库返回后")
         self._file_row(s2, "有货订单清单:", self.shipped, optional=True, multi=True)
         self._file_row(s2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
         self._hint(s2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
                        "账单上传直接取 ERP 导出里的 External ID 列，无需额外文件。")
-        fr_pk = ttk.Frame(s2); fr_pk.pack(fill="x", pady=3)
-        ttk.Label(fr_pk, text="出库原始数据:", width=14, anchor="e").pack(side="left")
-        ttk.Entry(fr_pk, textvariable=self.picking).pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(fr_pk, text="选择…",
-                   command=lambda: self._pick_files(self.picking)).pack(side="left")
-        ttk.Label(fr_pk, text="选填", foreground="#888").pack(side="left", padx=2)
+        self._file_row(s2, "出库原始数据:", self.picking, optional=True, multi=True)
         self._hint(s2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
-        fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=3)
-        ttk.Label(fr2, text="日期(MMDD):", width=14, anchor="e").pack(side="left")
-        ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=4)
-        ttk.Label(fr2, text="发货日期(YYYYMMDD):", anchor="e").pack(side="left", padx=(12, 0))
-        ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=4)
+        fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=4)
+        ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=6)
+        ttk.Label(fr2, text="发货日期(YYYYMMDD):").pack(side="left", padx=(16, 0))
+        ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
         b2 = ttk.Button(s2, text="▶  生成 发货表 / 账单 / 缺货记录 / 出库单",
                         style="Action.TButton", command=self._run_stage2)
-        b2.pack(fill="x", padx=10, pady=10)
+        b2.pack(fill="x", pady=(6, 2))
         self._buttons.append(b2)
 
-        s3 = ttk.LabelFrame(self.root, text="④ 货代合并（当天收尾，跨店）")
-        s3.pack(fill="x", **pad)
+        # ④ 货代合并
+        s3 = self._section(top, "④ 货代合并（当天收尾，跨店）")
         self._file_row(s3, "发货表(可多份):", self.forwarder, multi=True)
         self._hint(s3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
                        "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期取上面的『发货日期』栏。")
         b3 = ttk.Button(s3, text="▶  合并 当天发货表 → 货代清单",
                         style="Action.TButton", command=self._run_forwarder)
-        b3.pack(fill="x", padx=10, pady=10)
+        b3.pack(fill="x", pady=(6, 2))
         self._buttons.append(b3)
-
-        # 先放底部按钮，再让日志区占满中间剩余空间(更易看到)
-        ttk.Button(self.root, text="打开输出文件夹",
-                   command=lambda: open_folder(self.outdir.get())).pack(side="bottom", pady=6)
-        logfr = ttk.LabelFrame(self.root, text="运行日志")
-        logfr.pack(side="bottom", fill="both", expand=True, **pad)
-        self.log = scrolledtext.ScrolledText(logfr, height=18, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=6, pady=6)
 
     # ---------- helpers ----------
     def _pick_file(self, var):
