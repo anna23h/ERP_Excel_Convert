@@ -14,6 +14,7 @@ from datetime import date
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import font as tkfont
 
 # 让 PyInstaller 单文件运行时也能 import 同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,8 +46,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("VO 拉单工具")
-        root.geometry("960x860")
-        root.minsize(820, 640)
+        root.geometry("1060x720")
+        root.minsize(900, 600)
 
         self.erp = tk.StringVar()
         self.full = tk.StringVar()
@@ -86,29 +87,6 @@ class App:
         lf.pack(fill="x", padx=12, pady=(8, 0))
         return lf
 
-    def _scrollable(self, parent):
-        """返回一个可纵向滚动的内层 Frame（输入区在矮屏上不裁切）。
-        滚轮仅在指针进入本区时生效，不与日志区抢滚动。"""
-        canvas = tk.Canvas(parent, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        win = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-
-        def _wheel(e):
-            step = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
-            canvas.yview_scroll(step, "units")
-        canvas.bind("<Enter>", lambda e: [canvas.bind_all(s, _wheel)
-                                          for s in ("<MouseWheel>", "<Button-4>", "<Button-5>")])
-        canvas.bind("<Leave>", lambda e: [canvas.unbind_all(s)
-                                          for s in ("<MouseWheel>", "<Button-4>", "<Button-5>")])
-        return inner
-
     def _init_styles(self):
         style = ttk.Style()
         try:
@@ -135,24 +113,8 @@ class App:
         ttk.Button(bottom, text="📂 打开输出文件夹",
                    command=lambda: open_folder(self.outdir.get())).pack(side="right")
 
-        # 垂直分隔：上=输入控件 / 下=日志，各占独立窗格，日志永远可见且可拖拽调高
-        pw = ttk.PanedWindow(self.root, orient="vertical")
-        pw.pack(fill="both", expand=True)
-
-        top_pane = ttk.Frame(pw)
-        top = self._scrollable(top_pane)     # 输入区放进可滚动容器
-        logfr = ttk.LabelFrame(pw, text="运行日志", style="Card.TLabelframe", padding=6)
-        pw.add(top_pane, weight=3)
-        pw.add(logfr, weight=2)
-
-        self.log = scrolledtext.ScrolledText(logfr, height=10, state="disabled",
-                                             font=("Menlo", 11), wrap="word",
-                                             background="#0f172a", foreground="#e2e8f0",
-                                             insertbackground="#e2e8f0")
-        self.log.pack(fill="both", expand=True)
-
-        # ① 共用输入
-        common = self._section(top, "① 输入文件（两阶段共用）")
+        # ① 共用输入(阶段一/二、货代共用)，固定在顶部
+        common = self._section(self.root, "① 输入文件（两阶段共用）")
         self._file_row(common, "ERP 导出:", self.erp, multi=True)
         self._file_row(common, "完整天猫导出:", self.full)
         self._hint(common, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
@@ -162,39 +124,58 @@ class App:
         ttk.Button(fr, text="选择…", width=7, command=self._pick_dir).pack(side="left")
         ttk.Label(fr, text="", width=4).pack(side="left", padx=(4, 0))
 
-        # ② 阶段一
-        s1 = self._section(top, "② 阶段一 → 分流 + 打印给仓库")
-        b1 = ttk.Button(s1, text="▶  生成 拣货表+面单 / 总获单清单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
+        # 左右分隔：左=分阶段标签页 / 右=运行日志，日志常驻可见、可拖宽
+        pw = ttk.PanedWindow(self.root, orient="horizontal")
+        pw.pack(fill="both", expand=True, padx=12, pady=(8, 0))
+        nb = ttk.Notebook(pw)
+        logfr = ttk.LabelFrame(pw, text="运行日志", style="Card.TLabelframe", padding=6)
+        pw.add(nb, weight=3)
+        pw.add(logfr, weight=2)
+
+        self.log = scrolledtext.ScrolledText(
+            logfr, width=34, state="disabled", wrap="word",
+            font=tkfont.nametofont("TkFixedFont"),
+            background="white", foreground="#1f2937", insertbackground="#1f2937")
+        self.log.pack(fill="both", expand=True)
+
+        # 阶段一标签页
+        t1 = ttk.Frame(nb, padding=14); nb.add(t1, text="  阶段一 · 打印给仓库  ")
+        ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
+                  text="用①的 ERP + 完整天猫导出，自动分流并生成打印件 / 各类清单。").pack(anchor="w", pady=(0, 10))
+        b1 = ttk.Button(t1, text="▶  生成 拣货表+面单 / 总获单清单 / 新订单获单清单 / 回传ERP上传表 / 已补运单清单",
                         style="Action.TButton", command=self._run_stage1)
-        b1.pack(fill="x", pady=(6, 2))
+        b1.pack(fill="x")
         self._buttons.append(b1)
 
-        # ③ 阶段二
-        s2 = self._section(top, "③ 阶段二 → 仓库返回后")
-        self._file_row(s2, "有货订单清单:", self.shipped, optional=True, multi=True)
-        self._file_row(s2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
-        self._hint(s2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
+        # 阶段二标签页
+        t2 = ttk.Frame(nb, padding=14); nb.add(t2, text="  阶段二 · 仓库返回后  ")
+        self._file_row(t2, "有货订单清单:", self.shipped, optional=True, multi=True)
+        self._file_row(t2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
+        self._hint(t2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
                        "账单上传直接取 ERP 导出里的 External ID 列，无需额外文件。")
-        self._file_row(s2, "出库原始数据:", self.picking, optional=True, multi=True)
-        self._hint(s2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
-        fr2 = ttk.Frame(s2); fr2.pack(fill="x", pady=4)
+        self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
+        self._hint(t2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
+        fr2 = ttk.Frame(t2); fr2.pack(fill="x", pady=4)
         ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e").pack(side="left")
         ttk.Entry(fr2, textvariable=self.mmdd, width=10).pack(side="left", padx=6)
         ttk.Label(fr2, text="发货日期(YYYYMMDD):").pack(side="left", padx=(16, 0))
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
-        b2 = ttk.Button(s2, text="▶  生成 发货表 / 账单 / 缺货记录 / 出库单",
+        b2 = ttk.Button(t2, text="▶  生成 发货表 / 账单 / 缺货记录 / 出库单",
                         style="Action.TButton", command=self._run_stage2)
-        b2.pack(fill="x", pady=(6, 2))
+        b2.pack(fill="x", pady=(10, 0))
         self._buttons.append(b2)
 
-        # ④ 货代合并
-        s3 = self._section(top, "④ 货代合并（当天收尾，跨店）")
-        self._file_row(s3, "发货表(可多份):", self.forwarder, multi=True)
-        self._hint(s3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
-                       "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期取上面的『发货日期』栏。")
-        b3 = ttk.Button(s3, text="▶  合并 当天发货表 → 货代清单",
+        # 货代合并标签页
+        t3 = ttk.Frame(nb, padding=14); nb.add(t3, text="  货代合并  ")
+        self._file_row(t3, "发货表(可多份):", self.forwarder, multi=True)
+        fr3 = ttk.Frame(t3); fr3.pack(fill="x", pady=4)
+        ttk.Label(fr3, text="发货日期(YYYYMMDD):", width=self.LABEL_W, anchor="e").pack(side="left")
+        ttk.Entry(fr3, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
+        self._hint(t3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
+                       "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期与阶段二同步。")
+        b3 = ttk.Button(t3, text="▶  合并 当天发货表 → 货代清单",
                         style="Action.TButton", command=self._run_forwarder)
-        b3.pack(fill="x", pady=(6, 2))
+        b3.pack(fill="x", pady=(10, 0))
         self._buttons.append(b3)
 
     # ---------- helpers ----------
