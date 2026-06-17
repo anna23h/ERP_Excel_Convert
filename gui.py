@@ -2,8 +2,9 @@
 """VO 拉单工具 · 图形界面（给办公室员工，零命令行）。
 
 打包成 Windows exe 后双击运行：选文件 → 点按钮 → 出结果。
-阶段一：选 ERP + 天猫导出 → 生成「拣货表+面单」打印给仓库。
-阶段二：选仓库返回文件(+账单模板) → 生成 B/C/D + 缺货记录。
+阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库。
+阶段二：选 销售ERP + 仓库返回文件(有货/无货) + 出库数据 → 生成 系统履约单号/发货表/账单/出库。
+两阶段在界面上各自独立输入，互不依赖；阶段二无需天猫数据。
 """
 import os
 import sys
@@ -49,8 +50,9 @@ class App:
         root.geometry("1060x720")
         root.minsize(900, 600)
 
-        self.erp = tk.StringVar()
-        self.full = tk.StringVar()
+        self.erp = tk.StringVar()          # 阶段一 ERP
+        self.full = tk.StringVar()         # 阶段一 完整天猫导出
+        self.erp2 = tk.StringVar()         # 阶段二 销售 ERP(与阶段一独立)
         self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
@@ -115,11 +117,8 @@ class App:
         ttk.Button(bottom, text="📂 打开输出文件夹",
                    command=lambda: open_folder(self.outdir.get())).pack(side="right")
 
-        # ① 共用输入(阶段一/二、货代共用)，固定在顶部
-        common = self._section(self.root, "① 输入文件（两阶段共用）")
-        self._file_row(common, "ERP 导出:", self.erp, multi=True)
-        self._file_row(common, "完整天猫导出:", self.full)
-        self._hint(common, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
+        # ① 共用输出目录(三个标签页都写到这里)，固定在顶部
+        common = self._section(self.root, "① 输出目录（共用）")
         fr = ttk.Frame(common); fr.pack(fill="x", pady=4)
         ttk.Label(fr, text="输出目录:", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
@@ -141,23 +140,26 @@ class App:
             background="white", foreground="#1f2937", insertbackground="#1f2937")
         self.log.pack(fill="both", expand=True)
 
-        # 阶段一标签页
+        # 阶段一标签页(自带 ERP + 天猫输入，与阶段二完全独立)
         t1 = ttk.Frame(nb, padding=14); nb.add(t1, text="  阶段一 · 打印给仓库  ")
+        self._file_row(t1, "ERP 导出:", self.erp, multi=True)
+        self._file_row(t1, "完整天猫导出:", self.full)
+        self._hint(t1, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="用①的 ERP + 完整天猫导出，自动分流，生成："
-                       "拣货表+面单 / 今日预计发货总获单清单 / 新订单获单清单 / "
-                       "回传ERP上传表 / 已补运单清单。").pack(anchor="w", pady=(0, 10))
+                  text="自动分流，生成：拣货表+面单 / 今日预计发货总获单清单 / "
+                       "新订单获单清单 / 回传ERP上传表 / 已补运单清单。").pack(anchor="w", pady=(6, 10))
         b1 = ttk.Button(t1, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage1)
         b1.pack(anchor="w")
         self._buttons.append(b1)
 
-        # 阶段二标签页
+        # 阶段二标签页(自带销售 ERP 输入，无需天猫，与阶段一完全独立)
         t2 = ttk.Frame(nb, padding=14); nb.add(t2, text="  阶段二 · 仓库返回后  ")
+        self._file_row(t2, "销售ERP导出:", self.erp2, multi=True)
+        self._hint(t2, "阶段二自带销售 ERP(可多选 VO/GW)，与阶段一互不影响；账单上传直接取 ERP 里的 External ID 列，无需额外文件。")
         self._file_row(t2, "有货订单清单:", self.shipped, optional=True, multi=True)
         self._file_row(t2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
-        self._hint(t2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。"
-                       "账单上传直接取 ERP 导出里的 External ID 列，无需额外文件。")
+        self._hint(t2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。")
         self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
         self._hint(t2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
         fr2 = ttk.Frame(t2); fr2.pack(fill="x", pady=4)
@@ -167,7 +169,8 @@ class App:
         ttk.Label(fr2, text="发货日期(YYYYMMDD):",
                   style="Field.TLabel").pack(side="left", padx=(16, 0))
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
-        self._hint(t2, "生成：发货表 / 账单上传 / 缺货记录 / 出库单。")
+        self._hint(t2, "生成：系统履约单号 / 发货表 / 账单上传 / 出库单。"
+                       "四个产出彼此独立：某产出因缺数据无法生成则跳过并提示，不影响其他产出。")
         b2 = ttk.Button(t2, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage2)
         b2.pack(anchor="w", pady=(10, 0))
@@ -223,7 +226,7 @@ class App:
                 self.root.after(0, lambda: self._done(lines))
             except Exception as e:
                 tb = traceback.format_exc()
-                self.root.after(0, lambda: self._fail(e, tb))
+                self.root.after(0, lambda e=e, tb=tb: self._fail(e, tb))
         threading.Thread(target=task, daemon=True).start()
 
     def _done(self, lines):
@@ -256,8 +259,8 @@ class App:
         self._bg(work)
 
     def _run_stage2(self):
-        if not self.erp.get():
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出")
+        if not self.erp2.get():
+            messagebox.showwarning("缺少文件", "请先选择 销售ERP导出")
             return
         if not self.shipped.get() and not self.nogoods.get():
             messagebox.showwarning("缺少文件", "请选择『有货订单清单』或『无货勾选返回』(二选一)")
@@ -265,17 +268,15 @@ class App:
         if not self.mmdd.get().strip():
             messagebox.showwarning("缺少日期", "请填写日期 MMDD（如 0611）")
             return
-        self._write("【阶段二】生成 系统履约单号 / 发货表 / 账单上传 / 缺货记录 / 出库单…")
+        self._write("【阶段二】生成 系统履约单号 / 发货表 / 账单上传 / 出库单…")
         picking = [p.strip() for p in self.picking.get().split(";") if p.strip()] or None
         shipdate = self.shipdate.get().strip() or None
-        erp = self._erp_list()
-        full = self.full.get() or None
+        erp = [p.strip() for p in self.erp2.get().split(";") if p.strip()]
         shipped = [p.strip() for p in self.shipped.get().split(";") if p.strip()] or None
         nogoods = [p.strip() for p in self.nogoods.get().split(";") if p.strip()] or None
 
         def work():
             return stage2.run(self.mmdd.get().strip(), erp, shipped, nogoods,
-                              full_tmall_path=full,
                               outdir=self.outdir.get(),
                               picking=picking, shipdate=shipdate)
         self._bg(work)
