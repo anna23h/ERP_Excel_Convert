@@ -188,6 +188,12 @@ def channel_of(order_ref):
     return str(order_ref).split("_", 1)[0]
 
 
+def chan_suffix(channels):
+    """据发货订单渠道集合给文件名后缀：单店 VO / GW，混店 VO+GW，空则无后缀。"""
+    present = set(channels)
+    return "+".join(c for c in ("VO", "GW") if c in present)
+
+
 def get_shipped_orders(erp, shipped_keys, tracking_map=None):
     """有货(真实发货)单号 ∩ ERP → 订单级 DataFrame(Order Reference, VO Tracking No, _key, channel)。
     入口直接是真实发货订单号，结合 ERP 取明细，不再由无货倒推。
@@ -217,18 +223,18 @@ def get_shipped_orders(erp, shipped_keys, tracking_map=None):
 
 
 # ---------- B: 系统履约单号 ----------
-def build_B(shipped, outdir):
+def build_B(shipped, outdir, suffix=""):
     out = pd.DataFrame({"系统履约单号": shipped["_key"].tolist()})
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, 1)
-    path = be.unique_path(os.path.join(outdir, "系统履约单号.xlsx"))
+    path = be.unique_path(os.path.join(outdir, f"系统履约单号{suffix}.xlsx"))
     wb.save(path)
     return path, len(out)
 
 
 # ---------- C: 发货表 (GW/VO 分 sheet) ----------
-def build_C(shipped, outdir):
+def build_C(shipped, outdir, suffix=""):
     wb = Workbook(); first = True
     counts = {}
     for ch in ["GW", "VO"]:
@@ -241,7 +247,7 @@ def build_C(shipped, outdir):
         first = False
         be.write_df(ws, df)
         be.style_sheet(ws, 2)
-    path = be.unique_path(os.path.join(outdir, "发货表.xlsx"))
+    path = be.unique_path(os.path.join(outdir, f"发货表{suffix}.xlsx"))
     wb.save(path)
     return path, counts
 
@@ -461,7 +467,7 @@ def has_id_col(df):
     return find_id_col(df) is not None
 
 
-def build_billing(src, shipped_keys, mmdd, outdir):
+def build_billing(src, shipped_keys, mmdd, outdir, suffix=""):
     """从含 External ID 的来源(订单导出 或 账单模板导出)生成账单上传表。
     去重到订单级；Terms = 账单MMDD + 原值(剥离旧标签)；只留实际发货订单。
     保留来源的 ID 列原名(External ID / ID)，回传 Odoo 时按其匹配。"""
@@ -485,7 +491,7 @@ def build_billing(src, shipped_keys, mmdd, outdir):
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, len(out.columns))
-    path = be.unique_path(os.path.join(outdir, "账单上传.xlsx"))
+    path = be.unique_path(os.path.join(outdir, f"账单上传{suffix}.xlsx"))
     wb.save(path)
     return path, len(out)
 
@@ -551,6 +557,7 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
     no_track = int((shipped["VO Tracking No"].astype(str).str.strip() == "").sum())
     if no_track:
         log.append(f"⚠ {no_track} 单缺运单号(有货清单与ERP都没有)，发货表该单运单留空")
+    suffix = chan_suffix(shipped["channel"])   # 文件名渠道后缀：VO / GW / VO+GW
 
     # 各产出彼此独立：任一失败只记错并跳过，不阻断其他产出。
     def _step(fn):
@@ -560,7 +567,7 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
             log.append(f"❌ 该产出生成失败(已跳过，不影响其他产出): {ex}")
 
     def _b():
-        pB, nB = build_B(shipped, outdir)
+        pB, nB = build_B(shipped, outdir, suffix)
         log.append(f"系统履约单号 已生成: {pB}  ({nB} 个)")
     _step(_b)
 
@@ -569,7 +576,7 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
         if len(shipped) and (shipped["VO Tracking No"].astype(str).str.strip() == "").all():
             log.append("发货表 跳过 (发货订单都没有运单号；有货清单和 ERP 都未提供，账单/出库照常生成)")
             return
-        pC, cC = build_C(shipped, outdir)
+        pC, cC = build_C(shipped, outdir, suffix)
         log.append(f"发货表 已生成: {pC}  (GW {cC['GW']} / VO {cC['VO']})")
     _step(_c)
 
@@ -593,10 +600,10 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
     # 账单上传：优先用含 ID 的订单导出直接生成；否则用单独的账单模板导出
     def _d():
         if has_id_col(erp_df):
-            pD, nD = build_billing(erp_df, shipped_keys, mmdd, outdir)
+            pD, nD = build_billing(erp_df, shipped_keys, mmdd, outdir, suffix)
             log.append(f"账单上传 已生成(来自订单导出含ID): {pD}  ({nD} 行，标签 账单{mmdd})")
         elif billing:
-            pD, nD = build_billing(pd.read_excel(billing), shipped_keys, mmdd, outdir)
+            pD, nD = build_billing(pd.read_excel(billing), shipped_keys, mmdd, outdir, suffix)
             log.append(f"账单上传 已生成(来自账单模板导出): {pD}  ({nD} 行，标签 账单{mmdd})")
         else:
             log.append("账单上传 跳过 (订单导出无ID列且未传账单模板；在 Odoo 订单导出模板勾上 External ID 列即可自动生成)")
