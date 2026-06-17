@@ -54,8 +54,13 @@ ERP_ORDER_LEVEL = [ERP_ORDER_REF, ERP_TRACKING, ERP_DELIVERY,
 
 def load_erp(path):
     df = pd.read_csv(path) if path.endswith(".csv") else pd.read_excel(path)
-    # 多品订单续行：订单级字段向下填充（续行只有商品级字段）
-    df[ERP_ORDER_LEVEL] = df[ERP_ORDER_LEVEL].ffill()
+    if ERP_ORDER_REF not in df.columns:
+        raise ValueError(f"ERP 导出缺少必需列「{ERP_ORDER_REF}」: {path}")
+    # 多品订单续行：订单级字段向下填充（续行只有商品级字段）。
+    # 只填实际存在的列——精简的 ERP 导出可能不含 VO Delivery Type / Terms 等可选列，
+    # 缺这些不应在加载时直接报错（缺真正必需的列由各产出在用到时报清楚的错）。
+    present = [c for c in ERP_ORDER_LEVEL if c in df.columns]
+    df[present] = df[present].ffill()
     df["_key"] = df[ERP_ORDER_REF].astype(str).str[-15:]
     return df
 

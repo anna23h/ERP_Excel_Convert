@@ -198,12 +198,23 @@ def _wu_strip(series):
     return series.astype(str).str.replace(s4.WU_TAG, "", regex=False).str.strip().values
 
 
+def unique_path(path):
+    """目标已存在则在扩展名前加序号 (1)/(2)…，避免覆盖既有产出。"""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    i = 1
+    while os.path.exists(f"{base}({i}){ext}"):
+        i += 1
+    return f"{base}({i}){ext}"
+
+
 def _write_simple(out, outdir, fname, n_cols=None):
     """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。"""
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     write_df(ws, out)
     style_sheet(ws, n_cols or len(out.columns))
-    path = os.path.join(outdir, fname)
+    path = unique_path(os.path.join(outdir, fname))
     wb.save(path)
     return path, len(out)
 
@@ -237,7 +248,7 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     chk_df = build_nogoods_helper(facesheet)
     ws_chk = wb.create_sheet("无货勾选")
     write_df(ws_chk, chk_df); style_sheet(ws_chk, len(chk_df.columns))
-    path = out_arg or make_output_name(facesheet, outdir)
+    path = unique_path(out_arg or make_output_name(facesheet, outdir))
     wb.save(path)
     return path, len(pick_df), int(face_df["Order Reference"].nunique())
 
@@ -347,7 +358,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
             out = pd.DataFrame({"系统履约单号": keys})
             wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
             write_df(ws, out); style_sheet(ws, 1)
-            p = os.path.join(outdir, f"已补运单清单{ch}.xlsx"); wb.save(p)
+            p = unique_path(os.path.join(outdir, f"已补运单清单{ch}.xlsx")); wb.save(p)
             log.append(f"已补运单清单{ch} 已生成: {p}  ({len(out)} 单)")
     else:
         log.append("已补运单清单: 0 单")
