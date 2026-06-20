@@ -48,6 +48,9 @@ def build_picking(facesheet):
     # 数量统一整数，消除 csv(1.0) 与 xlsx(1) 的显示差异
     for c in ("Quantity", "Quantity On Hand"):
         out[c] = pd.to_numeric(out[c], errors="coerce").round().astype("Int64")
+    # 按 Internal Reference 升序，便于捡货员按货号顺序拣货(扁平表行间独立，排序不影响数据)
+    out = out.sort_values("Internal Reference", key=lambda s: s.astype(str).str.lower(),
+                          kind="stable").reset_index(drop=True)
     return out
 
 
