@@ -148,7 +148,7 @@ class App:
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
                   text="自动分流，生成：拣货表+面单 / 今日预计发货总获单清单 / "
                        "新订单获单清单 / 回传ERP上传表 / 已补运单清单 / "
-                       "救急补货预判清单(ERP 勾上 FS/安全库存/备注 三列时)。").pack(anchor="w", pady=(6, 10))
+                       "补货预判清单(ERP 勾上 FS/安全库存/备注 三列时)。").pack(anchor="w", pady=(6, 10))
         b1 = ttk.Button(t1, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage1)
         b1.pack(anchor="w")

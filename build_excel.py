@@ -90,7 +90,7 @@ def _first_nonempty(s):
 
 
 def build_reorder(erp):
-    """救急补货盘前预判清单(Solo 作战清单·模式一 step 0)：
+    """补货预判清单(Solo 作战清单·模式一 step 0 盘前预判)：
     把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
     全部 SKU、按缺口(需求−在售)降序。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。"""
     if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
@@ -404,13 +404,13 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
     else:
         log.append("已补运单清单: 0 单")
 
-    # ---- 救急补货盘前预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
+    # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
     reorder = build_reorder(erp)
     if reorder is None:
-        log.append("救急补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
+        log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
                    "在 Odoo 订单导出模板勾上这 3 列即可生成)")
     elif reorder.empty:
-        log.append("救急补货预判清单: 0 SKU")
+        log.append("补货预判清单: 0 SKU")
     else:
         reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
                           .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
@@ -419,8 +419,8 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
         for ch in sorted(reorder["_ch"].dropna().unique()):
             sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
             short = int((sub["缺口"] > 0).sum())
-            p, n = _write_simple(sub, outdir, f"救急补货预判清单{ch}.xlsx")
-            log.append(f"救急补货预判清单{ch} 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
+            p, n = _write_simple(sub, outdir, f"{ch}补货预判清单.xlsx")
+            log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----
     dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()
