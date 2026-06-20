@@ -55,6 +55,11 @@ def build_picking(facesheet):
 
 
 ERP_NAME = "Order Lines/Product/Name"
+# 订货预判用字段(员工在 ERP 订单导出时勾上这 3 个产品级列；缺则跳过订货清单)
+ERP_FS     = "Order Lines/Product/FS"            # 供应商(去谁家订)
+ERP_SAFETY = "Order Lines/Product/Safety Stock"  # 安全库存
+ERP_REMARK = "Order Lines/Product/Supply Remark" # 备注(可能过期，仅背景)
+REORDER_FLAG_PAT = re.compile(r"暂不采购|MHD|效期")  # 备注红旗：别自动下单，核实/问老板
 
 
 def build_nogoods_helper(facesheet):
@@ -74,6 +79,39 @@ def build_nogoods_helper(facesheet):
         "VO Delivery Type": df[s4.ERP_DELIVERY].values,
     })
     return out
+
+
+def _first_nonempty(s):
+    """组内第一个非空值(跳过 NaN/空串)，全空返回空串。"""
+    for x in s:
+        if pd.notna(x) and str(x).strip():
+            return x
+    return ""
+
+
+def build_reorder(erp):
+    """救急补货盘前预判清单(Solo 作战清单·模式一 step 0)：
+    把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
+    全部 SKU、按缺口(需求−在售)降序。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。"""
+    if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
+        return None
+    g = erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**{
+        "产品名":        (ERP_NAME,       _first_nonempty),
+        "今日需求":      (s4.ERP_QTY,     "sum"),
+        "在售(On Hand)": (s4.ERP_ONHAND,  "max"),
+        "安全库存":      (ERP_SAFETY,     "max"),
+        "供应商(FS)":    (ERP_FS,         _first_nonempty),
+        "备注":          (ERP_REMARK,     _first_nonempty),
+    }).reset_index().rename(columns={s4.ERP_INTERNAL: "SKU"})
+    for c in ("今日需求", "在售(On Hand)", "安全库存"):
+        g[c] = pd.to_numeric(g[c], errors="coerce").round().astype("Int64")
+    g["缺口"] = g["今日需求"] - g["在售(On Hand)"]
+    # 红旗：备注含 暂不采购/MHD/效期 → 别自动下单，核实或问老板
+    g["红旗"] = g["备注"].astype(str).apply(
+        lambda v: "⚠核实" if REORDER_FLAG_PAT.search(v) else "")
+    g = g.sort_values("缺口", ascending=False, kind="stable").reset_index(drop=True)
+    return g[["产品名", "SKU", "今日需求", "在售(On Hand)", "缺口",
+              "安全库存", "供应商(FS)", "红旗", "备注"]]
 
 
 def build_facesheet(facesheet):
@@ -365,6 +403,24 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
             log.append(f"已补运单清单{ch} 已生成: {p}  ({len(out)} 单)")
     else:
         log.append("已补运单清单: 0 单")
+
+    # ---- 救急补货盘前预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
+    reorder = build_reorder(erp)
+    if reorder is None:
+        log.append("救急补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
+                   "在 Odoo 订单导出模板勾上这 3 列即可生成)")
+    elif reorder.empty:
+        log.append("救急补货预判清单: 0 SKU")
+    else:
+        reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
+                          .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
+                          .reindex(reorder["SKU"]).astype(str)
+                          .str.split("_", n=1).str[0].values)
+        for ch in sorted(reorder["_ch"].dropna().unique()):
+            sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
+            short = int((sub["缺口"] > 0).sum())
+            p, n = _write_simple(sub, outdir, f"救急补货预判清单{ch}.xlsx")
+            log.append(f"救急补货预判清单{ch} 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----
     dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()
