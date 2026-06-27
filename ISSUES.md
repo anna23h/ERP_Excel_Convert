@@ -30,3 +30,17 @@
   - 行高: 把 `ROW_H = 40` 改为 35（三张表共用同一函数即一处生效；需确认无货勾选表也走 style_sheet）
   - 待确认: "下沉" = 垂直 bottom 对齐（如理解有误请先纠正）
 - 记录: 2026-06-27
+
+---
+
+## [阶段一] 无货勾选表改为面单版式 + 0/1 标注列
+- 状态: DONE (2026-06-27, build_nogoods_helper 改为复用 build_facesheet + 前置 0/1 列；无货勾选套用面单同款样式/合并/标色)
+- 现象: 无货勾选表版式与面单不同（列不同、无合并）。仓库返回的纸质文档是面单版式，操作员对着纸面单在屏幕上核对无货勾选表时两边对不上，逐行错位，输入易错、效率低
+- 意图: 0/1 标缺货（0=有货,1=缺货）方式有效，保留；但表要和纸质面单长一样，操作员逐行填 0/1 不错位
+- 期望: 无货勾选表 = 面单内容/版式完全一致（同列、同合并、同标色），仅在最前面加一列 0/1 标注列
+- 线索:
+  - `build_excel.py` `build_nogoods_helper()` 改为 `build_facesheet()` + `insert(0, "无货(1=缺货)", 0)`
+  - `_write_pickface` 里无货勾选 sheet 套和面单一样的 style_sheet(left/small) + highlight_facesheet + merge_multiproduct + fix_merged_alignment
+  - stage2 兼容性: 活跃读取 `classify_return` 按表头『无货』前缀找标注列 + 行内 SCP 键（Order Reference 含 SCP），与结构解耦 → 不受影响（已端到端验证）
+  - 遗留: 休眠函数 build_shortage()/read_marked() 仍按旧列名 SKU/商品名/数量 取数；未来复活缺货记录阶段需改读面单版列名
+- 记录: 2026-06-27
