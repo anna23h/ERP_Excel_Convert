@@ -194,6 +194,13 @@ def chan_suffix(channels):
     return "+".join(c for c in ("VO", "GW") if c in present)
 
 
+def stage2_name(name, ch, n, d=None):
+    """阶段二统一文件名：`YYYY年MM月DD日{渠道}{n}单 {产出名}.xlsx`，对齐阶段一 make_output_name。
+    ch=渠道(VO/GW/VO+GW)，n=单数，d 默认运行当天。"""
+    d = d or date.today()
+    return f"{d.year}年{d.month:02d}月{d.day:02d}日{ch}{n}单 {name}.xlsx"
+
+
 def get_shipped_orders(erp, shipped_keys, tracking_map=None):
     """有货(真实发货)单号 ∩ ERP → 订单级 DataFrame(Order Reference, VO Tracking No, _key, channel)。
     入口直接是真实发货订单号，结合 ERP 取明细，不再由无货倒推。
@@ -228,7 +235,7 @@ def build_B(shipped, outdir, suffix=""):
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, 1)
-    path = be.unique_path(os.path.join(outdir, f"系统履约单号{suffix}.xlsx"))
+    path = be.unique_path(os.path.join(outdir, stage2_name("系统履约单号", suffix, len(out))))
     wb.save(path)
     return path, len(out)
 
@@ -247,7 +254,7 @@ def build_C(shipped, outdir, suffix=""):
         first = False
         be.write_df(ws, df)
         be.style_sheet(ws, 2)
-    path = be.unique_path(os.path.join(outdir, f"发货表{suffix}.xlsx"))
+    path = be.unique_path(os.path.join(outdir, stage2_name("发货表", suffix, sum(counts.values()))))
     wb.save(path)
     return path, counts
 
@@ -300,7 +307,7 @@ def build_E(picking_paths, shipped, shipdate, outdir):
             wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
             be.write_df(ws, sub)
             be.style_sheet(ws, len(sub.columns))
-            path = be.unique_path(os.path.join(outdir, f"出库单{ch}.xlsx"))
+            path = be.unique_path(os.path.join(outdir, stage2_name("出库单", ch, len(sub))))
             wb.save(path)
             results[ch] = (path, len(sub))
         # 仅对 pool 覆盖到的店铺报缺(发货订单在 pool 里找不到对应 picking)
@@ -491,7 +498,7 @@ def build_billing(src, shipped_keys, mmdd, outdir, suffix=""):
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     be.write_df(ws, out)
     be.style_sheet(ws, len(out.columns))
-    path = be.unique_path(os.path.join(outdir, f"账单上传{suffix}.xlsx"))
+    path = be.unique_path(os.path.join(outdir, stage2_name("账单上传", suffix, len(out))))
     wb.save(path)
     return path, len(out)
 

@@ -44,3 +44,17 @@
   - stage2 兼容性: 活跃读取 `classify_return` 按表头『无货』前缀找标注列 + 行内 SCP 键（Order Reference 含 SCP），与结构解耦 → 不受影响（已端到端验证）
   - 遗留: 休眠函数 build_shortage()/read_marked() 仍按旧列名 SKU/商品名/数量 取数；未来复活缺货记录阶段需改读面单版列名
 - 记录: 2026-06-27
+
+---
+
+## [阶段二] 输出文件名规范化（B/C/D/E 加日期/渠道/单数）
+- 状态: DONE (2026-06-27, 新增 stage2.stage2_name，B/C/D/E 统一为阶段一格式)
+- 现象: 阶段二 B/C/D/E 文件名不带日期、渠道粒度不一、缺货记录裸名，与阶段一(YYYY年MM月DD日…)风格不一致
+- 意图: 文件名统一可读，一眼看出日期/店铺/单数，便于归档对照
+- 期望: B/C/D/E 统一为 `YYYY年MM月DD日{渠道}{单数}单 {产出名}.xlsx`（单数与产出名间留空格）。货代(I)剔除不动。缺货记录确认为休眠态，不在范围
+- 线索:
+  - `stage2.py` 新增 `stage2_name(name, ch, n, d)` helper（对齐 build_excel.make_output_name）
+  - B `build_B`/C `build_C`/D `build_billing` 用 `chan_suffix`（VO/GW/VO+GW 合并一份）；E `build_E` 逐店 `{ch}`
+  - 单数: B=len(out) / C=sum(counts) / D=len(out) / E=len(sub)
+  - 确认: build_shortage 仅注释提及(stage2:613)，主流程不产出，缺货记录休眠
+- 记录: 2026-06-27
