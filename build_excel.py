@@ -123,8 +123,9 @@ def build_facesheet(facesheet):
     return df
 
 
-def is_x2(v):
-    return bool(re.search(r"x2$", str(v), re.I))
+def is_multipack(v):
+    # x 后跟数字结尾 = 多件装（x2/x3/x4/x10…），标色提醒打包员
+    return bool(re.search(r"x\d+$", str(v), re.I))
 
 
 def style_sheet(ws, n_cols, header_font=HEAD_FONT):
@@ -159,7 +160,7 @@ def highlight_facesheet(ws, df):
     """三条规则，标黄触发的单元格（让仓库知道原因）。"""
     col = {name: i + 1 for i, name in enumerate(df.columns)}
     for ridx, (_, row) in enumerate(df.iterrows(), start=2):
-        if is_x2(row["Internal Reference"]):
+        if is_multipack(row["Internal Reference"]):
             ws.cell(ridx, col["Internal Reference"]).fill = YELLOW
         if pd.notna(row["Quantity"]) and float(row["Quantity"]) > 1:
             ws.cell(ridx, col["Quantity"]).fill = YELLOW
