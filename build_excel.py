@@ -20,9 +20,12 @@ YELLOW = PatternFill("solid", fgColor="FFFF00")
 THIN = Side(style="thin")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+LEFT_BOTTOM = Alignment(horizontal="left", vertical="bottom", wrap_text=True)  # 左对齐+下沉
+LEFT_CENTER = Alignment(horizontal="left", vertical="center", wrap_text=True)  # 合并单元格用
 FONT = Font(size=15)
+SMALL_FONT = Font(size=13)  # 比正文小 2 号
 HEAD_FONT = Font(size=15, bold=True)
-ROW_H = 40
+ROW_H = 35
 
 # 面单列（顺序即 A..F），末尾加空白「仓库备注」
 FACE_COLS = [
@@ -128,14 +131,20 @@ def is_multipack(v):
     return bool(re.search(r"x\d+$", str(v), re.I))
 
 
-def style_sheet(ws, n_cols, header_font=HEAD_FONT):
+def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=()):
+    """left_cols: 内容左对齐+下沉的列名集合；small_cols: 字号小2号的列名集合。表头始终居中。"""
+    headers = [c.value for c in ws[1]]
+    left_idx = {i + 1 for i, h in enumerate(headers) if h in left_cols}
+    small_idx = {i + 1 for i, h in enumerate(headers) if h in small_cols}
     for row in ws.iter_rows():
         for cell in row:
             cell.border = BORDER
-            cell.alignment = CENTER
-            cell.font = FONT
-    for cell in ws[1]:
-        cell.font = header_font
+            if cell.row == 1:
+                cell.alignment = CENTER
+                cell.font = header_font
+            else:
+                cell.alignment = LEFT_BOTTOM if cell.column in left_idx else CENTER
+                cell.font = SMALL_FONT if cell.column in small_idx else FONT
     for r in range(1, ws.max_row + 1):
         ws.row_dimensions[r].height = ROW_H
     # 按内容自动算列宽（字号15 比默认大，需放大系数，否则日期显示为 ######）
@@ -186,6 +195,15 @@ def merge_multiproduct(ws, df):
                 ws.merge_cells(start_row=start + i, start_column=c,
                                end_row=start + j, end_column=c)
         i = j + 1
+
+
+def fix_merged_alignment(ws, left_cols):
+    """合并后调用：左对齐列若为合并单元格，首格改为 左对齐+垂直居中（非下沉）。"""
+    headers = [c.value for c in ws[1]]
+    left_idx = {i + 1 for i, h in enumerate(headers) if h in left_cols}
+    for rng in ws.merged_cells.ranges:
+        if rng.min_col in left_idx:
+            ws.cell(rng.min_row, rng.min_col).alignment = LEFT_CENTER
 
 
 def make_output_name(facesheet, outdir):
@@ -280,12 +298,20 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     face_df = build_facesheet(facesheet)
     wb = Workbook()
     ws_pick = wb.active; ws_pick.title = "拣货表"
-    write_df(ws_pick, pick_df); style_sheet(ws_pick, len(pick_df.columns))
+    write_df(ws_pick, pick_df)
+    style_sheet(ws_pick, len(pick_df.columns),
+                left_cols={"Internal Reference", "Picking Name", "Barcode"},
+                small_cols={"Picking Name"})
     apply_print(ws_pick, fit_width=True)
     ws_face = wb.create_sheet("面单")
-    write_df(ws_face, face_df); style_sheet(ws_face, len(face_df.columns))
+    write_df(ws_face, face_df)
+    face_left = {"Order Reference", "VO Tracking No", "Internal Reference", "Picking Name"}
+    style_sheet(ws_face, len(face_df.columns),
+                left_cols=face_left,
+                small_cols={"Internal Reference", "Picking Name"})
     highlight_facesheet(ws_face, face_df)
     merge_multiproduct(ws_face, face_df)
+    fix_merged_alignment(ws_face, face_left)
     apply_print(ws_face, landscape=True)
     chk_df = build_nogoods_helper(facesheet)
     ws_chk = wb.create_sheet("无货勾选")
