@@ -58,3 +58,18 @@
   - 单数: B=len(out) / C=sum(counts) / D=len(out) / E=len(sub)
   - 确认: build_shortage 仅注释提及(stage2:613)，主流程不产出，缺货记录休眠
 - 记录: 2026-06-27
+
+---
+
+## [阶段一] 补货预判清单对齐拣货单 + 列名规范化
+- 状态: DONE (2026-06-27, build_reorder 列名改 ERP 原名、前两列对齐拣货单、改按 Internal Reference 升序)
+- 现象: 补货预判清单要对照仓库反馈的拣货单逐行勾缺货，但两表列名/顺序/排序都不一致，对照费劲；且列名是中文意译(SKU/产品名/在售)而非 ERP 字段名
+- 意图: 让补货预判清单前几列与拣货单一致、同序，逐行对得上；列名统一用 ERP 原始字段名，只有算出来的列才用中文
+- 期望:
+  - 列名：ERP 原字段用短名(同拣货表)；算出来的列(今日需求/缺口/红旗)保留中文
+  - 前两列 Internal Reference / Picking Name 对齐拣货单（去掉 Barcode，今日需求保留中文，产品名→Name）
+  - 排序改为 Internal Reference 升序（与拣货单同序）
+- 线索:
+  - `build_excel.py` `build_reorder()`：列名 SKU→Internal Reference、产品名→Name、在售→Quantity On Hand、安全库存→Safety Stock、供应商(FS)→FS、备注→Supply Remark；新增 Picking Name；删 Barcode 不加；sort 改 Internal Reference 升序
+  - 调用处 build_excel.py:445 `reorder["SKU"]`→`reorder["Internal Reference"]`
+- 记录: 2026-06-27

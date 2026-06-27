@@ -90,26 +90,31 @@ def _first_nonempty(s):
 def build_reorder(erp):
     """补货预判清单(Solo 作战清单·模式一 step 0 盘前预判)：
     把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
-    全部 SKU、按缺口(需求−在售)降序。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。"""
+    列名与 ERP 原始字段保持一致(短名，同拣货表)，仅算出来的列(今日需求/缺口/红旗)用中文。
+    前两列 Internal Reference / Picking Name 与拣货表对齐、并按 Internal Reference 升序，
+    便于对照仓库反馈的拣货单逐行勾缺货。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。"""
     if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
         return None
     g = erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**{
-        "产品名":        (ERP_NAME,       _first_nonempty),
-        "今日需求":      (s4.ERP_QTY,     "sum"),
-        "在售(On Hand)": (s4.ERP_ONHAND,  "max"),
-        "安全库存":      (ERP_SAFETY,     "max"),
-        "供应商(FS)":    (ERP_FS,         _first_nonempty),
-        "备注":          (ERP_REMARK,     _first_nonempty),
-    }).reset_index().rename(columns={s4.ERP_INTERNAL: "SKU"})
-    for c in ("今日需求", "在售(On Hand)", "安全库存"):
+        "Picking Name":     (s4.ERP_PICKING, _first_nonempty),
+        "Name":             (ERP_NAME,       _first_nonempty),
+        "今日需求":          (s4.ERP_QTY,     "sum"),
+        "Quantity On Hand": (s4.ERP_ONHAND,  "max"),
+        "Safety Stock":     (ERP_SAFETY,     "max"),
+        "FS":               (ERP_FS,         _first_nonempty),
+        "Supply Remark":    (ERP_REMARK,     _first_nonempty),
+    }).reset_index().rename(columns={s4.ERP_INTERNAL: "Internal Reference"})
+    for c in ("今日需求", "Quantity On Hand", "Safety Stock"):
         g[c] = pd.to_numeric(g[c], errors="coerce").round().astype("Int64")
-    g["缺口"] = g["今日需求"] - g["在售(On Hand)"]
-    # 红旗：备注含 暂不采购/MHD/效期 → 别自动下单，核实或问老板
-    g["红旗"] = g["备注"].astype(str).apply(
+    g["缺口"] = g["今日需求"] - g["Quantity On Hand"]
+    # 红旗：Supply Remark 含 暂不采购/MHD/效期 → 别自动下单，核实或问老板
+    g["红旗"] = g["Supply Remark"].astype(str).apply(
         lambda v: "⚠核实" if REORDER_FLAG_PAT.search(v) else "")
-    g = g.sort_values("缺口", ascending=False, kind="stable").reset_index(drop=True)
-    return g[["产品名", "SKU", "今日需求", "在售(On Hand)", "缺口",
-              "安全库存", "供应商(FS)", "红旗", "备注"]]
+    # 按 Internal Reference 升序(大小写不敏感、stable)，与拣货表同序，便于逐行对照
+    g = g.sort_values("Internal Reference", key=lambda s: s.astype(str).str.lower(),
+                      kind="stable").reset_index(drop=True)
+    return g[["Internal Reference", "Picking Name", "Name", "今日需求",
+              "Quantity On Hand", "缺口", "Safety Stock", "FS", "红旗", "Supply Remark"]]
 
 
 def build_facesheet(facesheet):
@@ -442,7 +447,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
     else:
         reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
                           .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
-                          .reindex(reorder["SKU"]).astype(str)
+                          .reindex(reorder["Internal Reference"]).astype(str)
                           .str.split("_", n=1).str[0].values)
         for ch in sorted(reorder["_ch"].dropna().unique()):
             sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
