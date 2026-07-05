@@ -35,3 +35,8 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# === 私有：开发过程文档，不对同事公开（本地保留，另走 Syncthing/私有 repo 同步）===
+docs/
+CLAUDE.md
+ISSUES.md
