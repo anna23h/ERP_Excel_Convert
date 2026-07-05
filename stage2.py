@@ -431,8 +431,11 @@ def _find_ref_trk(df):
 
 
 def build_forwarder(paths, outdir, shipdate=None):
-    """N 份发货表 → 一张跨店合并发货清单(给货代核对)。按 Order Reference 去重；
-    同单不同运单视为冲突报警。返回 (路径, 单数, 冲突列表[(ref, 旧, 新)], 告警列表[str])。
+    """N 份发货表 → 货代清单 + 天猫回执 两份产出。按 Order Reference 去重；
+    同单不同运单视为冲突报警。
+    返回 (货代路径, 单数, 冲突列表[(ref,旧,新)], 告警列表[str], 回执路径, 回执单数)。
+    - 货代清单：Order Reference + 运单号(给货代核对)。
+    - 天猫回执：所有发货 Order Reference 后15位(系统履约单号)，各渠道合并去重(上传天猫做回执)。
     告警：某表未按列名(tracking/运单)识别到运单列时提示——防止把日期等非运单列静默当运单。"""
     pairs, conflicts, warnings = {}, [], []
     for path in paths:
@@ -470,7 +473,31 @@ def build_forwarder(paths, outdir, shipdate=None):
     be.style_sheet(ws, 2)
     path = be.unique_path(os.path.join(outdir, fname))
     wb.save(path)
-    return path, n, conflicts, warnings
+
+    # ---- 天猫回执：所有发货 Order Reference 后15位(系统履约单号)，各渠道合并去重 ----
+    receipt = {}                               # 履约单号(后15位) -> 首个 Order Reference
+    for ref in pairs:
+        m = SCP_RE.search(ref)
+        if not m:
+            continue
+        key = m.group(0)[-15:]                 # 与 ERP _key/系统履约单号 同口径
+        if key in receipt and receipt[key] != ref:
+            warnings.append(
+                f"⚠ 连接键碰撞：{receipt[key]} 与 {ref} 后15位同为 {key}"
+                f"(天猫回执已保留先出现的，可能少一单)")
+        else:
+            receipt.setdefault(key, ref)
+    rct = pd.DataFrame({"系统履约单号": list(receipt.keys())})
+    rn = len(rct)
+    d_obj = date(int(d[:4]), int(d[4:6]), int(d[6:8])) if len(d) == 8 and d.isdigit() else date.today()
+    rname = stage2_name("天猫回执", "", rn, d_obj)
+    wb_r = Workbook(); ws_r = wb_r.active; ws_r.title = "Sheet1"
+    be.write_df(ws_r, rct)
+    be.style_sheet(ws_r, 1)
+    rpath = be.unique_path(os.path.join(outdir, rname))
+    wb_r.save(rpath)
+
+    return path, n, conflicts, warnings, rpath, rn
 
 
 # ---------- D: 开账单上传表 ----------
@@ -653,8 +680,9 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     if a.forwarder is not None:                # 货代合并模式(独立步骤)
-        p, n, conf, warns = build_forwarder(a.forwarder, a.outdir, a.shipdate)
+        p, n, conf, warns, rp, rn = build_forwarder(a.forwarder, a.outdir, a.shipdate)
         print(f"货代合并发货表 已生成: {p}  ({n} 单)")
+        print(f"天猫回执(系统履约单号) 已生成: {rp}  ({rn} 单)")
         for w in warns:
             print(w)
         for ref, old, new in conf:

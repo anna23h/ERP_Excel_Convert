@@ -292,8 +292,9 @@ class App:
         outdir = self.outdir.get()
 
         def work():
-            p, n, conf, warns = stage2.build_forwarder(files, outdir, shipdate)
-            lines = [f"货代合并发货表 已生成: {p}  ({n} 单)"]
+            p, n, conf, warns, rp, rn = stage2.build_forwarder(files, outdir, shipdate)
+            lines = [f"货代合并发货表 已生成: {p}  ({n} 单)",
+                     f"天猫回执(系统履约单号) 已生成: {rp}  ({rn} 单)"]
             for w in warns:
                 lines.append(w)
             for ref, old, new in conf:
