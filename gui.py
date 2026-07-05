@@ -31,8 +31,9 @@ else:
 
 
 def open_folder(path):
-    """跨平台打开文件夹。"""
+    """跨平台打开文件夹。目录不存在则先创建(默认输出目录首次运行前尚不存在)。"""
     try:
+        os.makedirs(path, exist_ok=True)
         if sys.platform.startswith("win"):
             os.startfile(path)              # noqa: P204
         elif sys.platform == "darwin":
@@ -53,7 +54,9 @@ class App:
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
         self.erp2 = tk.StringVar()         # 阶段二 销售 ERP(与阶段一独立)
-        self.outdir = tk.StringVar(value=os.path.join(BASE_DIR, "输出"))
+        # 默认按日期结构化归档：输出/YYYYMMDD(运行当天)，免操作员每次手动改
+        self.outdir = tk.StringVar(
+            value=os.path.join(BASE_DIR, "输出", date.today().strftime("%Y%m%d")))
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
         self.picking = tk.StringVar()

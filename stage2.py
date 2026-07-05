@@ -437,6 +437,7 @@ def build_forwarder(paths, outdir, shipdate=None):
     - 货代清单：Order Reference + 运单号(给货代核对)。
     - 天猫回执：所有发货 Order Reference 后15位(系统履约单号)，各渠道合并去重(上传天猫做回执)。
     告警：某表未按列名(tracking/运单)识别到运单列时提示——防止把日期等非运单列静默当运单。"""
+    os.makedirs(outdir, exist_ok=True)         # GUI 货代合并直调本函数，输出目录(如 输出/YYYYMMDD)可能尚不存在
     pairs, conflicts, warnings = {}, [], []
     for path in paths:
         fname_only = os.path.basename(path)
