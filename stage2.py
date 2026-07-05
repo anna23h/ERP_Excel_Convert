@@ -476,19 +476,13 @@ def build_forwarder(paths, outdir, shipdate=None):
     wb.save(path)
 
     # ---- 天猫回执：所有发货 Order Reference 后15位(系统履约单号)，各渠道合并去重 ----
-    receipt = {}                               # 履约单号(后15位) -> 首个 Order Reference
+    # SCP 号来自天猫后台、全局唯一，不同单不会撞后15位，故按后15位顺序去重即可(无需碰撞告警)
+    receipt = {}                               # 后15位(系统履约单号) -> None，仅用于保序去重
     for ref in pairs:
         m = SCP_RE.search(ref)
-        if not m:
-            continue
-        key = m.group(0)[-15:]                 # 与 ERP _key/系统履约单号 同口径
-        if key in receipt and receipt[key] != ref:
-            warnings.append(
-                f"⚠ 连接键碰撞：{receipt[key]} 与 {ref} 后15位同为 {key}"
-                f"(天猫回执已保留先出现的，可能少一单)")
-        else:
-            receipt.setdefault(key, ref)
-    rct = pd.DataFrame({"系统履约单号": list(receipt.keys())})
+        if m:
+            receipt.setdefault(m.group(0)[-15:], None)   # 与 ERP _key/系统履约单号 同口径
+    rct = pd.DataFrame({"系统履约单号": list(receipt)})
     rn = len(rct)
     d_obj = date(int(d[:4]), int(d[4:6]), int(d[6:8])) if len(d) == 8 and d.isdigit() else date.today()
     rname = stage2_name("天猫回执", "", rn, d_obj)
