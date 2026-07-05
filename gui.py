@@ -49,8 +49,19 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("VO 拉单工具")
-        root.geometry("1060x720")
-        root.minsize(900, 600)
+        # 基础尺寸按 DPI 缩放(Windows 高分屏控件放大后固定像素窗口会装不下)，并封顶不超屏
+        scale = 1.0
+        try:
+            dpi = root.winfo_fpixels("1i")
+            if dpi and dpi > 96:
+                scale = dpi / 96.0
+        except tk.TclError:
+            pass
+        w, h = int(1180 * scale), int(820 * scale)
+        w = min(w, root.winfo_screenwidth() - 40)
+        h = min(h, root.winfo_screenheight() - 80)
+        root.geometry(f"{w}x{h}")
+        root.minsize(min(1000, w), min(700, h))
 
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
@@ -146,7 +157,7 @@ class App:
         pw.add(logfr, weight=2)
 
         self.log = scrolledtext.ScrolledText(
-            logfr, width=34, state="disabled", wrap="word",
+            logfr, width=28, state="disabled", wrap="word",
             font=tkfont.nametofont("TkFixedFont"),
             background="white", foreground="#1f2937", insertbackground="#1f2937")
         self.log.pack(fill="both", expand=True)
@@ -218,33 +229,39 @@ class App:
         ttk.Button(pr, text="存为预设", width=9,
                    command=self._jd_save_preset).pack(side="left", padx=(4, 0))
 
-        # 双列表：左=可选列 / 右=已选列(顺序即输出列序)
-        cols = ttk.Frame(t4); cols.pack(fill="both", expand=True, pady=(6, 4))
+        # 双列表：左=可选列 / 右=已选列(顺序即输出列序)。cols 最后 pack，填充中部
+        cols = ttk.Frame(t4)
         left = ttk.LabelFrame(cols, text="可选列", padding=4)
         mid = ttk.Frame(cols)
         right = ttk.LabelFrame(cols, text="已选列(自上而下=输出列序)", padding=4)
         left.pack(side="left", fill="both", expand=True)
         mid.pack(side="left", padx=6)
         right.pack(side="left", fill="both", expand=True)
-        self.jd_avail = tk.Listbox(left, selectmode="extended", height=10,
+        self.jd_avail = tk.Listbox(left, selectmode="extended", height=8,
                                    exportselection=False, activestyle="none")
         self.jd_avail.pack(fill="both", expand=True)
-        self.jd_sel = tk.Listbox(right, selectmode="extended", height=10,
+        self.jd_sel = tk.Listbox(right, selectmode="extended", height=8,
                                  exportselection=False, activestyle="none")
         self.jd_sel.pack(fill="both", expand=True)
         for txt, cmd in [("加入 →", self._jd_add), ("← 移除", self._jd_remove),
                          ("↑ 上移", self._jd_up), ("↓ 下移", self._jd_down)]:
             ttk.Button(mid, text=txt, width=8, command=cmd).pack(pady=3)
 
-        opt = ttk.Frame(t4); opt.pack(fill="x", pady=(4, 2))
+        # 底部控件钉住(side=bottom)：保证「生成表格」在任何窗口高度下都不被裁掉
+        b4 = ttk.Button(t4, text="▶  生成表格",
+                        style="Action.TButton", command=self._run_jd)
+        b4.pack(side="bottom", anchor="w", pady=(8, 0))
+        self._buttons.append(b4)
+        ttk.Label(t4, style="Hint.TLabel", justify="left", wraplength=520,
+                  text="输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，写到上方共用输出目录。"
+                       "长数字列(订单号/运单号)自动锁文本，防精度丢失。"
+                  ).pack(side="bottom", anchor="w", pady=(6, 0))
+        opt = ttk.Frame(t4); opt.pack(side="bottom", fill="x", pady=(4, 2))
         ttk.Checkbutton(opt, text="输出前对整行去重", variable=self.jd_dedup).pack(side="left")
         ttk.Label(opt, text="输出名:", style="Field.TLabel").pack(side="left", padx=(16, 4))
         ttk.Entry(opt, textvariable=self.jd_outname, width=16).pack(side="left")
-        self._hint(t4, "输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，写到上方共用输出目录。长数字列(订单号/运单号)自动锁文本，防精度丢失。")
-        b4 = ttk.Button(t4, text="▶  生成表格",
-                        style="Action.TButton", command=self._run_jd)
-        b4.pack(anchor="w", pady=(8, 0))
-        self._buttons.append(b4)
+
+        cols.pack(side="top", fill="both", expand=True, pady=(6, 4))
 
     # ---------- helpers ----------
     def _pick_file(self, var):
