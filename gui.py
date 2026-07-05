@@ -21,6 +21,7 @@ from tkinter import font as tkfont
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_excel  # noqa: E402
 import stage2       # noqa: E402
+import jd_export    # noqa: E402
 
 EXCEL_TYPES = [("Excel / CSV", "*.xlsx *.xls *.csv"), ("所有文件", "*.*")]
 
@@ -65,6 +66,12 @@ class App:
         self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
         self.mmdd = tk.StringVar(value=date.today().strftime("%m%d"))
         self._buttons = []
+
+        # 京东标签：通用选列导出
+        self.jd_raw = tk.StringVar()           # 京东原始导出
+        self.jd_dedup = tk.BooleanVar(value=False)
+        self.jd_outname = tk.StringVar(value="京东导出")
+        self.jd_presets = jd_export.load_presets(BASE_DIR)
 
         self._build_ui()
 
@@ -195,6 +202,50 @@ class App:
         b3.pack(anchor="w", pady=(10, 0))
         self._buttons.append(b3)
 
+        # 京东标签页(通用选列导出：勾选+排序原始列 → 出表；可存预设)
+        t4 = ttk.Frame(nb, padding=14); nb.add(t4, text="  京东  ")
+        self._file_row(t4, "京东原始导出:", self.jd_raw)
+        self._hint(t4, "选京东后台导出的原始 xlsx(如「复核历史查询-SKU汇总」)，点『读取列名』后在下方挑选并排序要输出的列。")
+        pr = ttk.Frame(t4); pr.pack(fill="x", pady=(6, 2))
+        ttk.Button(pr, text="读取列名", width=9,
+                   command=self._jd_read_columns).pack(side="left")
+        ttk.Label(pr, text="预设:", style="Field.TLabel").pack(side="left", padx=(16, 4))
+        self.jd_preset_cb = ttk.Combobox(pr, state="readonly", width=16,
+                                          values=[p["name"] for p in self.jd_presets])
+        self.jd_preset_cb.pack(side="left")
+        ttk.Button(pr, text="应用预设", width=9,
+                   command=self._jd_apply_preset).pack(side="left", padx=(4, 0))
+        ttk.Button(pr, text="存为预设", width=9,
+                   command=self._jd_save_preset).pack(side="left", padx=(4, 0))
+
+        # 双列表：左=可选列 / 右=已选列(顺序即输出列序)
+        cols = ttk.Frame(t4); cols.pack(fill="both", expand=True, pady=(6, 4))
+        left = ttk.LabelFrame(cols, text="可选列", padding=4)
+        mid = ttk.Frame(cols)
+        right = ttk.LabelFrame(cols, text="已选列(自上而下=输出列序)", padding=4)
+        left.pack(side="left", fill="both", expand=True)
+        mid.pack(side="left", padx=6)
+        right.pack(side="left", fill="both", expand=True)
+        self.jd_avail = tk.Listbox(left, selectmode="extended", height=10,
+                                   exportselection=False, activestyle="none")
+        self.jd_avail.pack(fill="both", expand=True)
+        self.jd_sel = tk.Listbox(right, selectmode="extended", height=10,
+                                 exportselection=False, activestyle="none")
+        self.jd_sel.pack(fill="both", expand=True)
+        for txt, cmd in [("加入 →", self._jd_add), ("← 移除", self._jd_remove),
+                         ("↑ 上移", self._jd_up), ("↓ 下移", self._jd_down)]:
+            ttk.Button(mid, text=txt, width=8, command=cmd).pack(pady=3)
+
+        opt = ttk.Frame(t4); opt.pack(fill="x", pady=(4, 2))
+        ttk.Checkbutton(opt, text="输出前对整行去重", variable=self.jd_dedup).pack(side="left")
+        ttk.Label(opt, text="输出名:", style="Field.TLabel").pack(side="left", padx=(16, 4))
+        ttk.Entry(opt, textvariable=self.jd_outname, width=16).pack(side="left")
+        self._hint(t4, "输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，写到上方共用输出目录。长数字列(订单号/运单号)自动锁文本，防精度丢失。")
+        b4 = ttk.Button(t4, text="▶  生成表格",
+                        style="Action.TButton", command=self._run_jd)
+        b4.pack(anchor="w", pady=(8, 0))
+        self._buttons.append(b4)
+
     # ---------- helpers ----------
     def _pick_file(self, var):
         p = filedialog.askopenfilename(filetypes=EXCEL_TYPES)
@@ -304,6 +355,139 @@ class App:
             for ref, old, new in conf:
                 lines.append(f"⚠ 运单冲突 {ref}: {old} vs {new}(已保留先出现的)")
             return lines
+        self._bg(work)
+
+    # ---------- 京东 ----------
+    def _jd_read_columns(self):
+        path = self.jd_raw.get().strip()
+        if not path:
+            messagebox.showwarning("缺少文件", "请先选择京东原始导出 xlsx")
+            return
+        try:
+            allcols = jd_export.read_columns(path)
+        except Exception as e:                              # noqa: BLE001
+            messagebox.showerror("读取失败", str(e))
+            return
+        sel = list(self.jd_sel.get(0, "end"))              # 保留已选(仍存在的)
+        self.jd_avail.delete(0, "end")
+        for c in allcols:
+            if c not in sel:
+                self.jd_avail.insert("end", c)
+        self._jd_reconcile_selected(allcols)
+        self._write(f"【京东】读到 {len(allcols)} 列。")
+
+    def _jd_reconcile_selected(self, allcols):
+        """已选列里剔除原始数据已不存在的，避免出表时才发现缺列。"""
+        kept, dropped = [], []
+        for c in self.jd_sel.get(0, "end"):
+            (kept if c in allcols else dropped).append(c)
+        if dropped:
+            self.jd_sel.delete(0, "end")
+            for c in kept:
+                self.jd_sel.insert("end", c)
+            self._write("【京东】已选列中这些在当前数据里没有，已移除：" + "、".join(dropped))
+
+    def _jd_apply_preset(self):
+        name = self.jd_preset_cb.get()
+        if not name:
+            messagebox.showwarning("未选预设", "请先在下拉里选一个预设")
+            return
+        p = next((x for x in self.jd_presets if x["name"] == name), None)
+        if not p:
+            return
+        allcols = list(self.jd_avail.get(0, "end")) + list(self.jd_sel.get(0, "end"))
+        self.jd_sel.delete(0, "end")
+        missing = []
+        for c in p["columns"]:
+            if allcols and c not in allcols:               # 已读列名才能校验缺失
+                missing.append(c)
+                continue
+            self.jd_sel.insert("end", c)
+        # 可选列 = 全部 - 已选
+        chosen = set(self.jd_sel.get(0, "end"))
+        self.jd_avail.delete(0, "end")
+        for c in allcols:
+            if c not in chosen:
+                self.jd_avail.insert("end", c)
+        self.jd_dedup.set(bool(p.get("dedup")))
+        self.jd_outname.set(p.get("out_name", name))
+        msg = f"【京东】已应用预设「{name}」，选中 {self.jd_sel.size()} 列。"
+        if missing:
+            msg += " 原始数据缺列(已跳过)：" + "、".join(missing)
+        self._write(msg)
+
+    def _jd_save_preset(self):
+        cols = list(self.jd_sel.get(0, "end"))
+        if not cols:
+            messagebox.showwarning("没有已选列", "先把要输出的列加到右侧，再存为预设")
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring("存为预设", "预设名称：", parent=self.root)
+        if not name:
+            return
+        preset = {"name": name.strip(), "columns": cols,
+                  "dedup": self.jd_dedup.get(), "aggregate": None,
+                  "out_name": self.jd_outname.get().strip() or name.strip()}
+        try:
+            jd_export.save_preset(BASE_DIR, preset)
+        except Exception as e:                              # noqa: BLE001
+            messagebox.showerror("保存失败", str(e))
+            return
+        self.jd_presets = jd_export.load_presets(BASE_DIR)
+        self.jd_preset_cb.configure(values=[p["name"] for p in self.jd_presets])
+        self.jd_preset_cb.set(name.strip())
+        self._write(f"【京东】预设「{name.strip()}」已保存。")
+
+    def _jd_move(self, delta):
+        lb = self.jd_sel
+        picks = list(lb.curselection())
+        if not picks:
+            return
+        picks = picks if delta < 0 else list(reversed(picks))
+        for i in picks:
+            j = i + delta
+            if 0 <= j < lb.size():
+                v = lb.get(i)
+                lb.delete(i); lb.insert(j, v)
+                lb.selection_set(j)
+
+    def _jd_up(self):
+        self._jd_move(-1)
+
+    def _jd_down(self):
+        self._jd_move(1)
+
+    def _jd_add(self):
+        for i in self.jd_avail.curselection():
+            v = self.jd_avail.get(i)
+            if v not in self.jd_sel.get(0, "end"):
+                self.jd_sel.insert("end", v)
+        for i in reversed(self.jd_avail.curselection()):
+            self.jd_avail.delete(i)
+
+    def _jd_remove(self):
+        for i in reversed(self.jd_sel.curselection()):
+            v = self.jd_sel.get(i)
+            self.jd_sel.delete(i)
+            self.jd_avail.insert("end", v)
+
+    def _run_jd(self):
+        path = self.jd_raw.get().strip()
+        cols = list(self.jd_sel.get(0, "end"))
+        if not path:
+            messagebox.showwarning("缺少文件", "请先选择京东原始导出 xlsx")
+            return
+        if not cols:
+            messagebox.showwarning("没有已选列", "请把要输出的列加到右侧『已选列』")
+            return
+        self._write(f"【京东】导出 {len(cols)} 列 → {self.jd_outname.get()} …")
+        outdir = self.outdir.get()
+        dedup = self.jd_dedup.get()
+        outname = self.jd_outname.get().strip() or "京东导出"
+
+        def work():
+            op, n, warns = jd_export.export(path, cols, outdir, outname, dedup=dedup)
+            return [f"已生成：{op}  ({n} 行)"] + warns
         self._bg(work)
 
 
