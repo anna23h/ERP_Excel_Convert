@@ -38,6 +38,26 @@ FACE_COLS = [
 ]
 WAREHOUSE_NOTE = "仓库备注"
 
+# 操作员打印前手工调好的列宽（取自样表 2026年07月03日VO162单 拣货表+面单.xlsx），
+# 按表头名固定，让程序直接输出成品宽度，打印前无需再拖列。未列出的列仍按内容自动算宽。
+PICK_WIDTHS = {
+    "Internal Reference": 31.0,
+    "Picking Name": 22.88671875,
+    "Barcode": 22.77734375,
+    "Quantity": 8.21875,
+    "Quantity On Hand": 7.88671875,
+}
+FACE_WIDTHS = {
+    "序号": 12.0,
+    "Order Reference": 35.0,
+    "VO Tracking No": 26.0,
+    "Internal Reference": 29.6640625,
+    "Picking Name": 18.88671875,
+    "Quantity": 8.109375,
+    "VO Delivery Type": 8.43,  # 样表为 Excel 默认宽（未拖动）
+    "仓库备注": 12.0,
+}
+
 
 def build_picking(facesheet):
     """扁平单层：一行一个 SKU。"""
@@ -131,8 +151,10 @@ def is_multipack(v):
     return bool(re.search(r"x\d+$", str(v), re.I))
 
 
-def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=()):
-    """left_cols: 内容左对齐+下沉的列名集合；small_cols: 字号小2号的列名集合。表头始终居中。"""
+def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=(), widths=None):
+    """left_cols: 内容左对齐+下沉的列名集合；small_cols: 字号小2号的列名集合。表头始终居中。
+    widths: {表头名: 列宽} 固定列宽表，命中的列用固定宽度（操作员手工调好、免二次拖列），
+    未命中的列仍按内容自动算宽。"""
     headers = [c.value for c in ws[1]]
     left_idx = {i + 1 for i, h in enumerate(headers) if h in left_cols}
     small_idx = {i + 1 for i, h in enumerate(headers) if h in small_cols}
@@ -147,8 +169,14 @@ def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=()):
                 cell.font = SMALL_FONT if cell.column in small_idx else FONT
     for r in range(1, ws.max_row + 1):
         ws.row_dimensions[r].height = ROW_H
-    # 按内容自动算列宽（字号15 比默认大，需放大系数，否则日期显示为 ######）
+    # 列宽：固定表命中的列用固定宽度（操作员调好的成品宽），其余按内容自动算宽
+    # （字号15 比默认大，需放大系数，否则日期显示为 ######）
+    widths = widths or {}
     for c in range(1, n_cols + 1):
+        hdr = headers[c - 1] if c - 1 < len(headers) else None
+        if hdr in widths:
+            ws.column_dimensions[get_column_letter(c)].width = widths[hdr]
+            continue
         maxlen = 0
         for r in range(1, ws.max_row + 1):
             v = ws.cell(r, c).value
@@ -301,14 +329,14 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     write_df(ws_pick, pick_df)
     style_sheet(ws_pick, len(pick_df.columns),
                 left_cols={"Internal Reference", "Picking Name", "Barcode"},
-                small_cols={"Picking Name"})
+                small_cols={"Picking Name"}, widths=PICK_WIDTHS)
     apply_print(ws_pick, fit_width=True)
     ws_face = wb.create_sheet("面单")
     write_df(ws_face, face_df)
     face_left = {"Order Reference", "VO Tracking No", "Internal Reference", "Picking Name"}
     style_sheet(ws_face, len(face_df.columns),
                 left_cols=face_left,
-                small_cols={"Internal Reference", "Picking Name"})
+                small_cols={"Internal Reference", "Picking Name"}, widths=FACE_WIDTHS)
     highlight_facesheet(ws_face, face_df)
     merge_multiproduct(ws_face, face_df)
     fix_merged_alignment(ws_face, face_left)
