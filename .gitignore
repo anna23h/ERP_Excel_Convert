@@ -1,21 +1,23 @@
-# 真实订单数据：绝不提交（含客户姓名/电话/地址等个人信息）
+# === 数据目录：按目录整体忽略（首选，不靠扩展名猜）===
+# 真实订单数据（含客户姓名/电话/地址等个人信息，绝不提交）
 raw_data/
+# 输出产物（统一 output/，按 output/YYYYMMDD 归档）
+output/
+输出/
+# 测试/参考/历史数据
+all_test_data/
+test-data/
+results/
+# 因机器而异的本地配置
+config.py
+
+# === PII 兜底：任何位置的表格一律不提交（samples/ 显式放行脱敏样例）===
 *.xlsx
 *.ods
 *.csv
-
-# 允许提交脱敏样例（放在 samples/ 下，显式加白）
 !samples/
 !samples/*.xlsx
 !samples/*.csv
-
-# 输出产物
-output/
-
-# 多机同步：测试数据/结果走 Syncthing，配置因机器而异
-test-data/
-results/
-config.py
 
 # PyInstaller 打包产物
 build/

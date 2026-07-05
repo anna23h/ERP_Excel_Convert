@@ -54,9 +54,10 @@ class App:
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
         self.erp2 = tk.StringVar()         # 阶段二 销售 ERP(与阶段一独立)
-        # 默认按日期结构化归档：输出/YYYYMMDD(运行当天)，免操作员每次手动改
+        # 默认按日期结构化归档：output/YYYYMMDD(运行当天)，免操作员每次手动改
+        # 统一用英文 output/，与 CLI/build 默认一致(消除中英文分裂)
         self.outdir = tk.StringVar(
-            value=os.path.join(BASE_DIR, "输出", date.today().strftime("%Y%m%d")))
+            value=os.path.join(BASE_DIR, "output", date.today().strftime("%Y%m%d")))
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
         self.picking = tk.StringVar()
