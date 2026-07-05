@@ -408,8 +408,10 @@ FORWARDER_PREFIX = "IHTCTGMBH+IH"   # 固定前缀，给货代核对用
 
 
 def _find_ref_trk(df):
-    """从一张发货表里定位 (Order Reference 列, Tracking 列)。
-    Order Reference：列名匹配或值含 SCP；Tracking：列名含 tracking/运单，否则取另一列。"""
+    """从一张发货表里定位 (Order Reference 列, Tracking 列, 运单列是否按列名命中)。
+    Order Reference：列名匹配或值含 SCP；Tracking：列名含 tracking/运单，否则取另一列。
+    第三个返回值 trk_by_name：True=按列名(tracking/运单)命中；False=靠"只剩一列"兜底或没找到
+    → 调用方据此告警，避免把日期等非运单列静默当成运单（错位无声无息）。"""
     cols = list(df.columns)
     refcol = next((c for c in cols if str(c).strip() == "Order Reference"), None)
     if refcol is None:                        # 按值模式兜底：含 SCP 最多的列
@@ -421,23 +423,31 @@ def _find_ref_trk(df):
         refcol = best
     trkcol = next((c for c in cols if c != refcol and
                    ("tracking" in str(c).strip().lower() or "运单" in str(c))), None)
-    if trkcol is None:                        # 只有两列时，另一列即运单
+    trk_by_name = trkcol is not None
+    if trkcol is None:                        # 只有两列时，另一列即运单（兜底，需告警）
         others = [c for c in cols if c != refcol]
         trkcol = others[0] if len(others) == 1 else None
-    return refcol, trkcol
+    return refcol, trkcol, trk_by_name
 
 
 def build_forwarder(paths, outdir, shipdate=None):
     """N 份发货表 → 一张跨店合并发货清单(给货代核对)。按 Order Reference 去重；
-    同单不同运单视为冲突报警。返回 (路径, 单数, 冲突列表[(ref, 旧, 新)])。"""
-    pairs, conflicts = {}, []
+    同单不同运单视为冲突报警。返回 (路径, 单数, 冲突列表[(ref, 旧, 新)], 告警列表[str])。
+    告警：某表未按列名(tracking/运单)识别到运单列时提示——防止把日期等非运单列静默当运单。"""
+    pairs, conflicts, warnings = {}, [], []
     for path in paths:
-        for df in pd.read_excel(path, sheet_name=None).values():
+        fname_only = os.path.basename(path)
+        for sheet, df in pd.read_excel(path, sheet_name=None).items():
             if df.empty:
                 continue
-            refcol, trkcol = _find_ref_trk(df)
+            refcol, trkcol, trk_by_name = _find_ref_trk(df)
             if refcol is None:
                 continue
+            if not trk_by_name:
+                col_desc = f"『{trkcol}』" if trkcol is not None else "（无）"
+                warnings.append(
+                    f"⚠ {fname_only}[{sheet}] 未识别到运单列(列名不含 tracking/运单)，"
+                    f"当前兜底用了 {col_desc}，请核对该列是否运单号")
             for _, r in df.iterrows():
                 ref = str(r[refcol]).strip()
                 if "SCP" not in ref:
@@ -460,7 +470,7 @@ def build_forwarder(paths, outdir, shipdate=None):
     be.style_sheet(ws, 2)
     path = be.unique_path(os.path.join(outdir, fname))
     wb.save(path)
-    return path, n, conflicts
+    return path, n, conflicts, warnings
 
 
 # ---------- D: 开账单上传表 ----------
@@ -643,8 +653,10 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     if a.forwarder is not None:                # 货代合并模式(独立步骤)
-        p, n, conf = build_forwarder(a.forwarder, a.outdir, a.shipdate)
+        p, n, conf, warns = build_forwarder(a.forwarder, a.outdir, a.shipdate)
         print(f"货代合并发货表 已生成: {p}  ({n} 单)")
+        for w in warns:
+            print(w)
         for ref, old, new in conf:
             print(f"⚠ 运单冲突 {ref}: {old} vs {new}(已保留先出现的)")
         return

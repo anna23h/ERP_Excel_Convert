@@ -292,8 +292,10 @@ class App:
         outdir = self.outdir.get()
 
         def work():
-            p, n, conf = stage2.build_forwarder(files, outdir, shipdate)
+            p, n, conf, warns = stage2.build_forwarder(files, outdir, shipdate)
             lines = [f"货代合并发货表 已生成: {p}  ({n} 单)"]
+            for w in warns:
+                lines.append(w)
             for ref, old, new in conf:
                 lines.append(f"⚠ 运单冲突 {ref}: {old} vs {new}(已保留先出现的)")
             return lines
