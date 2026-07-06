@@ -1,0 +1,9 @@
+# Windows 批处理必须 CRLF 换行，否则在 autocrlf=false 的机器上
+# cmd 会把注释行当命令执行、双击报 "'…' is not recognized"。
+# 用 -text 关闭换行归一：按字节原样存取，仓库里就是 CRLF，
+# 任何机器 checkout/reset 都拿到 CRLF（blob 真变，reset --hard 必重写）。
+# 代价：日后若在 Mac 编辑 .bat 需保持 CRLF（rare，编辑后自查）。
+*.bat -text
+
+# Mac 启动脚本保持 LF
+*.command text eol=lf
