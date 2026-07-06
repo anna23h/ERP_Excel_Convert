@@ -202,12 +202,14 @@ def highlight_facesheet(ws, df):
             ws.cell(ridx, col["VO Delivery Type"]).fill = YELLOW
 
 
-def merge_multiproduct(ws, df):
+def merge_multiproduct(ws, df, extra_cols=()):
     """多品订单：订单级列(Order Reference / VO Tracking No / VO Delivery Type)纵向合并。
+    extra_cols: 额外一并按订单合并的列名(如无货勾选的 序号/无货标注)，缺列则跳过。
     按列名定位，避免加序号列后错位。"""
     cols = list(df.columns)
     merge_cols = {n: cols.index(n) + 1
-                  for n in ("Order Reference", "VO Tracking No", "VO Delivery Type")}
+                  for n in ("Order Reference", "VO Tracking No", "VO Delivery Type",
+                            *extra_cols) if n in cols}
     start = 2
     refs = df["Order Reference"].tolist()
     i = 0
@@ -346,7 +348,8 @@ def _write_pickface(facesheet, outdir, out_arg=None):
                 left_cols=face_left,
                 small_cols={"Internal Reference", "Picking Name"})
     highlight_facesheet(ws_chk, chk_df)
-    merge_multiproduct(ws_chk, chk_df)
+    # 无货勾选：序号/无货标注也按订单合并(每单一格，操作员按单勾一次)
+    merge_multiproduct(ws_chk, chk_df, extra_cols=("序号", "无货(1=缺货)"))
     fix_merged_alignment(ws_chk, face_left)
     path = unique_path(out_arg or make_output_name(facesheet, outdir))
     wb.save(path)
