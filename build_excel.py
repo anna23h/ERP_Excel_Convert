@@ -174,7 +174,7 @@ def load_po_stats(path):
     rows = []
     for sku, g in po.groupby("_sku"):
         vc = g.groupby("Vendor")["Order Reference"].nunique().sort_values(ascending=False)
-        vendors = "; ".join(f"{v}×{n}" for v, n in vc.items())
+        vendors = "\n".join(f"{v}×{n}" for v, n in vc.items())  # 多家纵向排开(单元格内换行)
         priced = g[g["_price"] > 0]
         if len(priced):
             low_row = priced.loc[priced["_price"].idxmin()]
@@ -185,7 +185,8 @@ def load_po_stats(path):
         if g["_dt"].notna().any():
             lr = g.loc[g["_dt"].idxmax()]
             price_s = f" @{lr['_price']:g}" if pd.notna(lr["_price"]) else ""
-            last = f"{lr['_dt']:%Y-%m-%d} {lr['Vendor']}{price_s}"
+            # 主次排布：供应商+价格一行，日期换行
+            last = f"{lr['Vendor']}{price_s}\n{lr['_dt']:%Y-%m-%d}"
         rows.append((sku, vendors, low, low_v, last, g["_qty"].sum()))
     stats = pd.DataFrame(rows, columns=["_sku"] + PO_COLS)
     stats["采购总量"] = pd.to_numeric(stats["采购总量"], errors="coerce").round().astype("Int64")
@@ -267,7 +268,11 @@ def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=(), 
                 cell.alignment = LEFT_BOTTOM if cell.column in left_idx else CENTER
                 cell.font = SMALL_FONT if cell.column in small_idx else FONT
     for r in range(1, ws.max_row + 1):
-        ws.row_dimensions[r].height = ROW_H
+        # 含单元格内换行(\n)的行按行数放大，否则固定高度会裁掉第二行起的内容；
+        # 无换行的行恒为 ROW_H(其他表无 \n 内容，行为不变)
+        lines = max((str(c.value).count("\n") + 1 for c in ws[r] if c.value is not None),
+                    default=1)
+        ws.row_dimensions[r].height = ROW_H if lines == 1 else lines * 22
     # 列宽：固定表命中的列用固定宽度（操作员调好的成品宽），其余按内容自动算宽
     # （字号15 比默认大，需放大系数，否则日期显示为 ######）
     widths = widths or {}
