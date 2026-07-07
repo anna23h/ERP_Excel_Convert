@@ -191,14 +191,16 @@ def write_df(ws, df):
 
 
 def highlight_facesheet(ws, df):
-    """三条规则，标黄触发的单元格（让仓库知道原因）。"""
+    """三条规则，标黄触发的单元格（让仓库知道原因）。
+    Delivery Type 目标值按店区分：VO 的包裹标记是 CC，GW 的是 SYB。"""
     col = {name: i + 1 for i, name in enumerate(df.columns)}
     for ridx, (_, row) in enumerate(df.iterrows(), start=2):
         if is_multipack(row["Internal Reference"]):
             ws.cell(ridx, col["Internal Reference"]).fill = YELLOW
         if pd.notna(row["Quantity"]) and float(row["Quantity"]) > 1:
             ws.cell(ridx, col["Quantity"]).fill = YELLOW
-        if str(row["VO Delivery Type"]) == "CC":
+        ch = str(row["Order Reference"]).split("_", 1)[0]
+        if str(row["VO Delivery Type"]) == ("SYB" if ch == "GW" else "CC"):
             ws.cell(ridx, col["VO Delivery Type"]).fill = YELLOW
 
 
