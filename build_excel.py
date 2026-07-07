@@ -119,6 +119,8 @@ VENDOR_LEGAL = {"gmbh", "gmbh,", "kg", "kgaa", "ag", "ohg", "mbh", "mbb", "co", 
                 "niederlassung", "deutschland", "holding"}
 # 首词全大写但属行业通用词，单独指代会误导(PHARMA LUPUS ≠ "PHARMA")
 VENDOR_GENERIC = {"PHARMA", "APOTHEKE", "MED"}
+# 个别简称覆盖(用户指定)：规则产物 → 最终简称
+VENDOR_ALIAS = {"Dirk Rossmann": "Rossmann"}
 
 
 def _short_vendor(name):
@@ -131,9 +133,10 @@ def _short_vendor(name):
         return str(name).strip()
     head = words[0].split("-")[0]
     if head.isupper() and len(head) >= 2 and head not in VENDOR_GENERIC:
-        return head
+        return VENDOR_ALIAS.get(head, head)
     n = 2 if len(" ".join(words[:2])) >= 4 else 3
-    return " ".join(words[:n])
+    res = " ".join(words[:n])
+    return VENDOR_ALIAS.get(res, res)
 
 
 def _vendor_map(vendors):
