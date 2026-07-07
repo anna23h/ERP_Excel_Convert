@@ -106,12 +106,62 @@ def _first_nonempty(s):
     return ""
 
 
-def build_reorder(erp):
+# 采购画像追加列(来自 purchase order 导出，见 load_po_stats)
+PO_COLS = ["供应商(次数)", "最低价", "最低价供应商", "最近一次采购", "采购总量"]
+
+
+def _po_base_sku(s):
+    """SKU 归一：去掉多件装 x2 / 变体 *2 / 渠道 _VO 等尾缀，对齐采购单里的基础 SKU。"""
+    return re.sub(r"(x\d+|\*\d+|_VO)+$", "", str(s).strip())
+
+
+def load_po_stats(path):
+    """purchase order 导出(Odoo 行式：订单头只在每单首行) → 按基础 SKU 聚合采购画像。
+    最低价只统计单价>0(价 0/负数是赠品/返利)；窗口=导出里有多少算多少，不写死3月。
+    返回 (stats_df[_sku + PO_COLS], 窗口描述str)。缺必需列抛 ValueError。"""
+    po = pd.read_excel(path, dtype=str)
+    need = ["Order Reference", "Vendor", "Order Lines/Product/Internal Reference",
+            "Order Lines/Unit Price", "Order Lines/Total Quantity", "Order Lines/Created on"]
+    missing = [c for c in need if c not in po.columns]
+    if missing:
+        raise ValueError("采购单导出缺列: " + ", ".join(missing))
+    po[["Order Reference", "Vendor"]] = po[["Order Reference", "Vendor"]].ffill()
+    po = po.dropna(subset=["Order Lines/Product/Internal Reference", "Vendor"]).copy()
+    po["_sku"] = po["Order Lines/Product/Internal Reference"].map(_po_base_sku)
+    po["_price"] = pd.to_numeric(po["Order Lines/Unit Price"], errors="coerce")
+    po["_qty"] = pd.to_numeric(po["Order Lines/Total Quantity"], errors="coerce")
+    po["_dt"] = pd.to_datetime(po["Order Lines/Created on"], errors="coerce")
+    rows = []
+    for sku, g in po.groupby("_sku"):
+        vc = g.groupby("Vendor")["Order Reference"].nunique().sort_values(ascending=False)
+        vendors = "; ".join(f"{v}×{n}" for v, n in vc.items())
+        priced = g[g["_price"] > 0]
+        if len(priced):
+            low_row = priced.loc[priced["_price"].idxmin()]
+            low, low_v = float(low_row["_price"]), low_row["Vendor"]
+        else:
+            low, low_v = None, ""
+        last = ""
+        if g["_dt"].notna().any():
+            lr = g.loc[g["_dt"].idxmax()]
+            price_s = f" @{lr['_price']:g}" if pd.notna(lr["_price"]) else ""
+            last = f"{lr['_dt']:%Y-%m-%d} {lr['Vendor']}{price_s}"
+        rows.append((sku, vendors, low, low_v, last, g["_qty"].sum()))
+    stats = pd.DataFrame(rows, columns=["_sku"] + PO_COLS)
+    stats["采购总量"] = pd.to_numeric(stats["采购总量"], errors="coerce").round().astype("Int64")
+    info = (f"{po['_dt'].min():%Y-%m-%d}~{po['_dt'].max():%Y-%m-%d} "
+            f"{po['Order Reference'].nunique()} 单 / {stats.shape[0]} SKU")
+    return stats, info
+
+
+def build_reorder(erp, po_stats=None):
     """补货预判清单(Solo 作战清单·模式一 step 0 盘前预判)：
     把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
     列名与 ERP 原始字段保持一致(短名，同拣货表)，仅算出来的列(今日需求/缺口)用中文。
     前两列 Internal Reference / Picking Name 与拣货表对齐、并按 Internal Reference 升序，
-    便于对照仓库反馈的拣货单逐行勾缺货。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。"""
+    便于对照仓库反馈的拣货单逐行勾缺货。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。
+    po_stats(可选，load_po_stats 产出)：按基础 SKU 尾部追加采购画像列；无记录的 SKU
+    标"无采购记录"(信号：新品/长尾需人工找供应商)。缺口只能参考，补货数量始终人为定。"""
     if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
         return None
     g = erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**{
@@ -130,8 +180,18 @@ def build_reorder(erp):
     # 按 Internal Reference 升序(大小写不敏感、stable)，与拣货表同序，便于逐行对照
     g = g.sort_values("Internal Reference", key=lambda s: s.astype(str).str.lower(),
                       kind="stable").reset_index(drop=True)
-    return g[["Internal Reference", "Picking Name", "Barcode", "Name", "今日需求",
-              "Quantity On Hand", "缺口", "Safety Stock", "FS", "Supply Remark"]]
+    cols = ["Internal Reference", "Picking Name", "Barcode", "Name", "今日需求",
+            "Quantity On Hand", "缺口", "Safety Stock", "FS", "Supply Remark"]
+    if po_stats is not None:
+        m = (po_stats.set_index("_sku")
+             .reindex(g["Internal Reference"].map(_po_base_sku)))
+        for c in PO_COLS:
+            g[c] = pd.Series(m[c].values, dtype=object)
+        # 无记录 SKU：数字列的 NA/NaN 写不进 openpyxl，置空串
+        g[PO_COLS] = g[PO_COLS].where(g[PO_COLS].notna(), "")
+        g.loc[g["供应商(次数)"] == "", "供应商(次数)"] = "无采购记录"
+        cols += PO_COLS
+    return g[cols]
 
 
 def build_facesheet(facesheet):
@@ -298,12 +358,13 @@ def unique_path(path):
     return f"{base}({i}){ext}"
 
 
-def _write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=()):
+def _write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None):
     """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。
-    left_cols/small_cols 透传给 style_sheet（左对齐下沉/小字号列），默认空=全居中。"""
+    left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。"""
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     write_df(ws, out)
-    style_sheet(ws, n_cols or len(out.columns), left_cols=left_cols, small_cols=small_cols)
+    style_sheet(ws, n_cols or len(out.columns), left_cols=left_cols, small_cols=small_cols,
+                widths=widths)
     path = unique_path(os.path.join(outdir, fname))
     wb.save(path)
     return path, len(out)
@@ -358,7 +419,7 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     return path, len(pick_df), int(face_df["Order Reference"].nunique())
 
 
-def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
+def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
     输入单店 ERP（天猫两店混合，经 ∩ERP 收敛到单店）+ 一份完整天猫导出，产出全部按店带后缀：
@@ -469,7 +530,14 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
         log.append("已补运单清单: 0 单")
 
     # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
-    reorder = build_reorder(erp)
+    po_stats = None
+    if po_path:
+        try:
+            po_stats, po_info = load_po_stats(po_path)
+            log.append(f"采购参考已加载: {po_info}")
+        except Exception as e:
+            log.append(f"⚠ 采购单导出读取失败，补货预判清单不带采购参考: {e}")
+    reorder = build_reorder(erp, po_stats)
     if reorder is None:
         log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
                    "在 Odoo 订单导出模板勾上这 3 列即可生成)")
@@ -483,10 +551,14 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output"):
         for ch in sorted(reorder["_ch"].dropna().unique()):
             sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
             short = int((sub["缺口"] > 0).sum())
-            # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock)保持居中
+            # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
+            # 采购画像的长文本列固定宽度让 wrap 生效，否则供应商名单会把列撑得极宽
             p, n = _write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
                                  left_cols={"Internal Reference", "Picking Name",
-                                            "Barcode", "Name", "FS", "Supply Remark"})
+                                            "Barcode", "Name", "FS", "Supply Remark",
+                                            "供应商(次数)", "最低价供应商", "最近一次采购"},
+                                 widths={"供应商(次数)": 45, "最低价供应商": 22,
+                                         "最近一次采购": 30})
             log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----

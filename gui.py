@@ -65,6 +65,7 @@ class App:
 
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
+        self.po = tk.StringVar()           # 阶段一 采购单导出(选填，补货预判清单采购参考)
         self.erp2 = tk.StringVar()         # 阶段二 销售 ERP(与阶段一独立)
         # 默认按日期结构化归档：output/YYYYMMDD(运行当天)，免操作员每次手动改
         # 统一用英文 output/，与 CLI/build 默认一致(消除中英文分裂)
@@ -166,7 +167,9 @@ class App:
         t1 = ttk.Frame(nb, padding=14); nb.add(t1, text="  阶段一 · 打印给仓库  ")
         self._file_row(t1, "ERP 导出:", self.erp, multi=True)
         self._file_row(t1, "完整天猫导出:", self.full)
-        self._hint(t1, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。")
+        self._file_row(t1, "采购单导出:", self.po, optional=True)
+        self._hint(t1, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。"
+                       "采购单导出(purchase order，选填)：补货预判清单尾部追加近期真实采购参考(买过谁/最低价/最近一次)。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
                   text="自动分流，生成：拣货表+面单 / 今日预计发货总获单清单 / "
                        "新订单获单清单 / 回传ERP上传表 / 已补运单清单 / "
@@ -327,7 +330,8 @@ class App:
         full = self.full.get() or None
 
         def work():
-            log, _ = build_excel.build(erp, full, outdir=self.outdir.get())
+            log, _ = build_excel.build(erp, full, outdir=self.outdir.get(),
+                                       po_path=self.po.get().strip() or None)
             return log
         self._bg(work)
 
