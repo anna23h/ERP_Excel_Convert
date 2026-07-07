@@ -109,6 +109,39 @@ def _first_nonempty(s):
 # 采购画像追加列(来自 purchase order 导出，见 load_po_stats)
 PO_COLS = ["供应商(次数)", "最低价", "最低价供应商", "最近一次采购", "采购总量"]
 
+# 采购单里伪装成供应商的客户(实为我方客户，属噪音，整行剔除)
+PO_CUSTOMER_PAT = "Alibaba Health"
+
+# 供应商简称：滤掉的法律形式/地名后缀词(小写比较)
+VENDOR_LEGAL = {"gmbh", "gmbh,", "kg", "kgaa", "ag", "ohg", "mbh", "mbb", "co", "co.",
+                "&", "e.k.", "ek", "e.u", "ltd", "ltd.", "limited", "inc", "inc.",
+                "s.a.r.l.,", "s.a.r.l.", "sarl", "sas", "bv", "se",
+                "niederlassung", "deutschland", "holding"}
+# 首词全大写但属行业通用词，单独指代会误导(PHARMA LUPUS ≠ "PHARMA")
+VENDOR_GENERIC = {"PHARMA", "APOTHEKE", "MED"}
+
+
+def _short_vendor(name):
+    """供应商全名 → 简称(2026-07-07 全量 65 家实测零碰撞)：
+    去括号注记 → 滤法律/地名后缀 → 首词全大写(≥2字符、连字符取头段、非通用词)
+    则单词指代(PHOENIX/AEP/GEHE/DM/UPS)，否则取前两词；结果过短再多取一词。"""
+    s = re.sub(r"[（(].*?[)）]", "", str(name)).strip()
+    words = [w for w in s.split() if w.lower() not in VENDOR_LEGAL]
+    if not words:
+        return str(name).strip()
+    head = words[0].split("-")[0]
+    if head.isupper() and len(head) >= 2 and head not in VENDOR_GENERIC:
+        return head
+    n = 2 if len(" ".join(words[:2])) >= 4 else 3
+    return " ".join(words[:n])
+
+
+def _vendor_map(vendors):
+    """全名→简称映射；不同全名缩成同一简称(前瞻防护，当前数据零碰撞)则保留全名。"""
+    m = {v: _short_vendor(v) for v in vendors}
+    dup = {s for s in m.values() if list(m.values()).count(s) > 1}
+    return {v: (v if s in dup else s) for v, s in m.items()}
+
 
 def _po_base_sku(s):
     """SKU 归一：去掉多件装 x2 / 变体 *2 / 渠道 _VO 等尾缀，对齐采购单里的基础 SKU。"""
@@ -127,6 +160,10 @@ def load_po_stats(path):
         raise ValueError("采购单导出缺列: " + ", ".join(missing))
     po[["Order Reference", "Vendor"]] = po[["Order Reference", "Vendor"]].ffill()
     po = po.dropna(subset=["Order Lines/Product/Internal Reference", "Vendor"]).copy()
+    is_cust = po["Vendor"].str.contains(PO_CUSTOMER_PAT, case=False, na=False)
+    n_cust = int(is_cust.sum())
+    po = po[~is_cust].copy()
+    po["Vendor"] = po["Vendor"].map(_vendor_map(po["Vendor"].unique()))
     po["_sku"] = po["Order Lines/Product/Internal Reference"].map(_po_base_sku)
     po["_price"] = pd.to_numeric(po["Order Lines/Unit Price"], errors="coerce")
     po["_qty"] = pd.to_numeric(po["Order Lines/Total Quantity"], errors="coerce")
@@ -151,6 +188,8 @@ def load_po_stats(path):
     stats["采购总量"] = pd.to_numeric(stats["采购总量"], errors="coerce").round().astype("Int64")
     info = (f"{po['_dt'].min():%Y-%m-%d}~{po['_dt'].max():%Y-%m-%d} "
             f"{po['Order Reference'].nunique()} 单 / {stats.shape[0]} SKU")
+    if n_cust:
+        info += f" (已剔除客户{PO_CUSTOMER_PAT}记录 {n_cust} 行)"
     return stats, info
 
 
