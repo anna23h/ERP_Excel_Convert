@@ -171,8 +171,7 @@ class App:
         self._hint(t1, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。"
                        "采购单导出(purchase order，选填)：补货预判清单尾部追加近期真实采购参考(买过谁/最低价/最近一次)。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="自动分流，生成：拣货表+面单 / 今日预计发货总获单清单 / "
-                       "新订单获单清单 / 回传ERP上传表 / 已补运单清单 / "
+                  text="自动分流，生成：拣货表+面单 / 新订单获单清单 / 回传ERP上传表 / "
                        "补货预判清单(ERP 勾上 FS/安全库存/备注 三列时)。").pack(anchor="w", pady=(6, 10))
         b1 = ttk.Button(t1, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage1)
@@ -325,7 +324,7 @@ class App:
         if not self.erp.get() or not self.full.get():
             messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 完整天猫导出")
             return
-        self._write("【阶段一】分流 + 生成拣货表+面单 / 新订单获单清单 / 回传ERP销售上传表 / 已补运单清单…")
+        self._write("【阶段一】分流 + 生成拣货表+面单 / 新订单获单清单 / 回传ERP销售上传表…")
         erp = self._erp_list()
         full = self.full.get() or None
 

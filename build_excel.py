@@ -312,13 +312,13 @@ def highlight_facesheet(ws, df):
 
 
 def merge_multiproduct(ws, df, extra_cols=()):
-    """多品订单：订单级列(Order Reference / VO Tracking No / VO Delivery Type)纵向合并。
-    extra_cols: 额外一并按订单合并的列名(如无货勾选的 序号/无货标注)，缺列则跳过。
+    """多品订单：订单级列(序号 / Order Reference / VO Tracking No / VO Delivery Type / 仓库备注)纵向合并。
+    extra_cols: 额外一并按订单合并的列名(如无货勾选的 无货标注)，缺列则跳过。
     按列名定位，避免加序号列后错位。"""
     cols = list(df.columns)
     merge_cols = {n: cols.index(n) + 1
-                  for n in ("Order Reference", "VO Tracking No", "VO Delivery Type",
-                            *extra_cols) if n in cols}
+                  for n in ("序号", "Order Reference", "VO Tracking No", "VO Delivery Type",
+                            WAREHOUSE_NOTE, *extra_cols) if n in cols}
     start = 2
     refs = df["Order Reference"].tolist()
     i = 0
@@ -458,8 +458,8 @@ def _write_pickface(facesheet, outdir, out_arg=None):
                 left_cols=face_left,
                 small_cols={"Internal Reference", "Picking Name"})
     highlight_facesheet(ws_chk, chk_df)
-    # 无货勾选：序号/无货标注也按订单合并(每单一格，操作员按单勾一次)
-    merge_multiproduct(ws_chk, chk_df, extra_cols=("序号", "无货(1=缺货)"))
+    # 无货勾选：无货标注也按订单合并(每单一格，操作员按单勾一次；序号已是固定订单级列)
+    merge_multiproduct(ws_chk, chk_df, extra_cols=("无货(1=缺货)",))
     fix_merged_alignment(ws_chk, face_left)
     path = unique_path(out_arg or make_output_name(facesheet, outdir))
     wb.save(path)
@@ -473,7 +473,6 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     - 新订单获单清单：履约单状态=新订单 ∩ ERP 的系统履约单号(去天猫批量获单)。
     - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
     - 回传ERP销售上传表：取消/无运单/已补运单三类 Terms 写回**合并一张**(External ID 匹配键)。
-    - 已补运单清单：系统履约单号(去天猫后台打面单)。
     完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
     负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
@@ -507,15 +506,6 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                 sub, outdir, out_arg if len(chans) == 1 else None)
             main_paths.append(p)
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
-
-    # ---- 今日预计发货总获单清单 (发货集的 系统履约单号 单列；含新订单+商家已接单∧面单已完成) ----
-    # 拿去天猫后台批量获单：覆盖今日要发的全部单(新订单+已接单)，不止新订单那一部分。
-    if not facesheet.empty:
-        for ch in sorted(facesheet["_ch"].unique()):
-            keys = facesheet[facesheet["_ch"] == ch].drop_duplicates("_key")["_key"].tolist()
-            p, n = _write_simple(pd.DataFrame({"系统履约单号": keys}),
-                                 outdir, f"今日预计发货总获单清单{ch}.xlsx", n_cols=1)
-            log.append(f"今日预计发货总获单清单{ch} 已生成: {p}  ({n} 单)")
 
     # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单；按店各一份) ----
     d = date.today()
@@ -560,21 +550,6 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     else:
         log.append("回传ERP销售上传表: 0 单 (无取消/无运单/已补运单)"
                    + ("" if full_tmall_path else " (未传完整天猫导出，取消无法识别)"))
-
-    # ---- 已补运单清单 (系统履约单号, 去天猫后台打面单；按店各一份: 分批次下载运单防混淆) ----
-    refill = ann[ann["_cat"] == "已补运单"].drop_duplicates("_key").copy()
-    if not refill.empty:
-        refill["_ch"] = (refill[s4.ERP_ORDER_REF].astype(str)
-                         .str.split("_", n=1).str[0])
-        for ch in sorted(refill["_ch"].unique()):
-            keys = refill[refill["_ch"] == ch]["_key"].tolist()
-            out = pd.DataFrame({"系统履约单号": keys})
-            wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-            write_df(ws, out); style_sheet(ws, 1)
-            p = unique_path(os.path.join(outdir, f"已补运单清单{ch}.xlsx")); wb.save(p)
-            log.append(f"已补运单清单{ch} 已生成: {p}  ({len(out)} 单)")
-    else:
-        log.append("已补运单清单: 0 单")
 
     # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
     po_stats = None
