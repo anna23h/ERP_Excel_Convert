@@ -552,36 +552,40 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                    + ("" if full_tmall_path else " (未传完整天猫导出，取消无法识别)"))
 
     # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
-    po_stats = None
-    if po_path:
+    # 只在传了采购单导出时才产出：不带真实采购参考的补货预判清单信息滞后、无参考意义，
+    # 未传采购单导出则整张跳过，仅出其余 3 份(拣货表+面单/新订单获单/回传ERP上传表)。
+    if not po_path:
+        log.append("补货预判清单: 跳过 (未传采购单导出)")
+    else:
+        po_stats = None
         try:
             po_stats, po_info = load_po_stats(po_path)
             log.append(f"采购参考已加载: {po_info}")
         except Exception as e:
             log.append(f"⚠ 采购单导出读取失败，补货预判清单不带采购参考: {e}")
-    reorder = build_reorder(erp, po_stats)
-    if reorder is None:
-        log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
-                   "在 Odoo 订单导出模板勾上这 3 列即可生成)")
-    elif reorder.empty:
-        log.append("补货预判清单: 0 SKU")
-    else:
-        reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
-                          .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
-                          .reindex(reorder["Internal Reference"]).astype(str)
-                          .str.split("_", n=1).str[0].values)
-        for ch in sorted(reorder["_ch"].dropna().unique()):
-            sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
-            short = int((sub["缺口"] > 0).sum())
-            # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
-            # 采购画像的长文本列固定宽度让 wrap 生效，否则供应商名单会把列撑得极宽
-            p, n = _write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
-                                 left_cols={"Internal Reference", "Picking Name",
-                                            "Barcode", "Name", "FS", "Supply Remark",
-                                            "供应商(次数)", "最低价供应商", "最近一次采购"},
-                                 widths={"供应商(次数)": 45, "最低价供应商": 22,
-                                         "最近一次采购": 30})
-            log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
+        reorder = build_reorder(erp, po_stats)
+        if reorder is None:
+            log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
+                       "在 Odoo 订单导出模板勾上这 3 列即可生成)")
+        elif reorder.empty:
+            log.append("补货预判清单: 0 SKU")
+        else:
+            reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
+                              .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
+                              .reindex(reorder["Internal Reference"]).astype(str)
+                              .str.split("_", n=1).str[0].values)
+            for ch in sorted(reorder["_ch"].dropna().unique()):
+                sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
+                short = int((sub["缺口"] > 0).sum())
+                # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
+                # 采购画像的长文本列固定宽度让 wrap 生效，否则供应商名单会把列撑得极宽
+                p, n = _write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
+                                     left_cols={"Internal Reference", "Picking Name",
+                                                "Barcode", "Name", "FS", "Supply Remark",
+                                                "供应商(次数)", "最低价供应商", "最近一次采购"},
+                                     widths={"供应商(次数)": 45, "最低价供应商": 22,
+                                             "最近一次采购": 30})
+                log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----
     dup = erp.drop_duplicates(s4.ERP_ORDER_REF)["_key"].duplicated().sum()

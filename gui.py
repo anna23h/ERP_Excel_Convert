@@ -168,11 +168,11 @@ class App:
         self._file_row(t1, "ERP 导出:", self.erp, multi=True)
         self._file_row(t1, "完整天猫导出:", self.full)
         self._file_row(t1, "采购单导出:", self.po, optional=True)
-        self._hint(t1, "ERP 可多选(VO/GW)。完整天猫导出：唯一天猫输入，自动定发货范围(履约+面单)并识别取消/无运单。"
-                       "采购单导出(purchase order，选填)：补货预判清单尾部追加近期真实采购参考(买过谁/最低价/最近一次)。")
+        self._hint(t1, "ERP 导出可多选(VO/GW 各一份)。完整天猫导出必传。"
+                       "采购单导出选填——无补货需求则跳过。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="自动分流，生成：拣货表+面单 / 新订单获单清单 / 回传ERP上传表 / "
-                       "补货预判清单(ERP 勾上 FS/安全库存/备注 三列时)。").pack(anchor="w", pady=(6, 10))
+                  text="点「开始生成」自动生成：拣货表+面单 / 新订单获单清单 / 回传ERP上传表。"
+                       "若填了采购单导出，再多一张补货预判清单。").pack(anchor="w", pady=(6, 10))
         b1 = ttk.Button(t1, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage1)
         b1.pack(anchor="w")
@@ -181,12 +181,12 @@ class App:
         # 阶段二标签页(自带销售 ERP 输入，无需天猫，与阶段一完全独立)
         t2 = ttk.Frame(nb, padding=14); nb.add(t2, text="  阶段二 · 仓库返回后  ")
         self._file_row(t2, "销售ERP导出:", self.erp2, multi=True)
-        self._hint(t2, "阶段二自带销售 ERP(可多选 VO/GW)，与阶段一互不影响；账单上传直接取 ERP 里的 External ID 列，无需额外文件。")
+        self._hint(t2, "销售ERP导出可多选(VO/GW 各一份)。账单上传所需信息已在 ERP 里，无需额外文件。")
         self._file_row(t2, "有货订单清单:", self.shipped, optional=True, multi=True)
         self._file_row(t2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
-        self._hint(t2, "入口二选一(都填优先有货)：有货清单=真实发货单号；无货勾选=仓库标无货的返回文件。")
+        self._hint(t2, "两者填其一即可(都填以有货为准)：有货订单清单=仓库已发货的单号；无货勾选返回=仓库标了缺货的文件。")
         self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
-        self._hint(t2, "出库单：选 stock picking 全量导出(可多选)，自动按发货订单过滤、拆 VO/GW。")
+        self._hint(t2, "选 ERP 导出的出库单文件(可多选)，程序自动筛出本次发货的、按店(VO/GW)拆开。")
         fr2 = ttk.Frame(t2); fr2.pack(fill="x", pady=4)
         ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
@@ -195,7 +195,7 @@ class App:
                   style="Field.TLabel").pack(side="left", padx=(16, 0))
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
         self._hint(t2, "生成：系统履约单号 / 发货表 / 账单上传 / 出库单。"
-                       "四个产出彼此独立：某产出因缺数据无法生成则跳过并提示，不影响其他产出。")
+                       "四张各自独立，缺哪份数据就跳过哪张，不影响其他。")
         b2 = ttk.Button(t2, text="▶  开始生成",
                         style="Action.TButton", command=self._run_stage2)
         b2.pack(anchor="w", pady=(10, 0))
@@ -208,8 +208,8 @@ class App:
         ttk.Label(fr3, text="发货日期(YYYYMMDD):", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
         ttk.Entry(fr3, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
-        self._hint(t3, "把当天各店、各次拉单产生的『发货表』全选进来，合并去重成一张给货代核对的清单"
-                       "（IHTCTGMBH+IH日期+单数.xlsx）。发货日期与阶段二同步。")
+        self._hint(t3, "把当天各店、各次生成的『发货表』都选进来，合并去重成一张给货代核对的清单。"
+                       "发货日期与阶段二填的一致。")
         b3 = ttk.Button(t3, text="▶  合并发货表",
                         style="Action.TButton", command=self._run_forwarder)
         b3.pack(anchor="w", pady=(10, 0))
@@ -218,7 +218,7 @@ class App:
         # 京东标签页(通用选列导出：勾选+排序原始列 → 出表；可存预设)
         t4 = ttk.Frame(nb, padding=14); nb.add(t4, text="  京东  ")
         self._file_row(t4, "京东原始导出:", self.jd_raw)
-        self._hint(t4, "选京东后台导出的原始 xlsx(如「复核历史查询-SKU汇总」)，点『读取列名』后在下方挑选并排序要输出的列。")
+        self._hint(t4, "选京东后台导出的原始表格(如「复核历史查询-SKU汇总」)，点『读取列名』，再在下方挑选、排序要输出的列。")
         pr = ttk.Frame(t4); pr.pack(fill="x", pady=(6, 2))
         ttk.Button(pr, text="读取列名", width=9,
                    command=self._jd_read_columns).pack(side="left")
@@ -255,8 +255,8 @@ class App:
         b4.pack(side="bottom", anchor="w", pady=(8, 0))
         self._buttons.append(b4)
         ttk.Label(t4, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，写到上方共用输出目录。"
-                       "长数字列(订单号/运单号)自动锁文本，防精度丢失。"
+                  text="输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，存到上方的输出目录。"
+                       "订单号/运单号等长数字自动保持原样，不会变成科学计数法或掉尾数。"
                   ).pack(side="bottom", anchor="w", pady=(6, 0))
         opt = ttk.Frame(t4); opt.pack(side="bottom", fill="x", pady=(4, 2))
         ttk.Checkbutton(opt, text="输出前对整行去重", variable=self.jd_dedup).pack(side="left")
