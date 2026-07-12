@@ -57,13 +57,13 @@ class App:
                 scale = dpi / 96.0
         except tk.TclError:
             pass
-        w, h = int(1180 * scale), int(760 * scale)
+        w, h = int(1180 * scale), int(820 * scale)
         w = min(w, root.winfo_screenwidth() - 40)
-        # 底边留够 任务栏+标题栏 的空间(随 DPI 放大)，否则 Windows 上窗口底部的
-        # 「打开输出文件夹」按钮会被任务栏遮住
+        # 底边留够 任务栏+标题栏 的空间(随 DPI 放大)，保证窗口整体落在工作区内，
+        # 否则 Windows 上标签页底部的操作行(含「打开输出文件夹」)会被任务栏遮住
         h = min(h, root.winfo_screenheight() - int(140 * scale))
         root.geometry(f"{w}x{h}")
-        root.minsize(min(1000, w), min(660, h))
+        root.minsize(min(1000, w), min(700, h))
 
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
@@ -109,6 +109,17 @@ class App:
         ttk.Label(parent, text=text, style="Hint.TLabel", wraplength=860,
                   justify="left").pack(anchor="w", padx=(self.LABEL_W * 7, 0), pady=(0, 4))
 
+    def _action_row(self, parent, text, command, **pack):
+        """页内底部操作行：动作按钮靠左，「打开输出文件夹」靠右并排。
+        放进各标签页(而非窗口最底), 避免 Windows 任务栏遮挡最底部控件。"""
+        row = ttk.Frame(parent)
+        row.pack(fill="x", **pack)
+        b = ttk.Button(row, text=text, style="Action.TButton", command=command)
+        b.pack(side="left")
+        ttk.Button(row, text="📂 打开输出文件夹",
+                   command=lambda: open_folder(self.outdir.get())).pack(side="right")
+        self._buttons.append(b)
+
     def _section(self, parent, title):
         """统一外观的区块：带标题、内边距的 LabelFrame。"""
         lf = ttk.LabelFrame(parent, text=title, style="Card.TLabelframe", padding=12)
@@ -135,12 +146,6 @@ class App:
 
     def _build_ui(self):
         self._init_styles()
-
-        # 底部固定操作条(始终可见)
-        bottom = ttk.Frame(self.root)
-        bottom.pack(side="bottom", fill="x", padx=12, pady=8)
-        ttk.Button(bottom, text="📂 打开输出文件夹",
-                   command=lambda: open_folder(self.outdir.get())).pack(side="right")
 
         # ① 共用输出目录(三个标签页都写到这里)，固定在顶部
         common = self._section(self.root, "① 输出目录（共用）")
@@ -175,10 +180,7 @@ class App:
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
                   text="点「开始生成」自动生成：拣货表+面单 / 新订单获单清单 / 回传ERP上传表。"
                        "若填了采购单导出，再多一张补货预判清单。").pack(anchor="w", pady=(6, 10))
-        b1 = ttk.Button(t1, text="▶  开始生成",
-                        style="Action.TButton", command=self._run_stage1)
-        b1.pack(anchor="w")
-        self._buttons.append(b1)
+        self._action_row(t1, "▶  开始生成", self._run_stage1)
 
         # 阶段二标签页(自带销售 ERP 输入，无需天猫，与阶段一完全独立)
         t2 = ttk.Frame(nb, padding=14); nb.add(t2, text="  阶段二 · 仓库返回后  ")
@@ -198,10 +200,7 @@ class App:
         ttk.Entry(fr2, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
         self._hint(t2, "生成：系统履约单号 / 发货表 / 账单上传 / 出库单。"
                        "四张各自独立，缺哪份数据就跳过哪张，不影响其他。")
-        b2 = ttk.Button(t2, text="▶  开始生成",
-                        style="Action.TButton", command=self._run_stage2)
-        b2.pack(anchor="w", pady=(10, 0))
-        self._buttons.append(b2)
+        self._action_row(t2, "▶  开始生成", self._run_stage2, pady=(10, 0))
 
         # 货代合并标签页
         t3 = ttk.Frame(nb, padding=14); nb.add(t3, text="  货代合并  ")
@@ -212,10 +211,7 @@ class App:
         ttk.Entry(fr3, textvariable=self.shipdate, width=12).pack(side="left", padx=6)
         self._hint(t3, "把当天各店、各次生成的『发货表』都选进来，合并去重成一张给货代核对的清单。"
                        "发货日期与阶段二填的一致。")
-        b3 = ttk.Button(t3, text="▶  合并发货表",
-                        style="Action.TButton", command=self._run_forwarder)
-        b3.pack(anchor="w", pady=(10, 0))
-        self._buttons.append(b3)
+        self._action_row(t3, "▶  合并发货表", self._run_forwarder, pady=(10, 0))
 
         # 京东标签页(通用选列导出：勾选+排序原始列 → 出表；可存预设)
         t4 = ttk.Frame(nb, padding=14); nb.add(t4, text="  京东  ")
@@ -252,10 +248,7 @@ class App:
             ttk.Button(mid, text=txt, width=8, command=cmd).pack(pady=3)
 
         # 底部控件钉住(side=bottom)：保证「生成表格」在任何窗口高度下都不被裁掉
-        b4 = ttk.Button(t4, text="▶  生成表格",
-                        style="Action.TButton", command=self._run_jd)
-        b4.pack(side="bottom", anchor="w", pady=(8, 0))
-        self._buttons.append(b4)
+        self._action_row(t4, "▶  生成表格", self._run_jd, side="bottom", pady=(8, 0))
         ttk.Label(t4, style="Hint.TLabel", justify="left", wraplength=520,
                   text="输出文件名：YYYY年MM月DD日{单数}单 {输出名}.xlsx，存到上方的输出目录。"
                        "订单号/运单号等长数字自动保持原样，不会变成科学计数法或掉尾数。"
