@@ -57,11 +57,13 @@ class App:
                 scale = dpi / 96.0
         except tk.TclError:
             pass
-        w, h = int(1180 * scale), int(820 * scale)
+        w, h = int(1180 * scale), int(760 * scale)
         w = min(w, root.winfo_screenwidth() - 40)
-        h = min(h, root.winfo_screenheight() - 80)
+        # 底边留够 任务栏+标题栏 的空间(随 DPI 放大)，否则 Windows 上窗口底部的
+        # 「打开输出文件夹」按钮会被任务栏遮住
+        h = min(h, root.winfo_screenheight() - int(140 * scale))
         root.geometry(f"{w}x{h}")
-        root.minsize(min(1000, w), min(700, h))
+        root.minsize(min(1000, w), min(660, h))
 
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
