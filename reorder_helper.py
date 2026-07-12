@@ -40,6 +40,10 @@ PO_DATE_CANDS = ["Order Lines/Order Date", "Order Lines/Created on",
 # 待发货明细表里带「平台裸价」的分表（按条形码取裸价）
 PRICE_SHEETS = ["采购订单-健康", "采购订单-直营", "健康-保税"]
 
+# 采购单里伪装成供应商的客户（实为我方销售平台，属噪音，整行剔除）。
+# 比 build_excel 的 "Alibaba Health" 更宽：导出实见 Alibaba Health（港）与 Alibaba.com（新加坡）两个实体，均为客户。
+CUSTOMER_PAT = "alibaba"
+
 RECENT_N = 5  # 「近期采购记录」列展示最近几笔
 
 
@@ -147,6 +151,8 @@ def load_po(path):
         ref = r[hdr[PO_INTERNAL]] if hdr[PO_INTERNAL] < len(r) else None
         if not ref:
             continue
+        if cur_vendor and CUSTOMER_PAT in str(cur_vendor).lower():
+            continue  # Alibaba 等客户单：整行剔除（噪音，非供应商）
         raw.append((cur_ref, cur_vendor, r))
     vmap = _vendor_map({v for _, v, _ in raw if v})
 
@@ -169,7 +175,7 @@ COLS = ["条形码", "商品名称", "总需求", "当前库存", "需补货数"
 # 纯数字列居中，其余（含日期/vendor/条形码/名称/记录）左对齐下沉
 NUM_COLS = {"总需求", "当前库存", "需补货数", "平台裸价", "最近采购单价", "差价", "最近采购数量"}
 LEFT_COLS = set(COLS) - NUM_COLS
-WIDTHS = {"商品名称": 30, "最近采购vendor": 18, "近期采购记录": 46, "条形码": 15}
+WIDTHS = {"商品名称": 30, "最近采购vendor": 18, "近期采购记录": 56, "条形码": 15}
 
 
 def _round(v, n):
@@ -193,8 +199,9 @@ def build_rows(demand, caps, po):
             price = last["price"]
             diff = (cap - price) if (cap is not None and price is not None) else ""
             recent = "\n".join(
-                "{d}|{v}|{q}|@{p}".format(
+                "{d}|{po}|{v}|{q}|@{p}".format(
                     d=l["date"].strftime("%m-%d") if l["date"] else "??",
+                    po=l["po"] or "?",  # PO 单号，便于回 ERP 按号查明细
                     v=l["vendor"] or "?",
                     q=("" if l["qty"] is None else f"{l['qty']:g}"),
                     p=("" if l["price"] is None else f"{l['price']:g}"))
