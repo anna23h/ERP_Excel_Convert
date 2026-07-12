@@ -73,35 +73,74 @@ def _pdate(x):
     return None
 
 
-def load_demand(path):
-    """待发货明细表『需求汇总-HK』→ [{pzn, barcode, name, need}]。
-    表头跨两行（『条形码/商品名称/订单需求数量』+ 『健康/直营/总需求』），
-    按列名定位『条形码』『商品名称』『总需求』的列号，数据取『条形码』非空行。"""
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb["需求汇总-HK"]
-    rows = list(ws.iter_rows(values_only=True))
-    c_bc = c_name = c_need = None
-    header_end = 0
-    for i, r in enumerate(rows[:6]):
+def _is_pzn(v):
+    """值形态判 PZN：归一后是 8 位纯数字（PZN- 前缀 / 7~8 位数字均可）。
+    避开后端商品id(12 位)、采购单号(PON…长串)、EAN(13 位) 等更长的数字串。"""
+    if v is None:
+        return False
+    k = norm_pzn(v)
+    return k.isdigit() and len(k) == 8
+
+
+def _find_pzn_col(rows):
+    """在一张 sheet 里按『值形态』找 PZN 主键列，不认死列头。
+    返回 (列号, 数据起始行号) —— 该列 PZN 命中数最多；无命中返回 None。"""
+    hits, first = {}, {}
+    for i, r in enumerate(rows):
         for j, v in enumerate(r):
-            s = str(v).strip() if v is not None else ""
-            if s == "条形码":
-                c_bc = j; header_end = max(header_end, i)
-            elif s == "商品名称":
-                c_name = j; header_end = max(header_end, i)
-            elif s == "总需求":
-                c_need = j; header_end = max(header_end, i)
-    if c_bc is None or c_need is None:
-        raise ValueError("待发货明细表『需求汇总-HK』找不到『条形码』或『总需求』表头")
+            if _is_pzn(v):
+                hits[j] = hits.get(j, 0) + 1
+                first.setdefault(j, i)
+    if not hits:
+        return None
+    col = min((c for c in hits if hits[c] == max(hits.values())))  # 命中最多；并列取最左列
+    return col, first[col]
+
+
+def _find_label_col(rows, data_start, exact, loose=()):
+    """在数据起始行之上的表头区找一列：先精确匹配 exact，再宽松 contains loose。
+    找不到返回 None（该信息缺失，不阻断）。"""
+    region = rows[:data_start] if data_start else rows[:3]
+    for want in (exact, None):
+        for r in region:
+            for j, v in enumerate(r):
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if want is not None and s == want:
+                    return j
+                if want is None and loose and any(k in s for k in loose):
+                    return j
+    return None
+
+
+def load_demand(path):
+    """商品清单 → [{pzn, barcode, name, need}]，对输入宽容（不认死 sheet 名/列头）。
+    优先用待发货明细表的『需求汇总-HK』；缺则回退——逐 sheet 按『值形态』找含 PZN 的列，
+    第一张命中的即主键列。商品名称/总需求 按表头宽松匹配，取不到就留空（None），不报错，
+    故『仅一列 PZN 的清单』也能跑。"""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    order = (["需求汇总-HK"] if "需求汇总-HK" in wb.sheetnames else []) + \
+            [s for s in wb.sheetnames if s != "需求汇总-HK"]
+    for name in order:
+        rows = list(wb[name].iter_rows(values_only=True))
+        found = _find_pzn_col(rows)
+        if found:
+            c_bc, data_start = found
+            break
+    else:
+        raise ValueError("未找到含 PZN 的列（商品清单里应有一列 PZN，如 PZN-02807988）")
+    c_name = _find_label_col(rows, data_start, "商品名称", loose=("名称", "品名"))
+    c_need = _find_label_col(rows, data_start, "总需求", loose=("需求",))
     out = []
-    for r in rows[header_end + 1:]:
+    for r in rows[data_start:]:
         bc = r[c_bc] if c_bc < len(r) else None
-        if bc is None or not str(bc).strip():
-            continue
-        name = r[c_name] if (c_name is not None and c_name < len(r)) else ""
+        if not _is_pzn(bc):
+            continue  # 只收 PZN 行，跳过表头残留/空行/小计
+        nm = r[c_name] if (c_name is not None and c_name < len(r)) else None
         out.append({"pzn": norm_pzn(bc), "barcode": str(bc).strip(),
-                    "name": str(name).strip() if name else "",
-                    "need": _num(r[c_need]) if c_need < len(r) else None})
+                    "name": str(nm).strip() if nm else "",
+                    "need": _num(r[c_need]) if (c_need is not None and c_need < len(r)) else None})
     return out
 
 
@@ -176,6 +215,9 @@ COLS = ["条形码", "商品名称", "总需求", "当前库存", "需补货数"
 NUM_COLS = {"总需求", "当前库存", "需补货数", "平台裸价", "最近采购单价", "差价", "最近采购数量"}
 LEFT_COLS = set(COLS) - NUM_COLS
 WIDTHS = {"商品名称": 30, "最近采购vendor": 18, "近期采购记录": 56, "条形码": 15}
+# 整批都无值时整列删掉（如仅 PZN 清单没有 商品名称/总需求，也没采购订单分表给平台裸价）；
+# 有值/部分有值则保留、缺处留空，列序不变。其余列（条形码/库存/采购画像）恒在。
+DROP_IF_EMPTY = ["商品名称", "总需求", "需补货数", "平台裸价", "差价"]
 
 
 def _round(v, n):
@@ -236,6 +278,9 @@ def build(demand_path, po_path, out_path=None):
 
     import pandas as pd
     df = pd.DataFrame(rows, columns=COLS)
+    for c in DROP_IF_EMPTY:
+        if df[c].map(lambda v: v in ("", None)).all():
+            df = df.drop(columns=c)
     if out_path:
         outdir = os.path.dirname(out_path) or "."
         fname = os.path.basename(out_path)
