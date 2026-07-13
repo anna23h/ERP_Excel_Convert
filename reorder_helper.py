@@ -209,15 +209,20 @@ def load_po(path):
     return out
 
 
-COLS = ["条形码", "商品名称", "总需求", "当前库存", "需补货数", "平台裸价", "最近采购单价",
-        "差价", "最近采购vendor", "最近采购数量", "最近采购日期", "近期采购记录"]
+# 产出列名英文化（给非中文同事）：优选 ERP/PO 原始名；「平台裸价/总需求」是待发货表摘出的
+# 中文域词、仅中文输入时才出现（PZN 清单模式下会被 DROP_IF_EMPTY 丢掉），故保留中文。
+COLS = ["Barcode", "Name", "总需求", "Quantity On Hand", "Reorder Qty", "平台裸价",
+        "Last Unit Price", "Price Diff", "Last Vendor", "Last Qty", "Last Order Date",
+        "Recent Purchases"]
+NO_PO_MARK = "No purchase record"   # 无采购记录标记（Last Vendor 列占位值）
 # 纯数字列居中，其余（含日期/vendor/条形码/名称/记录）左对齐下沉
-NUM_COLS = {"总需求", "当前库存", "需补货数", "平台裸价", "最近采购单价", "差价", "最近采购数量"}
+NUM_COLS = {"总需求", "Quantity On Hand", "Reorder Qty", "平台裸价", "Last Unit Price",
+            "Price Diff", "Last Qty"}
 LEFT_COLS = set(COLS) - NUM_COLS
-WIDTHS = {"商品名称": 30, "最近采购vendor": 18, "近期采购记录": 56, "条形码": 15}
-# 整批都无值时整列删掉（如仅 PZN 清单没有 商品名称/总需求，也没采购订单分表给平台裸价）；
-# 有值/部分有值则保留、缺处留空，列序不变。其余列（条形码/库存/采购画像）恒在。
-DROP_IF_EMPTY = ["商品名称", "总需求", "需补货数", "平台裸价", "差价"]
+WIDTHS = {"Name": 30, "Last Vendor": 18, "Recent Purchases": 56, "Barcode": 15}
+# 整批都无值时整列删掉（如仅 PZN 清单没有 Name/总需求，也没采购订单分表给平台裸价）；
+# 有值/部分有值则保留、缺处留空，列序不变。其余列（Barcode/库存/采购画像）恒在。
+DROP_IF_EMPTY = ["Name", "总需求", "Reorder Qty", "平台裸价", "Price Diff"]
 
 
 def _round(v, n):
@@ -265,7 +270,7 @@ def build_rows(demand, caps, po):
                 "" if need is None else int(need),
                 "" if onhand is None else int(onhand),
                 "" if reorder is None else int(reorder),
-                _round(cap, 4), "", "", "无采购记录", "", "", "",
+                _round(cap, 4), "", "", NO_PO_MARK, "", "", "",
             ])
     return rows
 
@@ -290,8 +295,8 @@ def build(demand_path, po_path, out_path=None):
     os.makedirs(outdir, exist_ok=True)
     path, n = _write_simple(df, outdir, fname, left_cols=LEFT_COLS, widths=WIDTHS)
 
-    vcol = COLS.index("最近采购vendor")
-    matched = sum(1 for r in rows if r[vcol] != "无采购记录")
+    vcol = COLS.index("Last Vendor")
+    matched = sum(1 for r in rows if r[vcol] != NO_PO_MARK)
     return path, n, matched
 
 
