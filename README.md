@@ -41,6 +41,7 @@ VO（VoyageOne）拉单流程中 Excel 处理环节的自动化脚本。
 | `YYYY年MM月DD日{店}{n}单 拣货表+面单.xlsx` | 发货+已补运单（含无货勾选页）| 打印交仓库 |
 | `回传ERP销售上传表{店}.xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复 |
 | `已补运单清单{店}.xlsx` | 系统履约单号 | 天猫后台批量打面单、发群 |
+| `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
 
 **阶段二（仓库反馈缺货后）：**
 
@@ -50,6 +51,7 @@ VO（VoyageOne）拉单流程中 Excel 处理环节的自动化脚本。
 | `发货表.xlsx` (C) | Order Reference + Tracking（GW/VO 分 sheet）|
 | `账单上传.xlsx` (D) | External ID + 账单标签 → ERP 开账单 |
 | `出库单{店}.xlsx` (E) | stock picking 过滤+统一发货日期 → ERP 标记出库 |
+| `取消出库单.xlsx` | stock picking 过滤取消订单，Tracking Reference 统一写 `订单取消`、不写 Carrier/ID、**合并一张不分店** → ERP 按标记筛出批量取消 |
 | `缺货记录.xlsx` | 明细 + SKU 汇总，回连 ERP 库存/条码/货位 |
 
 **当天收尾（跨店）：**
@@ -59,6 +61,26 @@ VO（VoyageOne）拉单流程中 Excel 处理环节的自动化脚本。
 | `IHTCTGMBH+IH{YYYYMMDD}+{单数}.xlsx` | N 份发货表合并去重 → 上传货代核对（唯一跨店产出）|
 
 阶段二无货入口采用**「直接取有货(0)」**：仓库返回表按 0/1 标记，多品订单全 0 才整单发货，任一无货整单不发、任一留空报警——漏返回不会默认全发。
+
+### 取消出库单用法（清理取消订单遗留的 dangling picking）
+
+订单在天猫取消后需人工进 ERP 取消订单，但取消**不连带取消其 picking（出库单）**，ERP 出库端因此堆积大量未处理 picking。此功能产出一张可导入 Odoo 的 picking 回写文件，把取消订单对应 picking 的 `Tracking Reference` 统一写成 `订单取消`，同事导入后在 ERP 按此标记一次性筛出、全选、批量取消。
+
+因取消是**滚动产生**的（打包寄出后、回传天猫前买家仍可取消，回传后还会冒 1~5 单），取消集在阶段一时非最终态，故采用「播种 + 补录 + 生成」两步：
+
+1. **阶段一** 自动产出 `取消订单清单.xlsx` 种子表（当批取消单）。
+2. 回传天猫后，把后到的取消单（填**系统履约号 SCP**）手工 append 进该表。
+3. **阶段二** 传「取消订单清单」+「出库原始数据」→ 生成 `取消出库单.xlsx`。
+
+CLI：
+
+```
+python3 stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking <出库原始数据>
+```
+
+- 只带 `--cancel-list` + `--picking`（不给有货/无货清单）也能单独跑出取消出库单，便于收尾时补跑；`--erp` 仍需带（作「别漏 ERP」护栏，与其余产出共用入口）。
+- GUI：阶段二「取消订单清单」为选填；只填它 + 出库原始数据即进入「仅取消模式」，可不填有货/无货清单。
+- 与实际发货/打包/寄出互不影响；未传取消清单则该产出跳过，其余四张不变。
 
 ## 环境
 
@@ -76,6 +98,7 @@ Python + pandas + openpyxl。
 - [x] 缺货记录（明细按SKU合并 + SKU汇总，回连ERP增强库存/条码/货位）
 - [x] 步骤9 文件命名 + 打印格式
 - [x] E 出库单（`stage2.build_E`）：stock picking 过滤+统一发货日期，拆 VO/GW，回传 Odoo 标记出库。
+- [x] **取消出库单**（`stage2.build_cancel`，与 build_E 共享 `build_picking_writeback` 原语）：过滤取消订单 picking，Tracking Reference 写 `订单取消`、不写 Carrier/ID、合并一张 → ERP 批量取消。阶段一播种取消清单 + 人工补后到的 + 阶段二生成；可仅取消模式单独补跑。
 - [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
