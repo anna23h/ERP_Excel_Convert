@@ -48,13 +48,28 @@ RECENT_N = 5  # 「近期采购记录」列展示最近几笔
 
 
 def norm_pzn(x):
-    """条形码 / Internal Reference 归一为可比较键：去 PZN- 前缀，纯数字补零到 8 位。"""
-    s = re.sub(r"^PZN[-\s]*", "", str(x).strip(), flags=re.I)
-    m = re.search(r"(\d+)\s*$", s)          # 取尾部数字段（Internal Reference 如 Xxx_02807988）
+    """从条形码 / Internal Reference / 产品引用里提取 PZN，归一为补零 8 位的可比较键。
+    按模式抓（非抓尾数），抓不到返回 None：
+      1) `前缀_PZN(x件装)`：`Mucosolvan_02807988` / 销售分析 `[DOPH_12351236x2]`；
+      2) 显式 `PZN-02807988`；
+      3) 整格就是 7~8 位数字（纯 PZN 清单 / 条形码）。
+    金额（`30623.25` 带小数、无下划线）与 12 位后端 id / 13 位 EAN（长度不符）自然抓不到→None。"""
+    s = str(x).strip()
+    m = re.search(r"_(\d{7,8})(?!\d)", s)           # 前缀_PZN，可带 x件装后缀
     if not m:
-        return s
-    d = m.group(1)
-    return d.zfill(8) if len(d) <= 8 else d
+        m = re.search(r"PZN[-\s]*(\d{7,8})(?!\d)", s, flags=re.I)  # 显式 PZN 码
+    if m:
+        return m.group(1).zfill(8)
+    s2 = re.sub(r"^PZN[-\s]*", "", s, flags=re.I).strip()
+    if re.fullmatch(r"\d{7,8}", s2):                # 整格 7~8 位数字（条形码/PZN 清单）
+        return s2.zfill(8)
+    return None
+
+
+def _is_pzn(v):
+    """值形态判 PZN：能被 norm_pzn 抽出 7~8 位 PZN。
+    自然避开后端商品id(12 位)、采购单号(PON…长串)、EAN(13 位) 与金额（带小数）。"""
+    return v is not None and norm_pzn(v) is not None
 
 
 def _num(x):
@@ -71,15 +86,6 @@ def _pdate(x):
         except (TypeError, ValueError):
             continue
     return None
-
-
-def _is_pzn(v):
-    """值形态判 PZN：归一后是 8 位纯数字（PZN- 前缀 / 7~8 位数字均可）。
-    避开后端商品id(12 位)、采购单号(PON…长串)、EAN(13 位) 等更长的数字串。"""
-    if v is None:
-        return False
-    k = norm_pzn(v)
-    return k.isdigit() and len(k) == 8
 
 
 def _find_pzn_col(rows):
@@ -161,8 +167,9 @@ def load_caps(path):
         for r in rows[1:]:
             if cb < len(r) and r[cb] and cp < len(r) and r[cp] not in (None, ""):
                 v = _num(r[cp])
-                if v is not None:
-                    caps.setdefault(norm_pzn(r[cb]), v)  # 首见为准（分表内同码裸价一致）
+                k = norm_pzn(r[cb])
+                if v is not None and k is not None:
+                    caps.setdefault(k, v)  # 首见为准（分表内同码裸价一致）
     return caps
 
 
@@ -198,6 +205,8 @@ def load_po(path):
     out = {}
     for cur_ref, cur_vendor, r in raw:
         key = norm_pzn(r[hdr[PO_INTERNAL]])
+        if key is None:                    # 无可识别 PZN 的采购行（运费/服务等）跳过
+            continue
         out.setdefault(key, []).append({
             "po": cur_ref,
             "vendor": vmap.get(cur_vendor, cur_vendor) if cur_vendor else "",
