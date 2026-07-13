@@ -40,6 +40,13 @@ PO_DATE_CANDS = ["Order Lines/Order Date", "Order Lines/Created on",
 # 待发货明细表里带「平台裸价」的分表（按条形码取裸价）
 PRICE_SHEETS = ["采购订单-健康", "采购订单-直营", "健康-保税"]
 
+# ---- product.product 主数据列名（选填富化输入）----
+PM_INTERNAL = "Internal Reference"
+PM_BARCODE  = "Barcode"
+PM_PZN      = "PZN"
+PM_NAME     = "Name"
+PM_ONHAND   = "Quantity On Hand"
+
 # 采购单里伪装成供应商的客户（实为我方销售平台，属噪音，整行剔除）。
 # 比 build_excel 的 "Alibaba Health" 更宽：导出实见 Alibaba Health（港）与 Alibaba.com（新加坡）两个实体，均为客户。
 CUSTOMER_PAT = "alibaba"
@@ -120,11 +127,21 @@ def _find_label_col(rows, data_start, exact, loose=()):
     return None
 
 
+def _extract_intref(v):
+    """从产品引用里抽 Internal Reference：销售分析 `[Abtei_14130309] 名称` 取中括号内；
+    本身就是 `前缀_数字(x件装)` 形态则取整段；纯条形码/PZN 无 IntRef 返回 None。"""
+    s = str(v).strip()
+    m = re.search(r"\[([^\]]+?)\]", s)   # 中括号内(销售分析)
+    if m:
+        s = m.group(1).strip()
+    return s if re.search(r"_\d{7,8}", s) else None
+
+
 def load_demand(path):
-    """商品清单 → [{pzn, barcode, name, need}]，对输入宽容（不认死 sheet 名/列头）。
+    """商品清单 → [{pzn, name, need, intref}]，对输入宽容（不认死 sheet 名/列头）。
     优先用待发货明细表的『需求汇总-HK』；缺则回退——逐 sheet 按『值形态』找含 PZN 的列，
     第一张命中的即主键列。商品名称/总需求 按表头宽松匹配，取不到就留空（None），不报错，
-    故『仅一列 PZN 的清单』也能跑。"""
+    故『仅一列 PZN 的清单』也能跑。intref 从引用串里抽(有则供 Internal Reference 列/富化回退)。"""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     order = (["需求汇总-HK"] if "需求汇总-HK" in wb.sheetnames else []) + \
             [s for s in wb.sheetnames if s != "需求汇总-HK"]
@@ -144,9 +161,10 @@ def load_demand(path):
         if not _is_pzn(bc):
             continue  # 只收 PZN 行，跳过表头残留/空行/小计
         nm = r[c_name] if (c_name is not None and c_name < len(r)) else None
-        out.append({"pzn": norm_pzn(bc), "barcode": str(bc).strip(),
+        out.append({"pzn": norm_pzn(bc),
                     "name": str(nm).strip() if nm else "",
-                    "need": _num(r[c_need]) if (c_need is not None and c_need < len(r)) else None})
+                    "need": _num(r[c_need]) if (c_need is not None and c_need < len(r)) else None,
+                    "intref": _extract_intref(bc)})
     return out
 
 
@@ -171,6 +189,41 @@ def load_caps(path):
                 if v is not None and k is not None:
                     caps.setdefault(k, v)  # 首见为准（分表内同码裸价一致）
     return caps
+
+
+def load_master(path):
+    """product.product 主数据(选填)富化 → {key: rec}。key **同时**索引 IntRef 嵌入 PZN 与
+    官方 PZN 字段(桥接「名称/IntRef 留旧 PZN、PZN 字段是更新后新 PZN」的错位)。
+    rec = {pzn(官方), name, barcode(EAN), intref, onhand}。"""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+    hdr = {str(h).strip(): i for i, h in enumerate(rows[0]) if h is not None}
+    missing = [c for c in (PM_INTERNAL, PM_PZN, PM_NAME) if c not in hdr]
+    if missing:
+        raise ValueError(f"product.product 主数据缺列: {missing}")
+    ci, cp, cn = hdr[PM_INTERNAL], hdr[PM_PZN], hdr[PM_NAME]
+    cb, co = hdr.get(PM_BARCODE), hdr.get(PM_ONHAND)
+
+    def g(r, c):
+        return r[c] if (c is not None and c < len(r)) else None
+
+    master = {}
+    for r in rows[1:]:
+        intref, pzn_field = g(r, ci), g(r, cp)
+        rec = {
+            "pzn": norm_pzn(pzn_field) or norm_pzn(intref),   # 官方 PZN 优先，退回 IntRef 嵌入
+            "name": str(g(r, cn)).strip() if g(r, cn) else "",
+            "barcode": str(g(r, cb)).strip() if g(r, cb) else "",
+            "intref": str(intref).strip() if intref else "",
+            "onhand": _num(g(r, co)),
+        }
+        for k in {norm_pzn(intref), norm_pzn(pzn_field)}:  # 两个键都指向同一记录
+            if k:
+                master.setdefault(k, rec)
+    return master
 
 
 def load_po(path):
@@ -218,37 +271,50 @@ def load_po(path):
     return out
 
 
-# 产出列名英文化（给非中文同事）：优选 ERP/PO 原始名；「平台裸价/总需求」是待发货表摘出的
-# 中文域词、仅中文输入时才出现（PZN 清单模式下会被 DROP_IF_EMPTY 丢掉），故保留中文。
-COLS = ["Barcode", "Name", "总需求", "Quantity On Hand", "Reorder Qty", "平台裸价",
-        "Last Unit Price", "Price Diff", "Last Vendor", "Last Qty", "Last Order Date",
-        "Recent Purchases"]
+# 产出列名英文化（给非中文同事）：身份字段优先取 product.product 主数据；「平台裸价/总需求」
+# 是待发货表摘出的中文域词、仅中文输入时才出现（否则被 DROP_IF_EMPTY 丢掉），故保留中文。
+COLS = ["PZN", "Name", "Barcode", "Internal Reference", "总需求", "Quantity On Hand",
+        "Reorder Qty", "平台裸价", "Last Unit Price", "Price Diff", "Last Vendor",
+        "Last Qty", "Last Order Date", "Recent Purchases"]
 NO_PO_MARK = "No purchase record"   # 无采购记录标记（Last Vendor 列占位值）
-# 纯数字列居中，其余（含日期/vendor/条形码/名称/记录）左对齐下沉
+# 纯数字列居中，其余（PZN/名称/条码/引用/日期/vendor/记录）左对齐下沉
 NUM_COLS = {"总需求", "Quantity On Hand", "Reorder Qty", "平台裸价", "Last Unit Price",
             "Price Diff", "Last Qty"}
 LEFT_COLS = set(COLS) - NUM_COLS
-WIDTHS = {"Name": 30, "Last Vendor": 18, "Recent Purchases": 56, "Barcode": 15}
-# 整批都无值时整列删掉（如仅 PZN 清单没有 Name/总需求，也没采购订单分表给平台裸价）；
-# 有值/部分有值则保留、缺处留空，列序不变。其余列（Barcode/库存/采购画像）恒在。
-DROP_IF_EMPTY = ["Name", "总需求", "Reorder Qty", "平台裸价", "Price Diff"]
+WIDTHS = {"Name": 30, "Last Vendor": 18, "Recent Purchases": 56,
+          "Barcode": 15, "Internal Reference": 22, "PZN": 12}
+# 整批都无值时整列删掉（如仅 PZN 清单没 Name/Barcode/IntRef/总需求/裸价）；
+# 有值/部分有值则保留、缺处留空，列序不变。PZN/库存/采购画像 恒在。
+DROP_IF_EMPTY = ["Name", "Barcode", "Internal Reference", "总需求", "Reorder Qty",
+                 "平台裸价", "Price Diff"]
 
 
 def _round(v, n):
     return round(v, n) if v is not None else ""
 
 
-def build_rows(demand, caps, po):
+def build_rows(demand, caps, po, master=None):
+    master = master or {}
     rows = []
     for d in demand:
-        lines = po.get(d["pzn"], [])
+        m = master.get(d["pzn"])
+        # 身份：有主数据取权威(官方 PZN/Name/Barcode/IntRef)，否则退回 demand
+        disp_pzn = (m["pzn"] if m and m["pzn"] else d["pzn"]) or ""
+        name = (m["name"] if m else d["name"]) or ""
+        barcode = m["barcode"] if m else ""
+        intref = (m["intref"] if m else d["intref"]) or ""
+        # PO 连接键：有主数据用其 IntRef 嵌入 PZN(桥接待发货表官方 PZN → PO 嵌入 PZN)，否则用 demand PZN
+        join_pzn = (norm_pzn(m["intref"]) if m and m["intref"] else None) or d["pzn"]
+        lines = po.get(join_pzn, [])
         dated = sorted([l for l in lines if l["date"]], key=lambda x: x["date"], reverse=True)
-        # 当前库存：产品级，取任一非空（优先最近记录）
-        onhand = next((l["onhand"] for l in dated if l["onhand"] is not None),
-                      next((l["onhand"] for l in lines if l["onhand"] is not None), None))
+        # 当前库存：主数据优先，否则取采购行里任一非空（优先最近记录）
+        onhand = (m["onhand"] if (m and m["onhand"] is not None) else
+                  next((l["onhand"] for l in dated if l["onhand"] is not None),
+                       next((l["onhand"] for l in lines if l["onhand"] is not None), None)))
         cap = caps.get(d["pzn"])
         need = d["need"]
         reorder = (need - onhand) if (need is not None and onhand is not None) else need
+        ident = [disp_pzn, name, barcode, intref]
 
         if dated or lines:
             last = dated[0] if dated else lines[0]
@@ -262,8 +328,7 @@ def build_rows(demand, caps, po):
                     q=("" if l["qty"] is None else f"{l['qty']:g}"),
                     p=("" if l["price"] is None else f"{l['price']:g}"))
                 for l in (dated or lines)[:RECENT_N])
-            rows.append([
-                d["barcode"], d["name"],
+            rows.append(ident + [
                 "" if need is None else int(need),
                 "" if onhand is None else int(onhand),
                 "" if reorder is None else int(reorder),
@@ -274,8 +339,7 @@ def build_rows(demand, caps, po):
                 recent,
             ])
         else:
-            rows.append([
-                d["barcode"], d["name"],
+            rows.append(ident + [
                 "" if need is None else int(need),
                 "" if onhand is None else int(onhand),
                 "" if reorder is None else int(reorder),
@@ -284,11 +348,12 @@ def build_rows(demand, caps, po):
     return rows
 
 
-def build(demand_path, po_path, out_path=None):
+def build(demand_path, po_path, out_path=None, master_path=None):
     demand = load_demand(demand_path)
     caps = load_caps(demand_path)
     po = load_po(po_path)
-    rows = build_rows(demand, caps, po)
+    master = load_master(master_path) if master_path else None
+    rows = build_rows(demand, caps, po, master)
 
     import pandas as pd
     df = pd.DataFrame(rows, columns=COLS)
@@ -310,11 +375,20 @@ def build(demand_path, po_path, out_path=None):
 
 
 def main():
-    args = sys.argv[1:]
+    # 位置参: <待发货明细表/PZN清单/销售分析> <purchase order> [out.xlsx]
+    # 选填: --master <product.product.xlsx>  富化 PZN/Name/Barcode/Internal Reference
+    args = [a for a in sys.argv[1:]]
+    master_path = None
+    if "--master" in args:
+        i = args.index("--master")
+        master_path = args[i + 1] if i + 1 < len(args) else None
+        del args[i:i + 2]
     if len(args) < 2:
-        print("用法: python3 reorder_helper.py <待发货明细表.xlsx> <purchase order.xlsx> [out.xlsx]")
+        print("用法: python3 reorder_helper.py <待发货明细表.xlsx> <purchase order.xlsx> "
+              "[out.xlsx] [--master product.product.xlsx]")
         return
-    path, n, matched = build(args[0], args[1], args[2] if len(args) > 2 else None)
+    path, n, matched = build(args[0], args[1], args[2] if len(args) > 2 else None,
+                             master_path=master_path)
     print(f"订货辅助表已生成: {path}")
     print(f"  共 {n} 个货品，其中 {matched} 个有采购记录，{n - matched} 个无匹配")
 

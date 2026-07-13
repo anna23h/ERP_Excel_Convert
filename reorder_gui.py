@@ -65,6 +65,7 @@ class App:
 
         self.demand = tk.StringVar()
         self.po = tk.StringVar()
+        self.master = tk.StringVar()   # optional product.product master (enrich identity)
         # optional explicit output file; blank -> output/<today>/reorder-<today>.xlsx
         self.out = tk.StringVar()
         self.outdir = tk.StringVar(
@@ -111,6 +112,10 @@ class App:
         self._file_row(card, "Purchase order export:", self.po,
                        "Required. The Odoo purchase.order export (row form). Provides last "
                        "vendor / price / qty / date and current stock on hand.")
+        self._file_row(card, "Product master (optional):", self.master,
+                       "Optional. The Odoo product.product export. When given, fills clean "
+                       "PZN / Name / Barcode / Internal Reference / stock. Without it, those "
+                       "are parsed from the reference (name), so identity may be sparser.")
         self._file_row(card, "Output file (optional):", self.out,
                        "Leave blank to save into the output folder as reorder-<date>.xlsx.")
 
@@ -189,6 +194,7 @@ class App:
         self._write("Generating reorder sheet…")
         demand = self.demand.get().strip()
         po = self.po.get().strip()
+        master = self.master.get().strip() or None
         out = self.out.get().strip() or None
         outdir = self.outdir.get().strip()
 
@@ -196,7 +202,7 @@ class App:
             # explicit output path wins; otherwise write into the chosen output folder
             out_path = out if out else os.path.join(
                 outdir, f"reorder-{date.today():%Y%m%d}.xlsx")
-            path, n, matched = reorder_helper.build(demand, po, out_path)
+            path, n, matched = reorder_helper.build(demand, po, out_path, master_path=master)
             return [f"Saved: {path}",
                     f"{n} product(s), {matched} with purchase records, "
                     f"{n - matched} without a match."]
