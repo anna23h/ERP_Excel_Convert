@@ -76,6 +76,7 @@ class App:
         self.shipped = tk.StringVar()      # 有货入口
         self.nogoods = tk.StringVar()      # 无货勾选入口
         self.picking = tk.StringVar()
+        self.cancel_list = tk.StringVar()  # 取消订单清单(生成取消出库单)
         self.forwarder = tk.StringVar()    # 货代合并：N 份发货表
         self.shipdate = tk.StringVar(value=date.today().strftime("%Y%m%d"))
         self.mmdd = tk.StringVar(value=date.today().strftime("%m%d"))
@@ -191,6 +192,10 @@ class App:
         self._hint(t2, "两者填其一即可(都填以有货为准)：有货订单清单=仓库已发货的单号；无货勾选返回=仓库标了缺货的文件。")
         self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
         self._hint(t2, "选 ERP 导出的出库单文件(可多选)，程序自动筛出本次发货的、按店(VO/GW)拆开。")
+        self._file_row(t2, "取消订单清单:", self.cancel_list, optional=True, multi=True)
+        self._hint(t2, "选填。传阶段一产出的『取消订单清单』(回传天猫后把后到的取消单补录进去)，"
+                       "配上面『出库原始数据』→ 多产出一张『取消出库单』(运单号统一写『订单取消』、"
+                       "合并不分店)，供你在 ERP 里筛出批量取消。不影响其余四张产出。")
         fr2 = ttk.Frame(t2); fr2.pack(fill="x", pady=4)
         ttk.Label(fr2, text="日期(MMDD):", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
@@ -333,8 +338,13 @@ class App:
         if not self.erp2.get():
             messagebox.showwarning("缺少文件", "请先选择 销售ERP导出")
             return
-        if not self.shipped.get() and not self.nogoods.get():
-            messagebox.showwarning("缺少文件", "请选择『有货订单清单』或『无货勾选返回』(二选一)")
+        # 仅取消模式(取消订单清单+出库原始数据)可不填有货/无货；否则二选一
+        cancel_only = (self.cancel_list.get() and self.picking.get()
+                       and not self.shipped.get() and not self.nogoods.get())
+        if not cancel_only and not self.shipped.get() and not self.nogoods.get():
+            messagebox.showwarning("缺少文件",
+                                   "请选择『有货订单清单』或『无货勾选返回』(二选一)；"
+                                   "或只填『取消订单清单』+『出库原始数据』单独生成取消出库单")
             return
         if not self.mmdd.get().strip():
             messagebox.showwarning("缺少日期", "请填写日期 MMDD（如 0611）")
@@ -345,11 +355,12 @@ class App:
         erp = [p.strip() for p in self.erp2.get().split(";") if p.strip()]
         shipped = [p.strip() for p in self.shipped.get().split(";") if p.strip()] or None
         nogoods = [p.strip() for p in self.nogoods.get().split(";") if p.strip()] or None
+        cancel = [p.strip() for p in self.cancel_list.get().split(";") if p.strip()] or None
 
         def work():
             return stage2.run(self.mmdd.get().strip(), erp, shipped, nogoods,
                               outdir=self.outdir.get(),
-                              picking=picking, shipdate=shipdate)
+                              picking=picking, shipdate=shipdate, cancel_list=cancel)
         self._bg(work)
 
     def _run_forwarder(self):

@@ -32,6 +32,9 @@ SCP_RE = re.compile(r"SCP\d+")   # 连接键: 系统履约单号(SCP…) / Order
 # 出库单 Carrier/ID 固定填充值(承运商外部 ID)
 CARRIER_ID = "__export__.delivery_carrier_9_066799ca"
 
+# 取消出库单 Tracking Reference 统一标记(供 ERP 里按此筛出、批量取消 dangling picking)
+CANCEL_TRK = "订单取消"
+
 MARK_PREFIXES = ("无货", "缺货", "勾选")
 TRUTHY_STR = {"1", "x", "✓", "√", "是", "y", "yes", "true", "无货", "缺货"}
 
@@ -270,13 +273,15 @@ def _scp(v):
     return m.group(1) if m else None
 
 
-def build_E(picking_paths, shipped, shipdate, outdir):
-    """从 stock picking 全量导出(出库原始数据)生成出库单。
+def build_picking_writeback(picking_paths, keys, trk_value, outdir, name,
+                            carrier_id=None, split_channel=True):
+    """从 stock picking 全量导出(出库原始数据)生成 picking 回写文件(出库单/取消出库单同一原语)。
 
-    过滤: Source Document 的 SCP ∈ 实际发货订单。沿用 pool 的英文表头与原 Status，
-    仅把 Tracking Reference 统一覆盖成发货日期。按 VO/GW 拆成两个文件。
-    返回 (results{ch:(path,n)}, missing{ch:[scp...]})。"""
-    results, missing = {}, {}
+    过滤: Source Document 的 SCP ∈ keys(经 _scp 归一)。沿用 pool 的英文表头与原 Status，
+    把 Tracking Reference 统一覆盖成 trk_value；carrier_id 非空时同时把 Carrier/ID 覆盖成它。
+    split_channel=True 按 VO/GW 拆两份；False 合并成一张(文件名渠道后缀取实际覆盖到的店)。
+    返回 (results{label:(path,n)}, missing[scp...])：missing = keys 里在 pool 中找不到 picking 的 SCP。"""
+    results, missing = {}, []
     if not picking_paths:
         return results, missing
     frames = [pd.read_excel(p) for p in picking_paths]
@@ -290,34 +295,51 @@ def build_E(picking_paths, shipped, shipdate, outdir):
 
     pool["_scp"] = pool[srccol].map(_scp)
     pool["_ch"] = pool[srccol].astype(str).str.split("_", n=1).str[0]
-    shipped_scp = {s for s in (_scp(k) for k in shipped["_key"]) if s}
+    want = {s for s in (_scp(k) for k in keys) if s}
 
-    kept = pool[pool["_scp"].isin(shipped_scp)].copy()
-    if trkcol is not None and shipdate:
-        kept[trkcol] = shipdate
-    # Carrier/ID 每行统一填固定承运商外部 ID(列不存在则新建)
-    carcol = next((c for c in kept.columns if str(c).strip() == "Carrier/ID"), "Carrier/ID")
-    kept[carcol] = CARRIER_ID
+    kept = pool[pool["_scp"].isin(want)].copy()
+    if trkcol is not None and trk_value is not None:
+        kept[trkcol] = trk_value
+    if carrier_id is not None:      # Carrier/ID 列不存在则新建
+        carcol = next((c for c in kept.columns
+                       if str(c).strip() == "Carrier/ID"), "Carrier/ID")
+        kept[carcol] = carrier_id
 
-    pool_channels = set(pool["_ch"].unique())
-    for ch in ["VO", "GW"]:
-        sub = kept[kept["_ch"] == ch].drop(columns=["_scp", "_ch"])
+    def _emit(sub, label):
+        sub = sub.drop(columns=["_scp", "_ch"])
         sub = sub.where(pd.notna(sub), "")   # 空单元格写空串，避免出现字面 nan
-        if not sub.empty:
-            wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-            be.write_df(ws, sub)
-            be.style_sheet(ws, len(sub.columns))
-            path = be.unique_path(os.path.join(outdir, stage2_name("出库单", ch, len(sub))))
-            wb.save(path)
-            results[ch] = (path, len(sub))
-        # 仅对 pool 覆盖到的店铺报缺(发货订单在 pool 里找不到对应 picking)
-        if ch in pool_channels:
-            want = {s for s in (_scp(k) for k in
-                                shipped[shipped["channel"] == ch]["_key"]) if s}
-            miss = sorted(want - set(pool.loc[pool["_ch"] == ch, "_scp"]))
-            if miss:
-                missing[ch] = miss
+        if sub.empty:
+            return
+        wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
+        be.write_df(ws, sub)
+        be.style_sheet(ws, len(sub.columns))
+        path = be.unique_path(os.path.join(outdir, stage2_name(name, label, len(sub))))
+        wb.save(path)
+        results[label] = (path, len(sub))
+
+    if split_channel:
+        for ch in ["VO", "GW"]:
+            _emit(kept[kept["_ch"] == ch], ch)
+    else:
+        _emit(kept, chan_suffix(kept["_ch"]))
+
+    missing = sorted(want - set(pool["_scp"].dropna()))
     return results, missing
+
+
+def build_E(picking_paths, shipped, shipdate, outdir):
+    """出库单：过滤实际发货订单的 picking，Tracking Reference 覆盖为发货日期、
+    Carrier/ID 固定承运商，按 VO/GW 拆两份。"""
+    return build_picking_writeback(picking_paths, shipped["_key"].tolist(),
+                                   shipdate, outdir, "出库单",
+                                   carrier_id=CARRIER_ID, split_channel=True)
+
+
+def build_cancel(picking_paths, cancel_keys, outdir):
+    """取消出库单：过滤取消订单的 picking，Tracking Reference 覆盖为『订单取消』、
+    不写 Carrier/ID，合并成唯一一张(不按 VO/GW 拆)。"""
+    return build_picking_writeback(picking_paths, cancel_keys, CANCEL_TRK, outdir,
+                                   "取消出库单", carrier_id=None, split_channel=False)
 
 
 # ---------- 缺货记录 (明细 + SKU 汇总) ----------
@@ -536,7 +558,8 @@ def build_billing(src, shipped_keys, mmdd, outdir, suffix=""):
 
 
 def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
-        full_tmall_path=None, billing=None, outdir="output", picking=None, shipdate=None):
+        full_tmall_path=None, billing=None, outdir="output", picking=None, shipdate=None,
+        cancel_list=None):
     """第二阶段核心：结合 ERP 生成 B(系统履约单号)/C(发货表)/D(账单)/E(出库) 四个产出。
     两种入口二选一(都给则优先有货)：
 
@@ -555,6 +578,22 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
         ann = s4.classify4(erp_df, s4.done_keys_from_full(full),
                            s4.cancel_keys_from_full(full))
         cand_keys = set(ann[ann["_ship"]]["_key"]) & erp_keys
+
+    # ---- 取消出库单：独立于发货输入，只要 取消订单清单 + 出库原始数据 就产出(可单独补跑) ----
+    if cancel_list:
+        if picking:
+            ck = load_shipped_keys(cancel_list)
+            resX, missX = build_cancel(picking, ck, outdir)
+            if resX:
+                for _label, (p, n) in resX.items():
+                    log.append(f"取消出库单 已生成: {p}  ({n} 行，Tracking Reference={CANCEL_TRK})")
+            else:
+                log.append("取消出库单 跳过 (出库原始数据无匹配的取消订单 picking)")
+            if missX:
+                log.append(f"⚠ 取消出库单: {len(missX)} 个取消订单在出库原始数据里找不到 picking: "
+                           f"{', '.join(missX[:10])}{' …' if len(missX) > 10 else ''}")
+        else:
+            log.append("取消出库单 跳过 (传了取消订单清单但未传出库原始数据)")
 
     tracking_map = {}                          # 有货清单自带的运单号(发货表优先用)
     if shipped_files:                          # —— 有货入口(白名单) ——
@@ -586,6 +625,8 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
                 log.append(f"⚠ {len(extra)} 单标有货但不在拣货候选(名单/取消可能不一致): "
                            f"{', '.join(ex[:10])}{' …' if len(ex) > 10 else ''}")
     else:
+        if cancel_list:            # 仅取消模式：已(尝试)产出取消出库单，无发货输入不算错
+            return log
         log.append("✗ 未提供有货清单(shipped)或无货返回文件(nogoods)，无法确定发货集合")
         return log
 
@@ -629,9 +670,9 @@ def run(mmdd, erp_paths, shipped_files=None, nogoods_files=None,
                     log.append(f"出库单{ch} 已生成: {p}  ({n} 行，发货日期 {sd})")
             else:
                 log.append("出库单 跳过 (出库原始数据无匹配的发货订单)")
-            for ch, miss in missE.items():
-                log.append(f"⚠ 出库单{ch}: {len(miss)} 个发货订单在出库原始数据里找不到 picking: "
-                           f"{', '.join(miss[:10])}{' …' if len(miss) > 10 else ''}")
+            if missE:
+                log.append(f"⚠ 出库单: {len(missE)} 个发货订单在出库原始数据里找不到 picking: "
+                           f"{', '.join(missE[:10])}{' …' if len(missE) > 10 else ''}")
         else:
             log.append("出库单 跳过 (未传出库原始数据 --picking)")
     _step(_e)
@@ -670,6 +711,8 @@ def main():
     ap.add_argument("--billing", default=None)
     ap.add_argument("--picking", nargs="*", default=None,
                     help="出库原始数据(stock picking 全量导出)，可传多个(VO/GW 各一份)")
+    ap.add_argument("--cancel-list", dest="cancel_list", nargs="*", default=None,
+                    help="取消订单清单(阶段一产出+人工补录后到的取消单)，配 --picking 生成『取消出库单』")
     ap.add_argument("--shipdate", default=None, help="发货日期 YYYYMMDD，默认今天")
     ap.add_argument("--outdir", default="output")
     a = ap.parse_args()
@@ -686,7 +729,7 @@ def main():
     if not a.erp:
         ap.error("非货代合并模式需要 --erp")
     for line in run(a.mmdd, a.erp, a.shipped, a.nogoods, a.full, a.billing,
-                    a.outdir, a.picking, a.shipdate):
+                    a.outdir, a.picking, a.shipdate, a.cancel_list):
         print(line)
 
 

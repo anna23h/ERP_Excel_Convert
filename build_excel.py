@@ -551,6 +551,17 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         log.append("回传ERP销售上传表: 0 单 (无取消/无运单/已补运单)"
                    + ("" if full_tmall_path else " (未传完整天猫导出，取消无法识别)"))
 
+    # ---- 取消订单清单 (种子表：供阶段二生成『取消出库单』批量清理 dangling picking) ----
+    # 取消是滚动产生的(回传天猫后仍会冒出 1~5 单)，此表只是阶段一时的初始集；
+    # 用户在回传天猫后把后到的取消单(填系统履约号 SCP)手工 append 进去，再喂给阶段二。
+    cxl = ann[ann["_cat"] == "取消"].drop_duplicates("_key")
+    if not cxl.empty:
+        seed = pd.DataFrame({"系统履约单号": cxl["_key"].tolist(),
+                             "Order Reference": cxl[s4.ERP_ORDER_REF].tolist()})
+        p, n = _write_simple(seed, outdir, "取消订单清单.xlsx",
+                             left_cols={"系统履约单号", "Order Reference"})
+        log.append(f"取消订单清单 已生成: {p}  ({n} 单；后到的取消单请手工补录后喂阶段二)")
+
     # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
     # 只在传了采购单导出时才产出：不带真实采购参考的补货预判清单信息滞后、无参考意义，
     # 未传采购单导出则整张跳过，仅出其余 3 份(拣货表+面单/新订单获单/回传ERP上传表)。
