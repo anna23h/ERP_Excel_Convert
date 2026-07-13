@@ -82,6 +82,29 @@ python3 stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking
 - GUI：阶段二「取消订单清单」为选填；只填它 + 出库原始数据即进入「仅取消模式」，可不填有货/无货清单。
 - 与实际发货/打包/寄出互不影响；未传取消清单则该产出跳过，其余四张不变。
 
+## 订货辅助工具（`reorder_helper`，独立脚本 + 全英文 GUI）
+
+给**订货同事**（含不会中文的）用的独立工具，与上面拉单主流程互不相关：把「要订的货品」逐个去 ERP 采购记录里查最近采购价/供应商/数量/库存，产出一张**一行一品的订货决策表**。产出列名全英文。
+
+**输入**（前两个必填，第三个选填）：
+
+| 输入 | 说明 |
+|---|---|
+| 商品/需求清单 | 待发货明细表、销售分析导出（`[前缀_PZN] 名称` 嵌入式）、或纯 PZN 清单皆可。连接主键 = PZN（从引用/名称里按 `前缀_PZN` / `PZN-####` / 整格 7~8 位数字 抽取；金额/12位id/13位EAN 不会误判） |
+| purchase order 导出 | Odoo `purchase.order` 行式导出，提供最近采购 vendor/价/量/日期 + 库存 |
+| product.product 主数据（选填） | Odoo 产品主数据。传了就用**干净**的官方 PZN / Name / Barcode(EAN) / Internal Reference / 库存；不传则从名称/引用回退（身份信息较稀） |
+
+**产出**（14 列）：`PZN` · `Name` · `Barcode` · `Internal Reference` · `总需求` · `Quantity On Hand` · `Reorder Qty`(需求−库存) · `平台裸价` · `Last Unit Price` · `Price Diff`(裸价−采购价) · `Last Vendor` · `Last Qty` · `Last Order Date` · `Recent Purchases`（最近 5 笔）。整批无值的列自动省略（如仅 PZN 清单没总需求/裸价）。
+
+> 主数据里 PZN 会更新、但名称/Internal Reference 仍嵌旧 PZN——`load_master` 按「IntRef 嵌入 PZN」和「官方 PZN 字段」双键索引桥接该错位。ERP↔ERP 将来会改用更稳的 `product/ID`（待导出加该列）。
+
+**运行**：
+- GUI（推荐，全英文）：双击 `Reorder-Windows.bat` / `Reorder-Mac.command`（首次自动建环境），或 `python3 reorder_gui.py`。打包成 Windows exe：`build_reorder_exe.bat`（产出 `dist/ReorderHelper.exe`）。
+- CLI：
+  ```
+  python3 reorder_helper.py <需求清单.xlsx> <purchase order.xlsx> [out.xlsx] [--master product.product.xlsx]
+  ```
+
 ## 环境
 
 Python + pandas + openpyxl。
@@ -102,3 +125,4 @@ Python + pandas + openpyxl。
 - [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
+- [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
