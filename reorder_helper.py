@@ -46,6 +46,8 @@ PM_BARCODE  = "Barcode"
 PM_PZN      = "PZN"
 PM_NAME     = "Name"
 PM_ONHAND   = "Quantity On Hand"
+# ERP 权威主键：PZN 会更新但 ID 不变（ERP↔ERP 切 ID 更稳）。导出叫法不一，宽松兼容。
+PM_ID_CANDS = ["product/ID", "ID", "External ID"]
 
 # 采购单里伪装成供应商的客户（实为我方销售平台，属噪音，整行剔除）。
 # 比 build_excel 的 "Alibaba Health" 更宽：导出实见 Alibaba Health（港）与 Alibaba.com（新加坡）两个实体，均为客户。
@@ -194,7 +196,7 @@ def load_caps(path):
 def load_master(path):
     """product.product 主数据(选填)富化 → {key: rec}。key **同时**索引 IntRef 嵌入 PZN 与
     官方 PZN 字段(桥接「名称/IntRef 留旧 PZN、PZN 字段是更新后新 PZN」的错位)。
-    rec = {pzn(官方), name, barcode(EAN), intref, onhand}。"""
+    rec = {id(product/ID，可空), pzn(官方), name, barcode(EAN), intref, onhand}。"""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb[wb.sheetnames[0]]
     rows = list(ws.iter_rows(values_only=True))
@@ -206,6 +208,7 @@ def load_master(path):
         raise ValueError(f"product.product 主数据缺列: {missing}")
     ci, cp, cn = hdr[PM_INTERNAL], hdr[PM_PZN], hdr[PM_NAME]
     cb, co = hdr.get(PM_BARCODE), hdr.get(PM_ONHAND)
+    cid = next((hdr[c] for c in PM_ID_CANDS if c in hdr), None)  # product/ID 选填
 
     def g(r, c):
         return r[c] if (c is not None and c < len(r)) else None
@@ -214,6 +217,7 @@ def load_master(path):
     for r in rows[1:]:
         intref, pzn_field = g(r, ci), g(r, cp)
         rec = {
+            "id": str(g(r, cid)).strip() if g(r, cid) else "",   # ERP 权威主键（选填）
             "pzn": norm_pzn(pzn_field) or norm_pzn(intref),   # 官方 PZN 优先，退回 IntRef 嵌入
             "name": str(g(r, cn)).strip() if g(r, cn) else "",
             "barcode": str(g(r, cb)).strip() if g(r, cb) else "",
@@ -273,20 +277,21 @@ def load_po(path):
 
 # 产出列名英文化（给非中文同事）：身份字段优先取 product.product 主数据；「平台裸价/总需求」
 # 是待发货表摘出的中文域词、仅中文输入时才出现（否则被 DROP_IF_EMPTY 丢掉），故保留中文。
-COLS = ["PZN", "Name", "Barcode", "Internal Reference", "总需求", "Quantity On Hand",
-        "Reorder Qty", "平台裸价", "Last Unit Price", "Price Diff", "Last Vendor",
-        "Last Qty", "Last Order Date", "Recent Purchases"]
+COLS = ["Product ID", "PZN", "Name", "Barcode", "Internal Reference", "总需求",
+        "Quantity On Hand", "Reorder Qty", "平台裸价", "Last Unit Price", "Price Diff",
+        "Last Vendor", "Last Qty", "Last Order Date", "Recent Purchases"]
 NO_PO_MARK = "No purchase record"   # 无采购记录标记（Last Vendor 列占位值）
 # 纯数字列居中，其余（PZN/名称/条码/引用/日期/vendor/记录）左对齐下沉
 NUM_COLS = {"总需求", "Quantity On Hand", "Reorder Qty", "平台裸价", "Last Unit Price",
             "Price Diff", "Last Qty"}
 LEFT_COLS = set(COLS) - NUM_COLS
 WIDTHS = {"Name": 30, "Last Vendor": 18, "Recent Purchases": 56,
-          "Barcode": 15, "Internal Reference": 22, "PZN": 12}
-# 整批都无值时整列删掉（如仅 PZN 清单没 Name/Barcode/IntRef/总需求/裸价）；
+          "Barcode": 15, "Internal Reference": 22, "PZN": 12, "Product ID": 12}
+# 整批都无值时整列删掉（如仅 PZN 清单没 Name/Barcode/IntRef/总需求/裸价；
+# 或无 master / master 不带 product/ID 时的 Product ID）；
 # 有值/部分有值则保留、缺处留空，列序不变。PZN/库存/采购画像 恒在。
-DROP_IF_EMPTY = ["Name", "Barcode", "Internal Reference", "总需求", "Reorder Qty",
-                 "平台裸价", "Price Diff"]
+DROP_IF_EMPTY = ["Product ID", "Name", "Barcode", "Internal Reference", "总需求",
+                 "Reorder Qty", "平台裸价", "Price Diff"]
 
 
 def _round(v, n):
@@ -314,7 +319,8 @@ def build_rows(demand, caps, po, master=None):
         cap = caps.get(d["pzn"])
         need = d["need"]
         reorder = (need - onhand) if (need is not None and onhand is not None) else need
-        ident = [disp_pzn, name, barcode, intref]
+        pid = m["id"] if m else ""   # ERP product/ID：仅 master 有；无则空 → 整列被 DROP_IF_EMPTY 丢
+        ident = [pid, disp_pzn, name, barcode, intref]
 
         if dated or lines:
             last = dated[0] if dated else lines[0]
