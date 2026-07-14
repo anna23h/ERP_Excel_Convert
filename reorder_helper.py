@@ -7,9 +7,13 @@
     本脚本把这步自动化，产出一张辅助表。订货状态 / MHD 仍人工填
     （到货量是订完才录、MHD 从 purchase 端导不出且会变化）。
 
-数据关联：
-    - 主键 = PZN。purchase order 的 Internal Reference 尾部数字段即 PZN，
+数据关联（ID 优先，PZN 回退，逐行决定）：
+    - 首选键 = ERP Product ID（数据库数字主键；External ID 串里嵌同一数字，归一互通）。
+      仅当两侧都带产品 ID 列时可用：ERP↔ERP 直连；外部 PZN 输入配 --master 时走
+      PZN → master → ID → PO 三段桥。ID 键绕开官方 PZN 空白/脏值与 IntRef 嵌旧 PZN 两坑。
+    - 回退键 = PZN。purchase order 的 Internal Reference 尾部数字段即 PZN，
       两侧都去掉 PZN- 前缀、补零到 8 位再 join（6 位 EAN 类码对不上属正常）。
+      待发货明细表等无 ID 输入不传 master 时走此路径，行为与旧版一致。
     - 平台裸价来自「待发货明细表」自带的 采购订单-* / 保税 分表（purchase
       order 导出本身无裸价列）。
     - 当前库存 = purchase order 的 Product/Quantity On Hand。
@@ -36,6 +40,8 @@ PO_QTY      = "Order Lines/Total Quantity"
 PO_ONHAND   = "Product/Quantity On Hand"
 PO_DATE_CANDS = ["Order Lines/Order Date", "Order Lines/Created on",
                  "Order Lines/Order Deadline"]
+PO_PID_CANDS = ["Order Lines/Product/ID", "Order Lines/Product/External ID",
+                "Product/ID", "Product/External ID"]  # 产品 ID 列（选填，叫法不一）
 
 # 待发货明细表里带「平台裸价」的分表（按条形码取裸价）
 PRICE_SHEETS = ["采购订单-健康", "采购订单-直营", "健康-保税"]
@@ -73,6 +79,43 @@ def norm_pzn(x):
     if re.fullmatch(r"\d{7,8}", s2):                # 整格 7~8 位数字（条形码/PZN 清单）
         return s2.zfill(8)
     return None
+
+
+def _norm_pid(x):
+    """ERP 产品 ID 归一为纯数字串（product_product 表数据库主键）。兼容两种导出形态：
+    纯数字 `200392` 与 External ID `__export__.product_product_200392_320ee90e`
+    （后者是首次导出时按 `__export__.<模型>_<数字ID>_<哈希>` 自动生成，数字段=同一主键）。
+    两形态归一后互通；非产品 ID（如 sale_order_line 的 External ID）返回 None。"""
+    if x in (None, ""):
+        return None
+    s = str(x).strip()
+    if re.fullmatch(r"\d+", s):
+        return s
+    m = re.search(r"product_product_(\d+)", s)
+    return m.group(1) if m else None
+
+
+# 需求侧产品 ID 列只认**产品作用域**表头：sale.order 导出里裸 `ID`/`External ID`
+# 是订单自身的 id（sale_order_397395），认了就串键，必须排除。
+PID_HDR_KEYS = ("Product/ID", "Product/External ID")
+
+
+def _find_pid_col(rows, data_start):
+    """在需求表里找产品 ID 列（选填，找不到返回 None，不阻断）：
+    ① 表头含 Product/ID / Product/External ID（覆盖 Order Lines/ 前缀各变体）；
+    ② 值形态含 `product_product_<数字>`（External ID 串无歧义可认；纯数字列有歧义
+      ——数量/金额也长这样——不作形态证据，故数字形态 ID 只能靠表头认）。"""
+    region = rows[:data_start] if data_start else rows[:3]
+    for r in region:
+        for j, v in enumerate(r):
+            if v is not None and any(k in str(v) for k in PID_HDR_KEYS):
+                return j
+    hits = {}
+    for r in rows[data_start:]:
+        for j, v in enumerate(r):
+            if v and re.search(r"product_product_\d+", str(v)):
+                hits[j] = hits.get(j, 0) + 1
+    return max(hits, key=hits.get) if hits else None
 
 
 def _is_pzn(v):
@@ -157,16 +200,21 @@ def load_demand(path):
         raise ValueError("未找到含 PZN 的列（商品清单里应有一列 PZN，如 PZN-02807988）")
     c_name = _find_label_col(rows, data_start, "商品名称", loose=("名称", "品名"))
     c_need = _find_label_col(rows, data_start, "总需求", loose=("需求",))
+    c_pid = _find_pid_col(rows, data_start)   # ERP 导出才有；待发货表/纯清单为 None
     out = []
     for r in rows[data_start:]:
         bc = r[c_bc] if c_bc < len(r) else None
-        if not _is_pzn(bc):
-            continue  # 只收 PZN 行，跳过表头残留/空行/小计
+        pid_raw = r[c_pid] if (c_pid is not None and c_pid < len(r)) else None
+        # 收 PZN 行；ERP 输入里无 PZN 但有产品 ID 的行（如 dm 系无 PZN 品）也收，走 ID 匹配
+        if not _is_pzn(bc) and _norm_pid(pid_raw) is None:
+            continue  # 跳过表头残留/空行/小计
         nm = r[c_name] if (c_name is not None and c_name < len(r)) else None
         out.append({"pzn": norm_pzn(bc),
                     "name": str(nm).strip() if nm else "",
                     "need": _num(r[c_need]) if (c_need is not None and c_need < len(r)) else None,
-                    "intref": _extract_intref(bc)})
+                    "intref": _extract_intref(bc),
+                    "pid": _norm_pid(pid_raw),
+                    "pid_raw": str(pid_raw).strip() if pid_raw not in (None, "") else ""})
     return out
 
 
@@ -217,7 +265,8 @@ def load_master(path):
     for r in rows[1:]:
         intref, pzn_field = g(r, ci), g(r, cp)
         rec = {
-            "id": str(g(r, cid)).strip() if g(r, cid) else "",   # ERP 权威主键（选填）
+            "id": str(g(r, cid)).strip() if g(r, cid) else "",   # ERP 权威主键（选填，原样展示）
+            "pid": _norm_pid(g(r, cid)),                      # 同上，归一数字形态（连接用）
             "pzn": norm_pzn(pzn_field) or norm_pzn(intref),   # 官方 PZN 优先，退回 IntRef 嵌入
             "name": str(g(r, cn)).strip() if g(r, cn) else "",
             "barcode": str(g(r, cb)).strip() if g(r, cb) else "",
@@ -231,7 +280,9 @@ def load_master(path):
 
 
 def load_po(path):
-    """purchase order 导出（Odoo 行式：订单头字段只在每单首行）→ {pzn: [line...]}。
+    """purchase order 导出（Odoo 行式：订单头字段只在每单首行）→
+    (by_pzn={pzn: [line...]}, by_id={产品数字ID: [line...]})。
+    双索引同源同 line；导出没带产品 ID 列时 by_id 为空 dict（旧行为）。
     line = {po, vendor(简称), price, qty, date, onhand}。"""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb[wb.sheetnames[0]]
@@ -242,6 +293,7 @@ def load_po(path):
             raise ValueError(f"purchase order 导出缺列: {c}")
     c_date = next((hdr[c] for c in PO_DATE_CANDS if c in hdr), None)
     c_onhand = hdr.get(PO_ONHAND)
+    c_pid = next((hdr[c] for c in PO_PID_CANDS if c in hdr), None)
 
     # 第一遍：ffill 订单头（Vendor），收集全部 vendor 全名以建简称映射
     raw = []
@@ -259,20 +311,25 @@ def load_po(path):
         raw.append((cur_ref, cur_vendor, r))
     vmap = _vendor_map({v for _, v, _ in raw if v})
 
-    out = {}
+    out, out_id = {}, {}
     for cur_ref, cur_vendor, r in raw:
         key = norm_pzn(r[hdr[PO_INTERNAL]])
-        if key is None:                    # 无可识别 PZN 的采购行（运费/服务等）跳过
+        pid = _norm_pid(r[c_pid]) if (c_pid is not None and c_pid < len(r)) else None
+        if key is None and pid is None:    # 两键皆无的采购行（运费/服务等）跳过
             continue
-        out.setdefault(key, []).append({
+        line = {
             "po": cur_ref,
             "vendor": vmap.get(cur_vendor, cur_vendor) if cur_vendor else "",
             "price": _num(r[hdr[PO_PRICE]]) if hdr[PO_PRICE] < len(r) else None,
             "qty": _num(r[hdr[PO_QTY]]) if hdr[PO_QTY] < len(r) else None,
             "date": _pdate(r[c_date]) if (c_date is not None and c_date < len(r)) else None,
             "onhand": _num(r[c_onhand]) if (c_onhand is not None and c_onhand < len(r)) else None,
-        })
-    return out
+        }
+        if key is not None:
+            out.setdefault(key, []).append(line)
+        if pid is not None:
+            out_id.setdefault(pid, []).append(line)
+    return out, out_id
 
 
 # 产出列名英文化（给非中文同事）：身份字段优先取 product.product 主数据；「平台裸价/总需求」
@@ -298,8 +355,9 @@ def _round(v, n):
     return round(v, n) if v is not None else ""
 
 
-def build_rows(demand, caps, po, master=None):
+def build_rows(demand, caps, po, master=None, po_id=None):
     master = master or {}
+    po_id = po_id or {}
     rows = []
     for d in demand:
         m = master.get(d["pzn"])
@@ -308,9 +366,12 @@ def build_rows(demand, caps, po, master=None):
         name = (m["name"] if m else d["name"]) or ""
         barcode = m["barcode"] if m else ""
         intref = (m["intref"] if m else d["intref"]) or ""
-        # PO 连接键：有主数据用其 IntRef 嵌入 PZN(桥接待发货表官方 PZN → PO 嵌入 PZN)，否则用 demand PZN
+        # PO 连接：ID 优先（demand 自带 ID，或 PZN→master 桥出的 ID），逐行回退 PZN。
+        # ID 命中即用（绕开 PZN 空白/脏值/IntRef 嵌旧 PZN）；无 ID 输入不传 master 时全走 PZN，旧行为不变。
+        join_pid = d["pid"] or (m["pid"] if m else None)
+        # PZN 回退键：有主数据用其 IntRef 嵌入 PZN(桥接待发货表官方 PZN → PO 嵌入 PZN)，否则用 demand PZN
         join_pzn = (norm_pzn(m["intref"]) if m and m["intref"] else None) or d["pzn"]
-        lines = po.get(join_pzn, [])
+        lines = (po_id.get(join_pid) if join_pid else None) or po.get(join_pzn, [])
         dated = sorted([l for l in lines if l["date"]], key=lambda x: x["date"], reverse=True)
         # 当前库存：主数据优先，否则取采购行里任一非空（优先最近记录）
         onhand = (m["onhand"] if (m and m["onhand"] is not None) else
@@ -319,7 +380,8 @@ def build_rows(demand, caps, po, master=None):
         cap = caps.get(d["pzn"])
         need = d["need"]
         reorder = (need - onhand) if (need is not None and onhand is not None) else need
-        pid = m["id"] if m else ""   # ERP product/ID：仅 master 有；无则空 → 整列被 DROP_IF_EMPTY 丢
+        # ERP product/ID 展示值：master 权威优先，退回 demand 自带（ERP 输入）；均无则空 → 整列被 DROP_IF_EMPTY 丢
+        pid = (m["id"] if m and m["id"] else "") or d["pid_raw"]
         ident = [pid, disp_pzn, name, barcode, intref]
 
         if dated or lines:
@@ -357,9 +419,9 @@ def build_rows(demand, caps, po, master=None):
 def build(demand_path, po_path, out_path=None, master_path=None):
     demand = load_demand(demand_path)
     caps = load_caps(demand_path)
-    po = load_po(po_path)
+    po, po_id = load_po(po_path)
     master = load_master(master_path) if master_path else None
-    rows = build_rows(demand, caps, po, master)
+    rows = build_rows(demand, caps, po, master, po_id=po_id)
 
     import pandas as pd
     df = pd.DataFrame(rows, columns=COLS)
