@@ -501,7 +501,11 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         for ch in chans:
             sub = (facesheet[facesheet["_ch"] == ch]
                    .drop(columns="_ch").reset_index(drop=True))
-            sub.insert(0, "序号", range(1, len(sub) + 1))   # 序号按店内独立编号
+            # 序号按订单计数(店内独立编号)：同一 Order Reference 的多行共享一个序号，
+            # 按订单出现顺序 1,2,3… 密集连续。行已按订单连续(merge_multiproduct 依赖此前提)，
+            # factorize 给同单相同码、按首次出现顺序递增，+1 转 1-based。
+            codes = pd.factorize(sub[s4.ERP_ORDER_REF])[0]
+            sub.insert(0, "序号", codes + 1)
             p, nsku, nord = _write_pickface(
                 sub, outdir, out_arg if len(chans) == 1 else None)
             main_paths.append(p)
