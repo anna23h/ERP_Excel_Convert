@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运单扫码回流</title>
+<style>
+  :root { --ok:#1a7f37; --bad:#c0261a; --idle:#1f2733; --ink:#f5f7fa; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--ink); background: var(--idle);
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    transition: background .08s;
+  }
+  body.state-ok  { background: var(--ok); }
+  body.state-bad { background: var(--bad); }
+
+  /* 顶栏：常驻计数 + 时钟 + 店 */
+  #bar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 1.5rem;
+    padding: .6rem 1.2rem; background: rgba(0,0,0,.28); font-size: clamp(15px, 2.2vw, 26px);
+  }
+  #bar .grow { flex: 1; }
+  #count { font-weight: 800; font-size: clamp(20px, 3.2vw, 40px); }
+  #count small { font-weight: 400; opacity: .8; font-size: .55em; }
+  #store { font-weight: 700; padding: .1em .5em; border: 2px solid rgba(255,255,255,.6); border-radius: 6px; }
+  #clock { font-variant-numeric: tabular-nums; }
+
+  /* 主状态区：满屏大字 */
+  #stage {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 1rem; gap: .4rem;
+  }
+  #big { font-size: clamp(48px, 12vw, 180px); font-weight: 900; line-height: 1; }
+  #seq { font-size: clamp(30px, 8vw, 120px); font-weight: 800; letter-spacing: .02em; }
+  #detail { font-size: clamp(18px, 3.5vw, 44px); font-weight: 600; word-break: break-all; opacity: .96; }
+  #sub { font-size: clamp(14px, 2.2vw, 26px); opacity: .85; word-break: break-all; }
+
+  /* 底栏：载入 / 导出 / 最近记录 */
+  #foot {
+    flex: 0 0 auto; background: rgba(0,0,0,.28); padding: .5rem 1rem;
+    display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; font-size: 14px;
+  }
+  #foot .grow { flex: 1; }
+  button, label.filebtn {
+    font: inherit; font-size: 15px; padding: .45em .9em; border-radius: 8px; border: 0;
+    background: rgba(255,255,255,.92); color: #111; cursor: pointer; font-weight: 600;
+  }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #recent { display: flex; gap: .4rem; overflow-x: auto; max-width: 100%; }
+  #recent span { white-space: nowrap; padding: .1em .5em; border-radius: 5px; background: rgba(0,0,0,.35); }
+  #recent span.r-bad { background: rgba(255,255,255,.9); color: var(--bad); font-weight: 700; }
+  input[type=file] { display: none; }
+  #note { font-size: 13px; opacity: .8; }
+  kbd { background: rgba(0,0,0,.4); padding: 0 .35em; border-radius: 4px; font-size: .9em; }
+</style>
+</head>
+<body class="state-idle">
+  <div id="bar">
+    <span id="count">0 <small>/ 0 单</small></span>
+    <span id="store">未载入</span>
+    <span class="grow"></span>
+    <span id="clock">--:--:--</span>
+  </div>
+
+  <div id="stage">
+    <div id="big">载入清单</div>
+    <div id="seq"></div>
+    <div id="detail">点击下方「载入扫码清单」，选择今天的 <b>扫码清单{店}.csv</b></div>
+    <div id="sub">扫码枪需配「回车(Enter)后缀」并使用<b>实时传输</b>模式</div>
+  </div>
+
+  <div id="foot">
+    <label class="filebtn">载入扫码清单<input type="file" id="file" accept=".csv,text/csv"></label>
+    <button id="export" disabled>导出有货清单</button>
+    <button id="reset" disabled>清空今日</button>
+    <span id="note"></span>
+    <span class="grow"></span>
+    <div id="recent"></div>
+  </div>
+
+<script>
+"use strict";
+// —— 运单扫码回流（单文件，零依赖）——
+// 载入 stage1 产出的 `扫码清单{店}.csv` 作封闭白名单；扫 LP(=Tracking) 校验三态：
+//   清单内+首次 → 绿 + 确认音 + 记录 ; 清单内+重复 → 红 + 报警 + 拒绝 ; 不在清单 → 红 + 报警 + 拒绝
+// 声音为主异常通道；红色状态挂到下一次成功扫描。收工导出 `有货清单{店}.csv` 投 stage2「有货订单清单」入口。
+
+const $ = id => document.getElementById(id);
+const body = document.body;
+
+let whitelist = new Map();   // 归一化 Tracking(LP) -> { ref, seq, track }
+let store = "";              // 店(VO/GW)
+let scanned = new Map();     // 已扫 Tracking -> { ref, seq, track, at }  （=有货集合）
+let buf = "";                // 扫码枪逐字符缓冲
+let lastKeyTs = 0;
+
+// —— 声音（WebAudio，避免任何外部文件；首次用户手势解锁）——
+let ac = null;
+function unlockAudio() { if (!ac) { try { ac = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){} } if (ac && ac.state === "suspended") ac.resume(); }
+function tone(freq, ms, type, gain) {
+  if (!ac) return;
+  const t0 = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type || "square"; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(gain || 0.25, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
+  o.connect(g).connect(ac.destination); o.start(t0); o.stop(t0 + ms/1000 + 0.02);
+}
+function beepOK()   { tone(1046, 110, "sine", 0.3); }                       // 短促清亮确认音
+function beepBad()  { tone(220, 260, "square", 0.32); setTimeout(()=>tone(180, 340, "square", 0.32), 200); } // 低沉双响报警
+
+// —— 时钟 ——
+function tick() { const d = new Date(); $("clock").textContent = d.toTimeString().slice(0,8); }
+setInterval(tick, 1000); tick();
+
+// —— 归一化 ——
+const norm = s => String(s == null ? "" : s).trim().toUpperCase();
+const isLP = s => /^LP\d+$/.test(s);          // LP 结构（LP+数字）；不匹配=非 LP 格式
+
+// —— CSV 解析（简单：本文件字段无逗号/引号，按行列切；剥 utf-8-sig BOM）——
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim() !== "");
+  if (!lines.length) return { rows: [], header: [] };
+  const header = lines[0].split(",").map(h => h.trim());
+  const rows = lines.slice(1).map(l => {
+    const c = l.split(","); const o = {};
+    header.forEach((h, i) => o[h] = (c[i] || "").trim());
+    return o;
+  });
+  return { rows, header };
+}
+
+function colOf(header, names) {   // 容错找列名
+  for (const n of names) { const h = header.find(x => x === n); if (h) return h; }
+  const low = names.map(n => n.toLowerCase());
+  return header.find(x => low.includes(x.toLowerCase()));
+}
+
+// —— 状态展示 ——
+function setState(kind, big, seq, detail, sub) {
+  body.className = "state-" + kind;
+  $("big").textContent = big;
+  $("seq").textContent = seq || "";
+  $("detail").innerHTML = detail || "";
+  $("sub").textContent = sub || "";
+}
+function updateCount() {
+  $("count").innerHTML = scanned.size + ' <small>/ ' + whitelist.size + ' 单</small>';
+}
+function pushRecent(text, bad) {
+  const el = document.createElement("span");
+  el.textContent = text; if (bad) el.className = "r-bad";
+  const r = $("recent"); r.prepend(el);
+  while (r.children.length > 6) r.removeChild(r.lastChild);
+}
+
+// —— localStorage 防误刷丢记录（按 店+日期 存已扫）——
+const todayKey = () => "youhuo_" + store + "_" + new Date().toISOString().slice(0,10);
+function persist() {
+  try { localStorage.setItem(todayKey(), JSON.stringify([...scanned.values()])); } catch(e){}
+}
+function restore() {
+  try {
+    const raw = localStorage.getItem(todayKey());
+    if (!raw) return 0;
+    const arr = JSON.parse(raw); let n = 0;
+    for (const it of arr) {
+      const k = norm(it.track);
+      if (whitelist.has(k) && !scanned.has(k)) { scanned.set(k, it); n++; }
+    }
+    return n;
+  } catch(e) { return 0; }
+}
+
+// —— 载入白名单 ——
+$("file").addEventListener("change", e => {
+  unlockAudio();
+  const f = e.target.files[0]; if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    const { rows, header } = parseCSV(fr.result);
+    const cTrack = colOf(header, ["VO Tracking No", "Tracking", "运单号", "运单"]);
+    const cRef   = colOf(header, ["Order Reference", "订单号"]);
+    const cSeq   = colOf(header, ["序号"]);
+    const cStore = colOf(header, ["店", "channel", "渠道"]);
+    if (!cTrack || !cRef) {
+      setState("bad", "清单格式错", "", "缺少 <b>VO Tracking No</b> 或 <b>Order Reference</b> 列，检查是否选错文件", "");
+      beepBad(); return;
+    }
+    whitelist = new Map(); scanned = new Map();
+    for (const r of rows) {
+      const k = norm(r[cTrack]);
+      if (!k) continue;
+      whitelist.set(k, { ref: r[cRef], seq: cSeq ? r[cSeq] : "", track: r[cTrack] });
+    }
+    store = cStore ? (rows[0] && rows[0][cStore] || "") : "";
+    $("store").textContent = store ? store : "?";
+    const restored = restore();
+    updateCount();
+    $("export").disabled = false; $("reset").disabled = false;
+    const noteRestore = restored ? `（已恢复今日已扫 ${restored} 单）` : "";
+    setState("idle", "就绪", "", `白名单 <b>${whitelist.size}</b> 单已载入 ${noteRestore}`, "开始扫码。红屏=异常，抬头看本区即知哪单");
+    pushRecent("载入 " + whitelist.size + " 单", false);
+    $("note").textContent = f.name;
+  };
+  fr.readAsText(f, "utf-8");
+  e.target.value = "";   // 允许重载同名文件
+});
+
+// —— 扫码处理 ——
+function handleScan(raw) {
+  const code = norm(raw);
+  if (!code) return;
+  unlockAudio();
+  if (whitelist.size === 0) {
+    setState("bad", "未载入清单", "", "请先「载入扫码清单」再扫码", "");
+    beepBad(); return;
+  }
+  const hit = whitelist.get(code);
+  if (hit) {
+    if (scanned.has(code)) {                    // 清单内 + 重复
+      const s = scanned.get(code);
+      setState("bad", "重复", "序号 " + (s.seq||"?"), "该单已扫过，勿重复装箱", s.ref + "  " + s.track);
+      beepBad(); pushRecent("重复 " + (s.seq||"?"), true);
+    } else {                                     // 清单内 + 首次 → 记录
+      const rec = { ref: hit.ref, seq: hit.seq, track: hit.track, at: new Date().toISOString() };
+      scanned.set(code, rec); persist(); updateCount();
+      setState("ok", "OK", "序号 " + (hit.seq||"?"), hit.ref, hit.track);
+      beepOK(); pushRecent("✓ " + (hit.seq||"?"), false);
+    }
+  } else if (isLP(code)) {                        // LP 结构但不在白名单
+    setState("bad", "不在今日清单", "", "是 LP 单号、但不属于今天这批。<b>勿发货</b>，核对是否串批/隔日单", code);
+    beepBad(); pushRecent("名单外", true);
+  } else {                                        // 非 LP 结构（SF 号 / 订单号 / 二维码等）
+    setState("bad", "不是 LP 单号", "", "扫到了非 LP 条码（可能是 SF 号 / 订单号 / 二维码）。<b>请扫面单顶部 LP 一维码</b>", code);
+    beepBad(); pushRecent("非LP", true);
+  }
+}
+
+// —— 键盘楔入采集（扫码枪当键盘打字，末尾回车触发）——
+document.addEventListener("keydown", e => {
+  const now = Date.now();
+  if (now - lastKeyTs > 500) buf = "";   // 间隔过久视为新一次扫描，清缓冲
+  lastKeyTs = now;
+  if (e.key === "Enter") {
+    const v = buf; buf = "";
+    if (v) handleScan(v);
+    e.preventDefault();
+  } else if (e.key.length === 1) {
+    buf += e.key;
+  }
+});
+
+// —— 导出有货清单（→ stage2「有货订单清单」入口，utf-8-sig BOM）——
+$("export").addEventListener("click", () => {
+  const recs = [...scanned.values()].sort((a,b) => (parseInt(a.seq)||0) - (parseInt(b.seq)||0));
+  let csv = "序号,Order Reference,VO Tracking No,店\n";
+  for (const r of recs) csv += [r.seq, r.ref, r.track, store].join(",") + "\n";
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "有货清单" + (store || "") + ".csv";
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+// —— 清空今日（收工重来 / 换批）——
+$("reset").addEventListener("click", () => {
+  if (!confirm("清空今日已扫的 " + scanned.size + " 单记录？（不影响白名单）")) return;
+  scanned = new Map(); persist(); updateCount();
+  setState("idle", "已清空", "", "已扫记录清零，白名单保留。可重新开扫", "");
+});
+</script>
+</body>
+</html>

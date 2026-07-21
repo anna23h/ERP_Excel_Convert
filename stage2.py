@@ -145,11 +145,20 @@ def classify_return(paths):
 TRACK_HEADER_HINTS = ("tracking", "运单", "waybill", "物流单号")
 
 
+def _read_tables(path):
+    """读一个表格文件 → DataFrame 列表。xlsx/xls 返回所有 sheet；csv 返回单表。
+    csv 以 utf-8-sig 剥 BOM、全列按 str 读、空格保留为空串(不转 NaN)，与扫码端
+    产出 `有货清单{店}.csv`(build_excel 同款 BOM) 对齐，SCP 扫格逻辑无需区分来源。"""
+    if str(path).lower().endswith(".csv"):
+        return [pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")]
+    return list(pd.read_excel(path, sheet_name=None).values())
+
+
 def load_shipped_map(paths):
     """读「有货(真实发货)订单清单」→ {连接键(SCP后15位): 运单号}。
 
-    入口高度模糊：不要求特定结构/sheet/列名。按**行**读——
-    连接键由该行任一单元格的 `SCP\\d+` 提取(履约单号或 Order Reference 都行)；
+    入口高度模糊：不要求特定结构/sheet/列名，xlsx 与扫码端产出的 csv 均可(见 _read_tables)。
+    按**行**读——连接键由该行任一单元格的 `SCP\\d+` 提取(履约单号或 Order Reference 都行)；
     运单号取表头含 tracking/运单 的列(没有该列则运单留空)。
     同键多次出现保留首个非空运单；多份文件作冗余合并(同店分多次导出)。"""
     if not paths:
@@ -158,7 +167,7 @@ def load_shipped_map(paths):
         paths = [paths]
     mp = {}
     for path in paths:
-        for df in pd.read_excel(path, sheet_name=None).values():   # 所有 sheet
+        for df in _read_tables(path):   # 所有 sheet(xlsx) 或单表(csv)
             track_col = next((c for c in df.columns
                               if any(h in str(c).lower() for h in TRACK_HEADER_HINTS)),
                              None)

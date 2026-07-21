@@ -246,6 +246,18 @@ def build_facesheet(facesheet):
     return df
 
 
+def build_scanlist(facesheet, ch):
+    """扫码回流白名单（订单级）：每单一行，列 序号 / Order Reference / VO Tracking No / 店。
+    facesheet 为 SKU 明细行、已含 `序号`；按 Order Reference 去重（Tracking↔Order Reference 严格
+    1:1），保留首次出现顺序。拣货面单已剔除无运单+取消，故清单内每单必有 Tracking。
+    供仓库扫码 HTML 作封闭白名单：扫 LP(=Tracking) 命中→记 Order Reference。"""
+    df = facesheet[["序号", s4.ERP_ORDER_REF, s4.ERP_TRACKING]].copy()
+    df.columns = ["序号", "Order Reference", "VO Tracking No"]
+    df = df.drop_duplicates("Order Reference").reset_index(drop=True)
+    df["店"] = ch
+    return df
+
+
 def is_multipack(v):
     # x 后跟数字结尾 = 多件装（x2/x3/x4/x10…），标色提醒打包员
     return bool(re.search(r"x\d+$", str(v), re.I))
@@ -405,6 +417,16 @@ def unique_path(path):
     return f"{base}({i}){ext}"
 
 
+def _write_scanlist(facesheet, ch, outdir):
+    """产出扫码清单 `扫码清单{店}.csv`（订单级白名单，见 build_scanlist）。
+    UTF-8-BOM(utf-8-sig)：Excel 直接打开中文列头不乱码，浏览器端读时自行剥 BOM。
+    返回 (路径, 单数)。"""
+    df = build_scanlist(facesheet, ch)
+    path = unique_path(os.path.join(outdir, f"扫码清单{ch}.csv"))
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+    return path, len(df)
+
+
 def _write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None):
     """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。
     left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。"""
@@ -510,6 +532,8 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                 sub, outdir, out_arg if len(chans) == 1 else None)
             main_paths.append(p)
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
+            sp, nscan = _write_scanlist(sub, ch, outdir)
+            log.append(f"扫码清单[{ch}] 已生成: {sp}  ({nscan} 单)")
 
     # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单；按店各一份) ----
     d = date.today()
