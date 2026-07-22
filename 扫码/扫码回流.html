@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>运单扫码回流</title>
 <style>
-  :root { --ok:#1a7f37; --bad:#c0261a; --idle:#1f2733; --ink:#f5f7fa; }
+  :root { --ok:#1a7f37; --bad:#c0261a; --warn:#c47f17; --idle:#1f2733; --ink:#f5f7fa; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
@@ -14,8 +14,9 @@
     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
     transition: background .08s;
   }
-  body.state-ok  { background: var(--ok); }
-  body.state-bad { background: var(--bad); }
+  body.state-ok   { background: var(--ok); }
+  body.state-bad  { background: var(--bad); }
+  body.state-warn { background: var(--warn); }
 
   /* 顶栏：常驻计数 + 时钟 + 店 */
   #bar {
@@ -25,7 +26,8 @@
   #bar .grow { flex: 1; }
   #count { font-weight: 800; font-size: clamp(20px, 3.2vw, 40px); }
   #count small { font-weight: 400; opacity: .8; font-size: .55em; }
-  #store { font-weight: 700; padding: .1em .5em; border: 2px solid rgba(255,255,255,.6); border-radius: 6px; }
+  #unknown { font-weight: 700; padding: .1em .5em; border: 2px solid rgba(255,255,255,.5); border-radius: 6px; opacity: .75; }
+  #unknown.hot { background: var(--warn); border-color: rgba(255,255,255,.9); opacity: 1; }
   #clock { font-variant-numeric: tabular-nums; }
 
   /* 主状态区：满屏大字 */
@@ -59,8 +61,8 @@
 </head>
 <body class="state-idle">
   <div id="bar">
-    <span id="count">0 <small>/ 0 单</small></span>
-    <span id="store">未载入</span>
+    <span id="count">已扫 0 <small>/ 0 单</small></span>
+    <span id="unknown">未知来源 0</span>
     <span class="grow"></span>
     <span id="clock">--:--:--</span>
   </div>
@@ -68,12 +70,12 @@
   <div id="stage">
     <div id="big">载入清单</div>
     <div id="seq"></div>
-    <div id="detail">点击下方「载入扫码清单」，选择今天的 <b>扫码清单{店}.csv</b></div>
+    <div id="detail">点击下方「载入扫码清单」，选今天的 <b>扫码清单{店}.csv</b>（<b>可多选/多次</b>，两店可一起载入）</div>
     <div id="sub">扫码枪需配「回车(Enter)后缀」并使用<b>实时传输</b>模式</div>
   </div>
 
   <div id="foot">
-    <label class="filebtn">载入扫码清单<input type="file" id="file" accept=".csv,text/csv"></label>
+    <label class="filebtn">载入扫码清单<input type="file" id="file" accept=".csv,text/csv" multiple></label>
     <button id="export" disabled>导出有货清单</button>
     <button id="reset" disabled>清空今日</button>
     <span id="note"></span>
@@ -91,9 +93,9 @@
 const $ = id => document.getElementById(id);
 const body = document.body;
 
-let whitelist = new Map();   // 归一化 Tracking(LP) -> { ref, seq, track }
-let store = "";              // 店(VO/GW)
-let scanned = new Map();     // 已扫 Tracking -> { ref, seq, track, at }  （=有货集合）
+let whitelist = new Map();   // 归一化 Tracking(LP) -> { ref, seq, track, store }（多店合并）
+let scanned = new Map();     // 命中白名单的已扫 Tracking -> { ref, seq, track, store, at }（=各店有货集合）
+let offlist = new Map();     // 名单外(未知来源)已扫 LP -> { track, at }（黄屏记录，单独导出）
 let buf = "";                // 扫码枪逐字符缓冲
 let lastKeyTs = 0;
 
@@ -111,6 +113,7 @@ function tone(freq, ms, type, gain) {
 }
 function beepOK()   { tone(1046, 110, "sine", 0.3); }                       // 短促清亮确认音
 function beepBad()  { tone(220, 260, "square", 0.32); setTimeout(()=>tone(180, 340, "square", 0.32), 200); } // 低沉双响报警
+function beepWarn() { tone(700, 120, "sine", 0.3); setTimeout(()=>tone(990, 150, "sine", 0.3), 120); }       // 上行双音「已记录·留意」（区别于绿/红）
 
 // —— 时钟 ——
 function tick() { const d = new Date(); $("clock").textContent = d.toTimeString().slice(0,8); }
@@ -149,7 +152,10 @@ function setState(kind, big, seq, detail, sub) {
   $("sub").textContent = sub || "";
 }
 function updateCount() {
-  $("count").innerHTML = scanned.size + ' <small>/ ' + whitelist.size + ' 单</small>';
+  $("count").innerHTML = '已扫 ' + scanned.size + ' <small>/ ' + whitelist.size + ' 单</small>';
+  const u = $("unknown");
+  u.textContent = '未知来源 ' + offlist.size;
+  u.classList.toggle("hot", offlist.size > 0);
 }
 function pushRecent(text, bad) {
   const el = document.createElement("span");
@@ -158,57 +164,86 @@ function pushRecent(text, bad) {
   while (r.children.length > 6) r.removeChild(r.lastChild);
 }
 
-// —— localStorage 防误刷丢记录（按 店+日期 存已扫）——
-const todayKey = () => "youhuo_" + store + "_" + new Date().toISOString().slice(0,10);
+// —— localStorage 防误刷丢记录（多店合并后按「日期」存已扫 + 未知来源）——
+const todayKey = () => "youhuo_scan_" + new Date().toISOString().slice(0,10);
 function persist() {
-  try { localStorage.setItem(todayKey(), JSON.stringify([...scanned.values()])); } catch(e){}
+  try {
+    localStorage.setItem(todayKey(), JSON.stringify({
+      scanned: [...scanned.values()], offlist: [...offlist.values()]
+    }));
+  } catch(e){}
 }
 function restore() {
   try {
     const raw = localStorage.getItem(todayKey());
     if (!raw) return 0;
-    const arr = JSON.parse(raw); let n = 0;
-    for (const it of arr) {
+    const d = JSON.parse(raw); let n = 0;
+    for (const it of (d.scanned || [])) {
       const k = norm(it.track);
       if (whitelist.has(k) && !scanned.has(k)) { scanned.set(k, it); n++; }
+    }
+    for (const it of (d.offlist || [])) {
+      const k = norm(it.track);
+      if (whitelist.has(k)) {                       // 之前名单外、现在其清单已载入 → 迁回有货集合
+        if (!scanned.has(k)) {
+          const w = whitelist.get(k);
+          scanned.set(k, { ref: w.ref, seq: w.seq, track: w.track, store: w.store, at: it.at }); n++;
+        }
+      } else if (!offlist.has(k)) {
+        offlist.set(k, it);
+      }
     }
     return n;
   } catch(e) { return 0; }
 }
 
-// —— 载入白名单 ——
-$("file").addEventListener("change", e => {
+// —— 载入白名单（多选/多次追加，各店合并；不清空已扫）——
+function readText(f) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result); fr.onerror = rej;
+    fr.readAsText(f, "utf-8");
+  });
+}
+$("file").addEventListener("change", async e => {
   unlockAudio();
-  const f = e.target.files[0]; if (!f) return;
-  const fr = new FileReader();
-  fr.onload = () => {
-    const { rows, header } = parseCSV(fr.result);
+  const files = [...e.target.files]; e.target.value = "";   // 允许重载同名/再次追加
+  if (!files.length) return;
+  const stores = new Set(); const bad = []; let anyOk = false;
+  for (const f of files) {
+    let text; try { text = await readText(f); } catch(_) { bad.push(f.name); continue; }
+    const { rows, header } = parseCSV(text);
     const cTrack = colOf(header, ["VO Tracking No", "Tracking", "运单号", "运单"]);
     const cRef   = colOf(header, ["Order Reference", "订单号"]);
     const cSeq   = colOf(header, ["序号"]);
     const cStore = colOf(header, ["店", "channel", "渠道"]);
-    if (!cTrack || !cRef) {
-      setState("bad", "清单格式错", "", "缺少 <b>VO Tracking No</b> 或 <b>Order Reference</b> 列，检查是否选错文件", "");
-      beepBad(); return;
-    }
-    whitelist = new Map(); scanned = new Map();
+    if (!cTrack || !cRef) { bad.push(f.name + "(缺列)"); continue; }
     for (const r of rows) {
       const k = norm(r[cTrack]);
       if (!k) continue;
-      whitelist.set(k, { ref: r[cRef], seq: cSeq ? r[cSeq] : "", track: r[cTrack] });
+      const st = cStore ? (r[cStore] || "") : "";
+      whitelist.set(k, { ref: r[cRef], seq: cSeq ? r[cSeq] : "", track: r[cTrack], store: st });
+      if (st) stores.add(st);
+      anyOk = true;
     }
-    store = cStore ? (rows[0] && rows[0][cStore] || "") : "";
-    $("store").textContent = store ? store : "?";
-    const restored = restore();
-    updateCount();
-    $("export").disabled = false; $("reset").disabled = false;
-    const noteRestore = restored ? `（已恢复今日已扫 ${restored} 单）` : "";
-    setState("idle", "就绪", "", `白名单 <b>${whitelist.size}</b> 单已载入 ${noteRestore}`, "开始扫码。红屏=异常，抬头看本区即知哪单");
-    pushRecent("载入 " + whitelist.size + " 单", false);
-    $("note").textContent = f.name;
-  };
-  fr.readAsText(f, "utf-8");
-  e.target.value = "";   // 允许重载同名文件
+  }
+  const restored = restore();
+  persist();                          // 保存 restore 可能触发的「名单外→有货」迁移
+  updateCount();
+  if (!anyOk && !whitelist.size) {
+    setState("bad", "清单格式错", "", "所选文件都缺 <b>VO Tracking No</b> 或 <b>Order Reference</b> 列，检查是否选错文件", "");
+    beepBad(); return;
+  }
+  $("export").disabled = false; $("reset").disabled = false;
+  const storeTxt   = stores.size ? `（店：${[...stores].join("+")}）` : "";
+  const noteRestore = restored ? `，已恢复今日已扫 ${restored} 单` : "";
+  const badTxt     = bad.length ? `；⚠跳过 ${bad.length} 个文件：${bad.join("、")}` : "";
+  setState(bad.length ? "bad" : "idle", "就绪", "",
+    `白名单共 <b>${whitelist.size}</b> 单已载入${storeTxt}${noteRestore}${badTxt}`,
+    "开始扫码。绿=清单内已记录，黄=未知来源已记录，红=拒绝");
+  if (bad.length) beepBad();
+  pushRecent("载入 " + whitelist.size + " 单", false);
+  $("note").textContent = files.map(f => f.name).join(", ");
 });
 
 // —— 扫码处理 ——
@@ -227,14 +262,21 @@ function handleScan(raw) {
       setState("bad", "重复", "序号 " + (s.seq||"?"), "该单已扫过，勿重复装箱", s.ref + "  " + s.track);
       beepBad(); pushRecent("重复 " + (s.seq||"?"), true);
     } else {                                     // 清单内 + 首次 → 记录
-      const rec = { ref: hit.ref, seq: hit.seq, track: hit.track, at: new Date().toISOString() };
+      const rec = { ref: hit.ref, seq: hit.seq, track: hit.track, store: hit.store, at: new Date().toISOString() };
       scanned.set(code, rec); persist(); updateCount();
       setState("ok", "OK", "序号 " + (hit.seq||"?"), hit.ref, hit.track);
       beepOK(); pushRecent("✓ " + (hit.seq||"?"), false);
     }
-  } else if (isLP(code)) {                        // LP 结构但不在白名单
-    setState("bad", "不在今日清单", "", "是 LP 单号、但不属于今天这批。<b>勿发货</b>，核对是否串批/隔日单", code);
-    beepBad(); pushRecent("名单外", true);
+  } else if (isLP(code)) {                        // LP 结构但不在任何已载入清单
+    if (offlist.has(code)) {                      // 名单外 + 重复
+      setState("bad", "重复(未知来源)", "", "该未知来源运单已扫过，勿重复装箱", code);
+      beepBad(); pushRecent("重复", true);
+    } else {                                      // 名单外 + 首次 → 黄屏记录（不拒绝）
+      offlist.set(code, { track: code, at: new Date().toISOString() });
+      persist(); updateCount();
+      setState("warn", "未知来源", "已记录", "不在今日任何清单（可能昨日残留/串批）。<b>已记录</b>，收工核对", code);
+      beepWarn(); pushRecent("未知 " + offlist.size, false);
+    }
   } else {                                        // 非 LP 结构（SF 号 / 订单号 / 二维码等）
     setState("bad", "不是 LP 单号", "", "扫到了非 LP 条码（可能是 SF 号 / 订单号 / 二维码）。<b>请扫面单顶部 LP 一维码</b>", code);
     beepBad(); pushRecent("非LP", true);
@@ -255,22 +297,47 @@ document.addEventListener("keydown", e => {
   }
 });
 
-// —— 导出有货清单（→ stage2「有货订单清单」入口，utf-8-sig BOM）——
-$("export").addEventListener("click", () => {
-  const recs = [...scanned.values()].sort((a,b) => (parseInt(a.seq)||0) - (parseInt(b.seq)||0));
-  let csv = "序号,Order Reference,VO Tracking No,店\n";
-  for (const r of recs) csv += [r.seq, r.ref, r.track, store].join(",") + "\n";
+// —— 导出（n+1 份，utf-8-sig BOM）：n 份按店「有货清单{店}{n}单」→ stage2 入口；+1 份「未知来源运单」供人工核对 ——
+function downloadCSV(name, csv) {
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "有货清单" + (store || "") + ".csv";
+  a.download = name;
   a.click(); URL.revokeObjectURL(a.href);
+}
+$("export").addEventListener("click", () => {
+  const byStore = new Map();                       // 店 -> 记录数组
+  for (const r of scanned.values()) {
+    const s = r.store || "";
+    if (!byStore.has(s)) byStore.set(s, []);
+    byStore.get(s).push(r);
+  }
+  const jobs = [];                                 // [文件名, csv]
+  for (const [s, recs] of byStore) {
+    recs.sort((a,b) => (parseInt(a.seq)||0) - (parseInt(b.seq)||0));
+    let csv = "序号,Order Reference,VO Tracking No,店\n";
+    for (const r of recs) csv += [r.seq, r.ref, r.track, s].join(",") + "\n";
+    jobs.push(["有货清单" + (s || "") + recs.length + "单.csv", csv]);
+  }
+  if (offlist.size) {                              // 名单外单独成文件，仅一列
+    let csv = "未知来源运单\n";
+    for (const r of offlist.values()) csv += r.track + "\n";
+    jobs.push(["未知来源运单" + offlist.size + "单.csv", csv]);
+  }
+  if (!jobs.length) {
+    setState("bad", "无可导出", "", "还没扫到任何单", "");
+    beepBad(); return;
+  }
+  jobs.forEach(([name, csv], i) => setTimeout(() => downloadCSV(name, csv), i * 300));  // 错峰触发多文件下载
+  setState("idle", "已导出", "",
+    `已导出 <b>${jobs.length}</b> 份：${jobs.map(j => j[0]).join("、")}`,
+    "浏览器若提示「下载多个文件」请允许");
 });
 
 // —— 清空今日（收工重来 / 换批）——
 $("reset").addEventListener("click", () => {
-  if (!confirm("清空今日已扫的 " + scanned.size + " 单记录？（不影响白名单）")) return;
-  scanned = new Map(); persist(); updateCount();
+  if (!confirm("清空今日已扫的 " + scanned.size + " 单 + 未知来源 " + offlist.size + " 单记录？（不影响白名单）")) return;
+  scanned = new Map(); offlist = new Map(); persist(); updateCount();
   setState("idle", "已清空", "", "已扫记录清零，白名单保留。可重新开扫", "");
 });
 </script>
