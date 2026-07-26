@@ -29,6 +29,9 @@
   #unknown { font-weight: 700; padding: .1em .5em; border: 2px solid rgba(255,255,255,.5); border-radius: 6px; opacity: .75; }
   #unknown.hot { background: var(--warn); border-color: rgba(255,255,255,.9); opacity: 1; }
   #clock { font-variant-numeric: tabular-nums; }
+  #storg { font-weight: 700; padding: .1em .5em; border-radius: 6px; }
+  #storg.warn { background: var(--warn); }
+  #storg.bad  { background: var(--bad); }
 
   /* 主状态区：满屏大字 */
   #stage {
@@ -63,6 +66,7 @@
   <div id="bar">
     <span id="count">已扫 0 <small>/ 0 单</small></span>
     <span id="unknown">未知来源 0</span>
+    <span id="storg" hidden></span>
     <span class="grow"></span>
     <span id="clock">--:--:--</span>
   </div>
@@ -164,38 +168,116 @@ function pushRecent(text, bad) {
   while (r.children.length > 6) r.removeChild(r.lastChild);
 }
 
-// —— localStorage 防误刷丢记录（多店合并后按「日期」存已扫 + 未知来源）——
-const todayKey = () => "youhuo_scan_" + new Date().toISOString().slice(0,10);
-function persist() {
-  try {
-    localStorage.setItem(todayKey(), JSON.stringify({
-      scanned: [...scanned.values()], offlist: [...offlist.values()]
-    }));
-  } catch(e){}
+// —— 持久层：内存 Map 是数据源；localStorage 为主，写失败自动降级 IndexedDB，两者皆挂则仅内存 ——
+// 降级不阻断扫码（能一直扫、导出读内存），只影响「刷新/崩溃兜底」的持久性 → 降级时红屏报警 + 顶栏常驻提示。
+const KEEP_DAYS = 30;                                   // 旧存档保留天数；超期启动时自动清理
+const SKEY = "youhuo_scan_";
+const todayKey = () => SKEY + new Date().toISOString().slice(0,10);
+
+let storageMode = "ls";        // "ls"=localStorage | "idb"=已降级 IndexedDB | "mem"=两者皆挂仅内存
+let degradedOnce = false;
+
+// -- IndexedDB 极简 KV（浏览器原生，零依赖；仅降级/读回时才真正建库）--
+let _idb = null;
+function openIDB() {
+  if (_idb) return Promise.resolve(_idb);
+  return new Promise((res, rej) => {
+    let req; try { req = indexedDB.open("youhuo_scan_db", 1); } catch(e) { return rej(e); }
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onsuccess = () => { _idb = req.result; res(_idb); };
+    req.onerror = () => rej(req.error);
+  });
 }
-function restore() {
-  try {
-    const raw = localStorage.getItem(todayKey());
-    if (!raw) return 0;
-    const d = JSON.parse(raw); let n = 0;
-    for (const it of (d.scanned || [])) {
-      const k = norm(it.track);
-      if (whitelist.has(k) && !scanned.has(k)) { scanned.set(k, it); n++; }
-    }
-    for (const it of (d.offlist || [])) {
-      const k = norm(it.track);
-      if (whitelist.has(k)) {                       // 之前名单外、现在其清单已载入 → 迁回有货集合
-        if (!scanned.has(k)) {
-          const w = whitelist.get(k);
-          scanned.set(k, { ref: w.ref, seq: w.seq, track: w.track, store: w.store, at: it.at }); n++;
-        }
-      } else if (!offlist.has(k)) {
-        offlist.set(k, it);
+function idbPut(k, v) {
+  return openIDB().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put(v, k);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+  }));
+}
+function idbGet(k) {
+  return openIDB().then(db => new Promise((res, rej) => {
+    const r = db.transaction("kv", "readonly").objectStore("kv").get(k);
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+}
+
+// -- 顶栏常驻存储状态：正常隐藏；降级黄；仅内存红 --
+function updateStorg() {
+  const el = $("storg");
+  if (storageMode === "ls") { el.hidden = true; el.className = ""; return; }
+  el.hidden = false;
+  if (storageMode === "idb") { el.textContent = "⚠备用存储"; el.className = "warn"; }
+  else { el.textContent = "⚠仅内存·勿刷新"; el.className = "bad"; }
+}
+function degrade(err) {                                 // localStorage 写失败 → 切 IDB，红屏报警一次（不阻断）
+  storageMode = "idb"; updateStorg(); cleanupIDBOld();
+  if (!degradedOnce) {
+    degradedOnce = true;
+    setState("bad", "存储降级", "", "本地存储写入失败（可能配额满/无痕模式），已切到<b>备用存储</b>继续记录。收工务必导出，并清理旧数据", String((err && err.name) || err));
+    beepBad();
+  }
+}
+function failMem(err) {                                 // 连 IDB 也失败：仅内存，红屏 + 顶栏常驻红
+  storageMode = "mem"; updateStorg();
+  setState("bad", "仅存内存！", "", "本地与备用存储都写入失败，记录<b>仅在内存</b>。<b>切勿刷新/关闭，尽快导出</b>", String((err && err.name) || err));
+  beepBad();
+}
+
+function persist() {                                    // 每扫一单调用；内存已先写，这里做旁路持久化
+  const payload = JSON.stringify({ scanned: [...scanned.values()], offlist: [...offlist.values()] });
+  if (storageMode === "ls") {
+    try { localStorage.setItem(todayKey(), payload); return; } catch(e) { degrade(e); }
+  }
+  if (storageMode === "idb") { idbPut(todayKey(), payload).catch(e => failMem(e)); return; }
+  // mem：无处可写，红屏已挂，等导出
+}
+
+// -- 读回今日存档（并入内存 Map，按 track 去重）：localStorage 与 IDB 都并一遍，兼容降级过的场景 --
+function mergePayload(raw) {
+  let d; try { d = JSON.parse(raw); } catch(e) { return 0; }
+  let n = 0;
+  for (const it of (d.scanned || [])) {
+    const k = norm(it.track);
+    if (whitelist.has(k) && !scanned.has(k)) { scanned.set(k, it); n++; }
+  }
+  for (const it of (d.offlist || [])) {
+    const k = norm(it.track);
+    if (whitelist.has(k)) {                             // 之前名单外、现在其清单已载入 → 迁回有货集合
+      if (!scanned.has(k)) {
+        const w = whitelist.get(k);
+        scanned.set(k, { ref: w.ref, seq: w.seq, track: w.track, store: w.store, at: it.at }); n++;
       }
+    } else if (!offlist.has(k)) {
+      offlist.set(k, it);
     }
-    return n;
-  } catch(e) { return 0; }
+  }
+  return n;
 }
+async function restore() {
+  let n = 0, lsRaw = null;
+  try { lsRaw = localStorage.getItem(todayKey()); } catch(e) {}
+  if (lsRaw) n += mergePayload(lsRaw);
+  try { const v = await idbGet(todayKey()); if (v) n += mergePayload(v); } catch(e) {}  // 曾降级则数据在此
+  return n;
+}
+
+// -- 启动自动清理 N 天前旧存档（只删本工具 youhuo_scan_ 前缀的 key）--
+function _tooOld(key) {
+  const d = new Date(key.slice(SKEY.length));
+  return !isNaN(d) && d.getTime() < Date.now() - KEEP_DAYS * 864e5;
+}
+function cleanupLSOld() {
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(SKEY) && _tooOld(k)) localStorage.removeItem(k); } catch(e) {}
+}
+function cleanupIDBOld() {
+  openIDB().then(db => {
+    const store = db.transaction("kv", "readwrite").objectStore("kv");
+    const req = store.getAllKeys();
+    req.onsuccess = () => req.result.forEach(k => { if (typeof k === "string" && k.startsWith(SKEY) && _tooOld(k)) store.delete(k); });
+  }).catch(() => {});
+}
+cleanupLSOld();
 
 // —— 载入白名单（多选/多次追加，各店合并；不清空已扫）——
 function readText(f) {
@@ -227,7 +309,7 @@ $("file").addEventListener("change", async e => {
       anyOk = true;
     }
   }
-  const restored = restore();
+  const restored = await restore();
   persist();                          // 保存 restore 可能触发的「名单外→有货」迁移
   updateCount();
   if (!anyOk && !whitelist.size) {

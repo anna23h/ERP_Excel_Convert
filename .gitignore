@@ -40,5 +40,6 @@ venv/
 docs/
 CLAUDE.md
 ISSUES.md
+ISSUES-*.md
 SPEC.md
 presets/
