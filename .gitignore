@@ -8,6 +8,8 @@ output/
 all_test_data/
 test-data/
 results/
+# 箱单样例：真实 SO 单 PDF（含客户地址、进货价）+ 成品箱单
+箱单模版+原始数据/
 # 因机器而异的本地配置
 config.py
 
