@@ -46,7 +46,6 @@ WARN_FILL = PatternFill("solid", fgColor="FFFF00")
 
 # ERP 导出的列名（模版固定）
 F_ORDER = "Order Reference"
-F_DATE = "Order Date"
 F_NAME = "Order Lines/Product/Name"
 F_SKU = "Order Lines/Product/Internal Reference"
 F_BARCODE = "Order Lines/Product/Barcode"
@@ -62,7 +61,7 @@ def _clean(value):
 
 
 def read_orders(path):
-    """读 ERP 导出 → [(SO号, 下单日期, [行])]，同 SO 内同 SKU 合并求和。
+    """读 ERP 导出 → [(SO号, [行])]，同 SO 内同 SKU 合并求和。
 
     跨 SO 的同 SKU 不合并——不同 SO 的货是分开打包的。
     """
@@ -70,7 +69,7 @@ def read_orders(path):
     header = [_clean(c.value) for c in ws[1]]
     try:
         idx = {f: header.index(f) for f in
-               (F_ORDER, F_DATE, F_NAME, F_SKU, F_BARCODE, F_HS, F_QTY)}
+               (F_ORDER, F_NAME, F_SKU, F_BARCODE, F_HS, F_QTY)}
     except ValueError as e:
         raise SystemExit(f"导出缺列：{e}\n实际表头：{header}")
 
@@ -79,7 +78,7 @@ def read_orders(path):
     for row in ws.iter_rows(min_row=2, values_only=True):
         order_no = _clean(row[idx[F_ORDER]])
         if order_no:
-            current = {"order": order_no, "date": row[idx[F_DATE]], "lines": {}}
+            current = {"order": order_no, "lines": {}}
             orders.append(current)
         sku = _clean(row[idx[F_SKU]])
         if not sku or current is None:
@@ -101,7 +100,7 @@ def read_orders(path):
     return [o for o in orders if o["lines"]]
 
 
-def _write_head(ws, order_date):
+def _write_head(ws, made_on):
     ws["A1"] = COMPANY
     ws["A2"] = TITLE
     ws.merge_cells("A1:O1")
@@ -115,7 +114,7 @@ def _write_head(ws, order_date):
     ws.row_dimensions[2].height = 35.25
 
     ws["K5"] = "Invoice："  # 发票号人工填
-    ws["M5"] = f"Date: {order_date:%d.%m.%Y}" if order_date else "Date: "
+    ws["M5"] = f"Date: {made_on:%d.%m.%Y}"
     for coord in ("K5", "M5"):
         ws[coord].font = Font(name="Arial", size=11, bold=True)
         ws[coord].border = BORDER
@@ -169,11 +168,11 @@ def _write_line(ws, row, line, spare):
     return last + 1
 
 
-def build(orders, spare):
+def build(orders, spare, made_on):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet2"
-    _write_head(ws, orders[0]["date"] if orders else None)
+    _write_head(ws, made_on)
 
     row = FIRST_DATA_ROW
     for order in orders:
@@ -204,14 +203,15 @@ def main():
     if not orders:
         raise SystemExit("导出里没有产品行")
 
-    wb = build(orders, args.spare)
+    # 箱单是打包当天产生的单据，日期取制单日（当下），与 SO 何时下的无关
+    made_on = dt.date.today()
+    wb = build(orders, args.spare, made_on)
 
     # S02881+2882+2886 —— 首个 SO 写全，其余省略共同前缀
     nums = [o["order"] for o in orders]
     head = nums[0]
     tail = [re.sub(r"^S0*", "", n) for n in nums[1:]]
-    date = orders[0]["date"] or dt.datetime.now()
-    name = f"{'+'.join([head] + tail)}箱单{date:%d.%m}.xlsx"
+    name = f"{'+'.join([head] + tail)}箱单{made_on:%d.%m}.xlsx"
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
