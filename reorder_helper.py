@@ -16,7 +16,7 @@
       待发货明细表等无 ID 输入不传 master 时走此路径，行为与旧版一致。
     - 平台裸价来自「待发货明细表」自带的 采购订单-* / 保税 分表（purchase
       order 导出本身无裸价列）。
-    - 当前库存 = purchase order 的 Product/Quantity On Hand。
+    - 当前库存 = purchase order 的 Order Lines/Product/Quantity On Hand。
 
 复用 build_excel：_short_vendor/_vendor_map（供应商简称）、_write_simple（统一版式）。
 
@@ -37,7 +37,8 @@ PO_VENDOR   = "Vendor"
 PO_INTERNAL = "Order Lines/Product/Internal Reference"
 PO_PRICE    = "Order Lines/Unit Price"
 PO_QTY      = "Order Lines/Total Quantity"
-PO_ONHAND   = "Product/Quantity On Hand"
+PO_ONHAND_CANDS = ["Order Lines/Product/Quantity On Hand",  # 实际导出名
+                   "Product/Quantity On Hand"]              # 保底：不同导出版本
 PO_DATE_CANDS = ["Order Lines/Order Date", "Order Lines/Created on",
                  "Order Lines/Order Deadline"]
 PO_PID_CANDS = ["Order Lines/Product/ID", "Order Lines/Product/External ID",
@@ -292,7 +293,7 @@ def load_po(path):
         if c not in hdr:
             raise ValueError(f"purchase order 导出缺列: {c}")
     c_date = next((hdr[c] for c in PO_DATE_CANDS if c in hdr), None)
-    c_onhand = hdr.get(PO_ONHAND)
+    c_onhand = next((hdr[c] for c in PO_ONHAND_CANDS if c in hdr), None)  # 选填
     c_pid = next((hdr[c] for c in PO_PID_CANDS if c in hdr), None)
 
     # 第一遍：ffill 订单头（Vendor），收集全部 vendor 全名以建简称映射
