@@ -14,13 +14,15 @@
 - 账单模板导出(D 用)：ERP 导出，需含 External ID(ID) + Order Reference + Terms and conditions(原值=渠道+运单)。
   不传则跳过 D。
 """
-import argparse, os, re
+import argparse, os, re, sys
 from datetime import date
 import pandas as pd
 from openpyxl import Workbook
 
-import step4_merge as s4
-import build_excel as be  # 复用样式
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.xlsx import style_sheet, write_df, unique_path  # noqa: E402
+import step4_merge as s4  # noqa: E402
+import build_excel as be  # noqa: E402  (拉单业务函数，排版已改走 common)
 
 
 def last15(series):
@@ -245,9 +247,9 @@ def get_shipped_orders(erp, shipped_keys, tracking_map=None):
 def build_B(shipped, outdir, suffix=""):
     out = pd.DataFrame({"系统履约单号": shipped["_key"].tolist()})
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-    be.write_df(ws, out)
-    be.style_sheet(ws, 1)
-    path = be.unique_path(os.path.join(outdir, stage2_name("系统履约单号", suffix, len(out))))
+    write_df(ws, out)
+    style_sheet(ws, 1)
+    path = unique_path(os.path.join(outdir, stage2_name("系统履约单号", suffix, len(out))))
     wb.save(path)
     return path, len(out)
 
@@ -264,9 +266,9 @@ def build_C(shipped, outdir, suffix=""):
         ws = wb.active if first else wb.create_sheet()
         ws.title = ch
         first = False
-        be.write_df(ws, df)
-        be.style_sheet(ws, 2)
-    path = be.unique_path(os.path.join(outdir, stage2_name("发货表", suffix, sum(counts.values()))))
+        write_df(ws, df)
+        style_sheet(ws, 2)
+    path = unique_path(os.path.join(outdir, stage2_name("发货表", suffix, sum(counts.values()))))
     wb.save(path)
     return path, counts
 
@@ -320,9 +322,9 @@ def build_picking_writeback(picking_paths, keys, trk_value, outdir, name,
         if sub.empty:
             return
         wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-        be.write_df(ws, sub)
-        be.style_sheet(ws, len(sub.columns))
-        path = be.unique_path(os.path.join(outdir, stage2_name(name, label, len(sub))))
+        write_df(ws, sub)
+        style_sheet(ws, len(sub.columns))
+        path = unique_path(os.path.join(outdir, stage2_name(name, label, len(sub))))
         wb.save(path)
         results[label] = (path, len(sub))
 
@@ -420,16 +422,16 @@ def build_shortage(marked, erp, mmdd, outdir):
     wb = Workbook()
     ws_d = wb.active
     ws_d.title = "明细"
-    be.write_df(ws_d, detail)
-    be.style_sheet(ws_d, len(detail.columns))
+    write_df(ws_d, detail)
+    style_sheet(ws_d, len(detail.columns))
     # 合并相同 SKU 的 SKU 级列(直观看出哪个商品缺、缺几单)
     _merge_same(ws_d, detail, ["SKU", "商品名", "Barcode", "Picking Name", "系统在售库存"])
 
     ws_s = wb.create_sheet("SKU汇总")
-    be.write_df(ws_s, summary)
-    be.style_sheet(ws_s, len(summary.columns))
+    write_df(ws_s, summary)
+    style_sheet(ws_s, len(summary.columns))
 
-    path = be.unique_path(os.path.join(outdir, "缺货记录.xlsx"))
+    path = unique_path(os.path.join(outdir, "缺货记录.xlsx"))
     wb.save(path)
     return path, len(detail), len(summary)
 
@@ -501,9 +503,9 @@ def build_forwarder(paths, outdir, shipdate=None):
     d = shipdate or date.today().strftime("%Y%m%d")
     fname = f"{FORWARDER_PREFIX}{d}+{n}.xlsx"
     wb = Workbook(); ws = wb.active; ws.title = "Sheet2"
-    be.write_df(ws, out)
-    be.style_sheet(ws, 2)
-    path = be.unique_path(os.path.join(outdir, fname))
+    write_df(ws, out)
+    style_sheet(ws, 2)
+    path = unique_path(os.path.join(outdir, fname))
     wb.save(path)
 
     # ---- 天猫回执：所有发货 Order Reference 后15位(系统履约单号)，各渠道合并去重 ----
@@ -518,9 +520,9 @@ def build_forwarder(paths, outdir, shipdate=None):
     d_obj = date(int(d[:4]), int(d[4:6]), int(d[6:8])) if len(d) == 8 and d.isdigit() else date.today()
     rname = stage2_name("天猫回执", "", rn, d_obj)
     wb_r = Workbook(); ws_r = wb_r.active; ws_r.title = "Sheet1"
-    be.write_df(ws_r, rct)
-    be.style_sheet(ws_r, 1)
-    rpath = be.unique_path(os.path.join(outdir, rname))
+    write_df(ws_r, rct)
+    style_sheet(ws_r, 1)
+    rpath = unique_path(os.path.join(outdir, rname))
     wb_r.save(rpath)
 
     return path, n, conflicts, warnings, rpath, rn
@@ -559,9 +561,9 @@ def build_billing(src, shipped_keys, mmdd, outdir, suffix=""):
     agg["Terms and conditions"] = f"账单{mmdd}" + raw
     out = agg[["Order Date", idc, "Order Reference", "Terms and conditions"]]
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-    be.write_df(ws, out)
-    be.style_sheet(ws, len(out.columns))
-    path = be.unique_path(os.path.join(outdir, stage2_name("账单上传", suffix, len(out))))
+    write_df(ws, out)
+    style_sheet(ws, len(out.columns))
+    path = unique_path(os.path.join(outdir, stage2_name("账单上传", suffix, len(out))))
     wb.save(path)
     return path, len(out)
 

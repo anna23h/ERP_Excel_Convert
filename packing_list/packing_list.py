@@ -12,12 +12,17 @@ Quantity total 不预填订购量，写成 =SUMPRODUCT(箱规*箱数)，仓库�
 
 import argparse
 import datetime as dt
+import os
 import re
+import sys
 from pathlib import Path
 
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.xlsx import BORDER, YELLOW as WARN_FILL  # noqa: E402
 
 # ---- 成品箱单的固定排版 ----
 COMPANY = "IHTCT GmbH \nHansaallee. 189, 40549 Düsseldorf \n"
@@ -39,10 +44,6 @@ FIRST_DATA_ROW = 7
 COL_ITEM, COL_NAME, COL_SKU, COL_BARCODE, COL_HS = 1, 2, 3, 4, 5
 COL_BOXSPEC, COL_BOXCOUNT = 8, 9
 COL_ORIGIN, COL_QTY = 11, 12
-
-THIN = Side(style="thin")
-BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-WARN_FILL = PatternFill("solid", fgColor="FFFF00")
 
 # ERP 导出的列名（模版固定）
 F_ORDER = "Order Reference"

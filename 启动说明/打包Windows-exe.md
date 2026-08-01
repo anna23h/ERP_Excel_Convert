@@ -20,7 +20,7 @@
 - 安装 Python 3：到 <https://www.python.org/downloads/> 下载安装，**安装时务必勾选「Add Python to PATH」**。
 
 ### 步骤
-1. **取最新代码**：在这台 Windows 机器上 `git pull`（首次则 `git clone`）到项目目录，确保 `gui.py`、`build_excel.py`、`stage2.py`、`step4_merge.py`、`requirements.txt`、`build_exe.bat` 都是最新版。**`raw_data/`、`output/`、`all_test_data/` 不会进版本库，无需理会**。
+1. **取最新代码**：在这台 Windows 机器上 `git pull`（首次则 `git clone`）到项目目录，确保 `vo_orders/`、`common/`、`requirements.txt`、`build_exe.bat` 都是最新版。**`raw_data/`、`output/`、`all_test_data/` 不会进版本库，无需理会**。
    - 没装 git 时也可拷整个文件夹，但务必先删掉旧的 `dist/`、`build/`、`__pycache__/`、`*.spec`，避免旧缓存干扰本次打包。
 2. 双击 `build_exe.bat`（或在命令提示符 `cd` 到项目目录后运行它）。
 3. 等待完成，产物在 `dist\VOTool.exe`（可在资源管理器里重命名为中文，如 `VO拉单工具.exe`）。
@@ -30,7 +30,7 @@
 > 手动打包命令（等价于 bat 内容）：
 > ```bat
 > py -3 -m pip install -r requirements.txt
-> py -3 -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl gui.py
+> py -3 -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl --paths . --paths vo_orders vo_orders\gui.py
 > ```
 > （若 `py` 不可用，把 `py -3` 换成 `python`）
 

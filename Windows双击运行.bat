@@ -75,7 +75,7 @@ if defined NEED_DEP (
 )
 
 echo Starting VO Puller... ^(closing this window will close the program^)
-"%VPY%" gui.py
+"%VPY%" vo_orders\gui.py
 
 REM Keep the window open on abnormal exit so the error stays visible
 if errorlevel 1 (

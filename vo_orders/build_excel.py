@@ -9,23 +9,14 @@ import sys, os, re
 from datetime import date
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.page import PageMargins
-from openpyxl.worksheet.properties import PageSetupProperties
 
-import step4_merge as s4
-
-YELLOW = PatternFill("solid", fgColor="FFFF00")
-THIN = Side(style="thin")
-BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
-LEFT_BOTTOM = Alignment(horizontal="left", vertical="bottom", wrap_text=True)  # 左对齐+下沉
-LEFT_CENTER = Alignment(horizontal="left", vertical="center", wrap_text=True)  # 合并单元格用
-FONT = Font(size=15)
-SMALL_FONT = Font(size=13)  # 比正文小 2 号
-HEAD_FONT = Font(size=15, bold=True)
-ROW_H = 35
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.xlsx import (YELLOW, BORDER, CENTER, LEFT_BOTTOM, LEFT_CENTER,  # noqa: E402
+                         FONT, SMALL_FONT, HEAD_FONT, ROW_H,
+                         style_sheet, write_df, unique_path, write_simple, apply_print)
+from common.vendor import short_vendor, vendor_map  # noqa: E402
+import step4_merge as s4  # noqa: E402
 
 # 面单列（顺序即 A..F），末尾加空白「仓库备注」
 FACE_COLS = [
@@ -113,39 +104,6 @@ PO_COLS = ["供应商(次数)", "最低价", "最低价供应商", "最近一次
 PO_CUSTOMER_PAT = "Alibaba Health"
 
 # 供应商简称：滤掉的法律形式/地名后缀词(小写比较)
-VENDOR_LEGAL = {"gmbh", "gmbh,", "kg", "kgaa", "ag", "ohg", "mbh", "mbb", "co", "co.",
-                "&", "e.k.", "ek", "e.u", "ltd", "ltd.", "limited", "inc", "inc.",
-                "s.a.r.l.,", "s.a.r.l.", "sarl", "sas", "bv", "se",
-                "niederlassung", "deutschland", "holding"}
-# 首词全大写但属行业通用词，单独指代会误导(PHARMA LUPUS ≠ "PHARMA")
-VENDOR_GENERIC = {"PHARMA", "APOTHEKE", "MED"}
-# 个别简称覆盖(用户指定)：规则产物 → 最终简称
-VENDOR_ALIAS = {"Dirk Rossmann": "Rossmann"}
-
-
-def _short_vendor(name):
-    """供应商全名 → 简称(2026-07-07 全量 65 家实测零碰撞)：
-    去括号注记 → 滤法律/地名后缀 → 首词全大写(≥2字符、连字符取头段、非通用词)
-    则单词指代(PHOENIX/AEP/GEHE/DM/UPS)，否则取前两词；结果过短再多取一词。"""
-    s = re.sub(r"[（(].*?[)）]", "", str(name)).strip()
-    words = [w for w in s.split() if w.lower() not in VENDOR_LEGAL]
-    if not words:
-        return str(name).strip()
-    head = words[0].split("-")[0]
-    if head.isupper() and len(head) >= 2 and head not in VENDOR_GENERIC:
-        return VENDOR_ALIAS.get(head, head)
-    n = 2 if len(" ".join(words[:2])) >= 4 else 3
-    res = " ".join(words[:n])
-    return VENDOR_ALIAS.get(res, res)
-
-
-def _vendor_map(vendors):
-    """全名→简称映射；不同全名缩成同一简称(前瞻防护，当前数据零碰撞)则保留全名。"""
-    m = {v: _short_vendor(v) for v in vendors}
-    dup = {s for s in m.values() if list(m.values()).count(s) > 1}
-    return {v: (v if s in dup else s) for v, s in m.items()}
-
-
 def _po_base_sku(s):
     """SKU 归一：去掉多件装 x2 / 变体 *2 / 渠道 _VO 等尾缀，对齐采购单里的基础 SKU。"""
     return re.sub(r"(x\d+|\*\d+|_VO)+$", "", str(s).strip())
@@ -166,7 +124,7 @@ def load_po_stats(path):
     is_cust = po["Vendor"].str.contains(PO_CUSTOMER_PAT, case=False, na=False)
     n_cust = int(is_cust.sum())
     po = po[~is_cust].copy()
-    po["Vendor"] = po["Vendor"].map(_vendor_map(po["Vendor"].unique()))
+    po["Vendor"] = po["Vendor"].map(vendor_map(po["Vendor"].unique()))
     po["_sku"] = po["Order Lines/Product/Internal Reference"].map(_po_base_sku)
     po["_price"] = pd.to_numeric(po["Order Lines/Unit Price"], errors="coerce")
     po["_qty"] = pd.to_numeric(po["Order Lines/Total Quantity"], errors="coerce")
@@ -263,52 +221,6 @@ def is_multipack(v):
     return bool(re.search(r"x\d+$", str(v), re.I))
 
 
-def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=(), widths=None):
-    """left_cols: 内容左对齐+下沉的列名集合；small_cols: 字号小2号的列名集合。表头始终居中。
-    widths: {表头名: 列宽} 固定列宽表，命中的列用固定宽度（操作员手工调好、免二次拖列），
-    未命中的列仍按内容自动算宽。"""
-    headers = [c.value for c in ws[1]]
-    left_idx = {i + 1 for i, h in enumerate(headers) if h in left_cols}
-    small_idx = {i + 1 for i, h in enumerate(headers) if h in small_cols}
-    for row in ws.iter_rows():
-        for cell in row:
-            cell.border = BORDER
-            if cell.row == 1:
-                cell.alignment = CENTER
-                cell.font = header_font
-            else:
-                cell.alignment = LEFT_BOTTOM if cell.column in left_idx else CENTER
-                cell.font = SMALL_FONT if cell.column in small_idx else FONT
-    for r in range(1, ws.max_row + 1):
-        # 含单元格内换行(\n)的行按行数放大，否则固定高度会裁掉第二行起的内容；
-        # 无换行的行恒为 ROW_H(其他表无 \n 内容，行为不变)
-        lines = max((str(c.value).count("\n") + 1 for c in ws[r] if c.value is not None),
-                    default=1)
-        ws.row_dimensions[r].height = ROW_H if lines == 1 else lines * 22
-    # 列宽：固定表命中的列用固定宽度（操作员调好的成品宽），其余按内容自动算宽
-    # （字号15 比默认大，需放大系数，否则日期显示为 ######）
-    widths = widths or {}
-    for c in range(1, n_cols + 1):
-        hdr = headers[c - 1] if c - 1 < len(headers) else None
-        if hdr in widths:
-            ws.column_dimensions[get_column_letter(c)].width = widths[hdr]
-            continue
-        maxlen = 0
-        for r in range(1, ws.max_row + 1):
-            v = ws.cell(r, c).value
-            if v is None:
-                continue
-            s = v.strftime("%Y-%m-%d %H:%M:%S") if hasattr(v, "strftime") else str(v)
-            maxlen = max(maxlen, len(s))
-        ws.column_dimensions[get_column_letter(c)].width = max(12, maxlen * 1.5 + 2)
-
-
-def write_df(ws, df):
-    ws.append(list(df.columns))
-    for _, row in df.iterrows():
-        ws.append(list(row))
-
-
 def highlight_facesheet(ws, df):
     """三条规则，标黄触发的单元格（让仓库知道原因）。
     Delivery Type 目标值按店区分：VO 的包裹标记是 CC，GW 的是 SYB。"""
@@ -364,21 +276,6 @@ def make_output_name(facesheet, outdir):
     return os.path.join(outdir, fname)
 
 
-def apply_print(ws, landscape=False, fit_width=False, footer="第 &P 页，共 &N 页",
-                top=0.9, bottom=0.9, left=0.8, right=0.8):
-    """步骤9 打印设置。footer 用 Excel 字段码：&P=当前页码，&N=总页数。
-    默认『第 &P 页，共 &N 页』(第1页，共3页...)。页边距单位为英寸。"""
-    if landscape:
-        ws.page_setup.orientation = "landscape"
-    if fit_width:  # 所有列压到一页宽
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 0
-        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    ws.page_margins = PageMargins(top=top, bottom=bottom, left=left, right=right,
-                                  header=0.3, footer=0.3)
-    ws.oddFooter.center.text = footer
-
-
 def _load_erps(erp_paths):
     """接受单个路径或路径列表(VO/GW 各一份)，concat 成一张 ERP 行级表。"""
     if isinstance(erp_paths, str):
@@ -406,17 +303,6 @@ def _wu_strip(series):
     return series.astype(str).str.replace(s4.WU_TAG, "", regex=False).str.strip().values
 
 
-def unique_path(path):
-    """目标已存在则在扩展名前加序号 (1)/(2)…，避免覆盖既有产出。"""
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    i = 1
-    while os.path.exists(f"{base}({i}){ext}"):
-        i += 1
-    return f"{base}({i}){ext}"
-
-
 def _write_scanlist(facesheet, ch, outdir):
     """产出扫码清单 `扫码清单{店}.csv`（订单级白名单，见 build_scanlist）。
     UTF-8-BOM(utf-8-sig)：Excel 直接打开中文列头不乱码，浏览器端读时自行剥 BOM。
@@ -425,18 +311,6 @@ def _write_scanlist(facesheet, ch, outdir):
     path = unique_path(os.path.join(outdir, f"扫码清单{ch}.csv"))
     df.to_csv(path, index=False, encoding="utf-8-sig")
     return path, len(df)
-
-
-def _write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None):
-    """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。
-    left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。"""
-    wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
-    write_df(ws, out)
-    style_sheet(ws, n_cols or len(out.columns), left_cols=left_cols, small_cols=small_cols,
-                widths=widths)
-    path = unique_path(os.path.join(outdir, fname))
-    wb.save(path)
-    return path, len(out)
 
 
 def _upload_terms(cat_df, idcol, terms):
@@ -545,7 +419,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             no["_ch"] = no[s4.ERP_ORDER_REF].astype(str).str.split("_", n=1).str[0]
             for ch in sorted(no["_ch"].unique()):
                 keys = no[no["_ch"] == ch]["_key"].tolist()
-                p, n = _write_simple(pd.DataFrame({"系统履约单号": keys}),
+                p, n = write_simple(pd.DataFrame({"系统履约单号": keys}),
                                      outdir, f"新订单获单清单{ch}.xlsx", n_cols=1)
                 log.append(f"新订单获单清单{ch} 已生成: {p}  ({n} 单)")
         else:
@@ -568,7 +442,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         allup["_ch"] = allup["Order Reference"].astype(str).str.split("_", n=1).str[0]
         for ch in sorted(allup["_ch"].unique()):
             sub = allup[allup["_ch"] == ch].drop(columns="_ch")
-            p, n = _write_simple(sub, outdir, f"回传ERP销售上传表{ch}.xlsx")
+            p, n = write_simple(sub, outdir, f"回传ERP销售上传表{ch}.xlsx")
             log.append(f"回传ERP销售上传表{ch} 已生成: {p}  ({n} 单)")
         log.append("  └ 含 " + " / ".join(
             f"{k} {df['_key'].nunique()}" for k, df in present.items()))
@@ -586,7 +460,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     if not cxl.empty:
         seed = pd.DataFrame({"系统履约单号": cxl["_key"].tolist(),
                              "Order Reference": cxl[s4.ERP_ORDER_REF].tolist()})
-        p, n = _write_simple(seed, outdir, "取消订单清单.xlsx",
+        p, n = write_simple(seed, outdir, "取消订单清单.xlsx",
                              left_cols={"系统履约单号", "Order Reference"})
         log.append(f"取消订单清单 已生成: {p}  ({n} 单；后到的取消单请手工补录后喂阶段二)")
 
@@ -618,7 +492,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                 short = int((sub["缺口"] > 0).sum())
                 # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
                 # 采购画像的长文本列固定宽度让 wrap 生效，否则供应商名单会把列撑得极宽
-                p, n = _write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
+                p, n = write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
                                      left_cols={"Internal Reference", "Picking Name",
                                                 "Barcode", "Name", "FS", "Supply Remark",
                                                 "供应商(次数)", "最低价供应商", "最近一次采购"},

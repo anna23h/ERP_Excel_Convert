@@ -38,7 +38,7 @@ if errorlevel 1 goto fail
 
 echo.
 echo [3/3] Building exe...
-%PY% -m PyInstaller --onefile --windowed --name ReorderHelper --collect-all openpyxl reorder_gui.py
+%PY% -m PyInstaller --onefile --windowed --name ReorderHelper --collect-all openpyxl --paths . --paths reorder reorder\reorder_gui.py
 if errorlevel 1 goto fail
 
 echo.

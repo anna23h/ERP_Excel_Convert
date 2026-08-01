@@ -11,6 +11,7 @@
 - aggregate 字段当前保留不实现(留档版是否按商品编号聚合出货件数未定)；置值仅告警。
 """
 import os
+import sys
 import json
 from datetime import date
 
@@ -18,6 +19,9 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.xlsx import unique_path  # noqa: E402
 
 # ---- 内置预设(始终可用；用户另存的预设叠加在其上) ----
 BUILTIN_PRESETS = [
@@ -90,16 +94,6 @@ def _out_name(name, n, d=None):
     return f"{d.year}年{d.month:02d}月{d.day:02d}日{n}单 {name}.xlsx"
 
 
-def _unique_path(path):
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    i = 1
-    while os.path.exists(f"{base}({i}){ext}"):
-        i += 1
-    return f"{base}({i}){ext}"
-
-
 def export(path, columns, outdir, out_name="京东导出",
            dedup=False, aggregate=None, d=None):
     """按 columns(顺序即输出列序)从原始 xlsx 产出一张 xlsx。
@@ -126,7 +120,7 @@ def export(path, columns, outdir, out_name="京东导出",
         warnings.append("⚠ 该预设设了 aggregate(聚合)，当前版本尚未实现，已按原样输出未聚合")
 
     os.makedirs(outdir, exist_ok=True)
-    out_path = _unique_path(os.path.join(outdir, _out_name(out_name, len(out), d)))
+    out_path = unique_path(os.path.join(outdir, _out_name(out_name, len(out), d)))
     _write(out, out_path)
     return out_path, len(out), warnings
 

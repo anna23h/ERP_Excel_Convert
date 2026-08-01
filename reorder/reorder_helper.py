@@ -18,7 +18,7 @@
       order 导出本身无裸价列）。
     - 当前库存 = purchase order 的 Order Lines/Product/Quantity On Hand。
 
-复用 build_excel：_short_vendor/_vendor_map（供应商简称）、_write_simple（统一版式）。
+复用 common：short_vendor/vendor_map（供应商简称）、write_simple（统一版式）。
 
 用法：
     python3 reorder_helper.py <待发货明细表.xlsx> <purchase order.xlsx> [out.xlsx]
@@ -29,7 +29,9 @@ from datetime import date, datetime
 
 import openpyxl
 
-from build_excel import _short_vendor, _vendor_map, _write_simple, unique_path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.vendor import short_vendor, vendor_map  # noqa: E402
+from common.xlsx import write_simple, unique_path  # noqa: E402
 
 # ---- purchase order 列名（兼容不同导出版本）----
 PO_REF      = "Order Reference"
@@ -310,7 +312,7 @@ def load_po(path):
         if cur_vendor and CUSTOMER_PAT in str(cur_vendor).lower():
             continue  # Alibaba 等客户单：整行剔除（噪音，非供应商）
         raw.append((cur_ref, cur_vendor, r))
-    vmap = _vendor_map({v for _, v, _ in raw if v})
+    vmap = vendor_map({v for _, v, _ in raw if v})
 
     out, out_id = {}, {}
     for cur_ref, cur_vendor, r in raw:
@@ -436,7 +438,7 @@ def build(demand_path, po_path, out_path=None, master_path=None):
         outdir = os.path.join("output", f"{date.today():%Y%m%d}")
         fname = f"订货辅助-{date.today():%Y%m%d}.xlsx"
     os.makedirs(outdir, exist_ok=True)
-    path, n = _write_simple(df, outdir, fname, left_cols=LEFT_COLS, widths=WIDTHS)
+    path, n = write_simple(df, outdir, fname, left_cols=LEFT_COLS, widths=WIDTHS)
 
     vcol = COLS.index("Last Vendor")
     matched = sum(1 for r in rows if r[vcol] != NO_PO_MARK)

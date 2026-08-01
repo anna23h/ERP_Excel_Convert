@@ -17,7 +17,9 @@ from datetime import date
 
 import pandas as pd
 
-import build_excel as be
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+from common.xlsx import unique_path  # noqa: E402
+import build_excel as be  # noqa: E402
 
 PROD_NEED = ["Internal Reference", "FS", "Supply Remark", "External ID"]
 # 本脚本写入的画像段签名：重跑时先剥掉旧段再前置新段，人工备注不受影响
@@ -79,7 +81,7 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     imp, chk, skipped, info = make_writeback(po_path, prod_path)
     d = date.today().strftime("%Y%m%d")
-    path = be.unique_path(os.path.join(outdir, f"FS回写导入 {d}.xlsx"))
+    path = unique_path(os.path.join(outdir, f"FS回写导入 {d}.xlsx"))
     with pd.ExcelWriter(path) as xw:
         imp.to_excel(xw, sheet_name="导入", index=False)
         chk.to_excel(xw, sheet_name="对照", index=False)

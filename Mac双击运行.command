@@ -17,4 +17,4 @@ if [ ! -d "$VENV" ]; then
   "$VENV/bin/pip" install -r requirements.txt || { echo "安装依赖失败"; read -n 1 -s -r; exit 1; }
 fi
 
-"$VENV/bin/python" gui.py
+"$VENV/bin/python" vo_orders/gui.py

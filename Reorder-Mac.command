@@ -17,4 +17,4 @@ if [ ! -d "$VENV" ]; then
   "$VENV/bin/pip" install -r requirements.txt || { echo "Failed to install dependencies"; read -n 1 -s -r; exit 1; }
 fi
 
-"$VENV/bin/python" reorder_gui.py
+"$VENV/bin/python" reorder/reorder_gui.py

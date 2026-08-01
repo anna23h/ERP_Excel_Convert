@@ -1,8 +1,23 @@
 # erp_orders_convert
 
-VO（VoyageOne）拉单流程中 Excel 处理环节的自动化脚本。
+围绕同一套 ERP 导出的本地 Excel 自动化脚本。**多条互不相干的流水线共处一个仓库**——
+业务上各管一摊，技术上共用 `common/`（Excel 排版）、双击运行分发、多机同步与 journal/ISSUES 工作流。
 
-## 目标
+## 仓库结构
+
+| 目录 | 流水线 | 入口 | 状态 |
+|---|---|---|---|
+| `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 在用 |
+| `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | 在用 |
+| `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用（仅 CLI） |
+| `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | 在用 |
+| `sales_insight/` | **销售分析 + 安全库存提醒** | — | 未实现 |
+| `po_reconcile/` | **采购 quotation ↔ invoice 对账** | — | 未实现 |
+| `common/` | 跨流水线共享层（Excel 排版 / 供应商简称） | 不单独运行 | — |
+
+双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
+
+## 目标（VO 拉单）
 
 把 [[VO拉单流程逻辑梳理]] 里**第一档**（本地确定性数据处理）的人工 Excel 操作替换为脚本：
 
@@ -76,7 +91,7 @@ VO（VoyageOne）拉单流程中 Excel 处理环节的自动化脚本。
 CLI：
 
 ```
-python3 stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking <出库原始数据>
+python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking <出库原始数据>
 ```
 
 - 只带 `--cancel-list` + `--picking`（不给有货/无货清单）也能单独跑出取消出库单，便于收尾时补跑；`--erp` 仍需带（作「别漏 ERP」护栏，与其余产出共用入口）。
@@ -88,7 +103,7 @@ python3 stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking
 **选用**功能，替代仓库在打印件上「纸笔勾选完成打包的订单 → 员工手工把勾选结果录进 Excel」这两步。核心心智：**扫到 = 有货，清单内未扫到 = 无货**。扫码集合直接对齐阶段二「有货订单清单」入口，无信息量损失（SKU 级缺货仍由拣货员标在拣货单上，无货勾选本就是逐订单 0/1）。
 
 ```
-阶段一 build_excel.py  →  扫码清单{店}.csv        （与拣货表+面单同源同批）
+阶段一 vo_orders/build_excel.py  →  扫码清单{店}.csv        （与拣货表+面单同源同批）
                             │ 仓库机浏览器载入
 扫码端 扫码/扫码回流.html  →  有货清单{店}.csv        （扫一单记一单）
                             │ 投阶段二「有货订单清单」入口
@@ -132,10 +147,10 @@ python3 stage2.py --erp <ERP导出> --cancel-list <取消订单清单> --picking
 > 主数据里 PZN 会更新、但名称/Internal Reference 仍嵌旧 PZN——`load_master` 按「IntRef 嵌入 PZN」和「官方 PZN 字段」双键索引桥接该错位；带 ID 的输入则直接绕开此坑。
 
 **运行**：
-- GUI（推荐，全英文）：双击 `Reorder-Windows.bat` / `Reorder-Mac.command`（首次自动建环境），或 `python3 reorder_gui.py`。打包成 Windows exe：`build_reorder_exe.bat`（产出 `dist/ReorderHelper.exe`）。
+- GUI（推荐，全英文）：双击 `Reorder-Windows.bat` / `Reorder-Mac.command`（首次自动建环境），或 `python3 reorder/reorder_gui.py`。打包成 Windows exe：`build_reorder_exe.bat`（产出 `dist/ReorderHelper.exe`）。
 - CLI：
   ```
-  python3 reorder_helper.py <需求清单.xlsx> <purchase order.xlsx> [out.xlsx] [--master product.product.xlsx]
+  python3 reorder/reorder_helper.py <需求清单.xlsx> <purchase order.xlsx> [out.xlsx] [--master product.product.xlsx]
   ```
 
 ## 环境

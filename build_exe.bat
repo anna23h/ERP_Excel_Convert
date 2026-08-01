@@ -38,7 +38,7 @@ if errorlevel 1 goto fail
 
 echo.
 echo [3/3] Building exe...
-%PY% -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl gui.py
+%PY% -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl --paths . --paths vo_orders vo_orders\gui.py
 if errorlevel 1 goto fail
 
 echo.

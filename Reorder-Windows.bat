@@ -75,7 +75,7 @@ if defined NEED_DEP (
 )
 
 echo Starting Reorder Helper... ^(closing this window will close the program^)
-"%VPY%" reorder_gui.py
+"%VPY%" reorder\reorder_gui.py
 
 REM Keep the window open on abnormal exit so the error stays visible
 if errorlevel 1 (
