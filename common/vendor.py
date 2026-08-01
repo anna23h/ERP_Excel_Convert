@@ -7,8 +7,31 @@ VENDOR_LEGAL = {"gmbh", "gmbh,", "kg", "kgaa", "ag", "ohg", "mbh", "mbb", "co", 
                 "niederlassung", "deutschland", "holding"}
 # 首词全大写但属行业通用词，单独指代会误导(PHARMA LUPUS ≠ "PHARMA")
 VENDOR_GENERIC = {"PHARMA", "APOTHEKE", "MED"}
-# 个别简称覆盖(用户指定)：规则产物 → 最终简称
-VENDOR_ALIAS = {"Dirk Rossmann": "Rossmann"}
+
+# 个别简称覆盖：规则产物 → 最终代号。
+# ⚠ **对照表本身不进公开库**，放 config.py(已 gitignore，走 Syncthing 两台 Mac 同步)。
+# 用户要代号(P/G/A/B…)正是为了不点名供应商；把 {"某批发商": "P"} 写在这里等于把
+# 「P 是谁」发到 GitHub，既抵消目的又违反本项目 CLAUDE.md「公开仓库勿写真实供应商」。
+# 没有 config.py 或没配这项时为空 dict——规则产出原样使用，不报错(2026-08-01)。
+VENDOR_ALIAS = {}
+
+
+def _load_alias():
+    """从仓库根的 config.py 读 VENDOR_ALIAS。按文件位置直接加载，不靠 sys.path——
+    各入口对 sys.path 的处理不一致，靠 `import config` 会时灵时不灵。"""
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "config.py")
+    if not os.path.exists(path):
+        return {}
+    spec = importlib.util.spec_from_file_location("_erp_config", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return dict(getattr(mod, "VENDOR_ALIAS", {}) or {})
+
+
+VENDOR_ALIAS = _load_alias()
 
 
 def short_vendor(name):

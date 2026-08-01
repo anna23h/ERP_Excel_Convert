@@ -102,6 +102,10 @@ PO_COLS = ["供应商(次数)", "最低价", "最低价供应商", "最近一次
 
 # 采购单里伪装成供应商的客户(实为我方客户，属噪音，整行剔除)
 PO_CUSTOMER_PAT = "Alibaba Health"
+# 采购单里不是真实进货的行，整行剔除——不然会污染采购画像。
+#   Alibaba Health: 伪装成供应商的客户(实为我方客户)
+#   VO Test Order : 测试单。2026-08-01 实测不滤的话有 397 个商品的 FS 会被写成 "VO"
+PO_NOISE_PATS = [PO_CUSTOMER_PAT, "VO Test Order"]
 
 # 供应商简称：滤掉的法律形式/地名后缀词(小写比较)
 def _po_base_sku(s):
@@ -121,9 +125,9 @@ def load_po_stats(path):
         raise ValueError("采购单导出缺列: " + ", ".join(missing))
     po[["Order Reference", "Vendor"]] = po[["Order Reference", "Vendor"]].ffill()
     po = po.dropna(subset=["Order Lines/Product/Internal Reference", "Vendor"]).copy()
-    is_cust = po["Vendor"].str.contains(PO_CUSTOMER_PAT, case=False, na=False)
-    n_cust = int(is_cust.sum())
-    po = po[~is_cust].copy()
+    is_noise = po["Vendor"].str.contains("|".join(PO_NOISE_PATS), case=False, na=False)
+    n_cust = int(is_noise.sum())
+    po = po[~is_noise].copy()
     po["Vendor"] = po["Vendor"].map(vendor_map(po["Vendor"].unique()))
     po["_sku"] = po["Order Lines/Product/Internal Reference"].map(_po_base_sku)
     po["_price"] = pd.to_numeric(po["Order Lines/Unit Price"], errors="coerce")
@@ -151,7 +155,7 @@ def load_po_stats(path):
     info = (f"{po['_dt'].min():%Y-%m-%d}~{po['_dt'].max():%Y-%m-%d} "
             f"{po['Order Reference'].nunique()} 单 / {stats.shape[0]} SKU")
     if n_cust:
-        info += f" (已剔除客户{PO_CUSTOMER_PAT}记录 {n_cust} 行)"
+        info += f" (已剔除非进货行 {n_cust}: {'/'.join(PO_NOISE_PATS)})"
     return stats, info
 
 
