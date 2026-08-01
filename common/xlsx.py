@@ -67,10 +67,24 @@ def style_sheet(ws, n_cols, header_font=HEAD_FONT, left_cols=(), small_cols=(), 
         ws.column_dimensions[get_column_letter(c)].width = max(12, maxlen * 1.5 + 2)
 
 
+def _cell(v):
+    """把各种「空」统一成 None——openpyxl 只认 None，见到 pandas 的 NA/NaT 会直接抛
+    `ValueError: Cannot convert <NA> to Excel`（用了 Int64 等 nullable dtype 就会撞上）。
+
+    这里刻意**不 import pandas**（本模块的既定约束），改用类型名判定；
+    float 的 NaN 用 `v != v` 认，它对 pd.NA 不适用（pd.NA != pd.NA 得到 NA，不是 True）。
+    """
+    if v is None or type(v).__name__ in ("NAType", "NaTType"):
+        return None
+    if isinstance(v, float) and v != v:          # NaN
+        return None
+    return v
+
+
 def write_df(ws, df):
     ws.append(list(df.columns))
     for _, row in df.iterrows():
-        ws.append(list(row))
+        ws.append([_cell(v) for v in row])
 
 
 def unique_path(path):

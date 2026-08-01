@@ -11,8 +11,8 @@
 | `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | 在用 |
 | `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用（仅 CLI） |
 | `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | 在用 |
-| `sales_insight/` | **销售分析 + 安全库存提醒** | — | 未实现 |
-| `po_reconcile/` | **采购 quotation ↔ invoice 对账** | — | 未实现 |
+| `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx> --weeks N` | 已实现，待上线 |
+| `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | 算法就绪，待真实干净数据验证 |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称） | 不单独运行 | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
