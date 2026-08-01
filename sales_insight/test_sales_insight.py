@@ -293,8 +293,21 @@ def main():
     check("快照带 ERP 现值供事后对比（7 → 将写入 40）",
           snap.iloc[0]["ERP现有安全库存"] == 7, f"得到 {snap.iloc[0].get('ERP现有安全库存')}")
     check("终端回显「现值 → 写入值」", "ERP 现值 7" in r4.stdout and "写入 40" in r4.stdout)
+    # 报错必须说清缺哪一环——三种原因的处理方式完全不同（换销售导出 / 去安全库存表
+    # 加一行 / 重导产品主数据）。2026-08-01 用户就因为糊成一句，误以为是脚本判断有误，
+    # 而真正能解释一切的那行诊断在流程更后面、异常先抛了，他根本看不到。
     r5 = run(d, sales, prods, safety, f"{d}/o5", "--test-sku", "不存在的SKU")
-    check("--test-sku 给了不可回写的 SKU 时报错", r5.returncode != 0)
+    check("① 不在销售数据 → 报错并指向销售导出", r5.returncode != 0
+          and "不在销售数据里" in (r5.stdout + r5.stderr))
+    r5b = run(d, sales, prods, safety, f"{d}/o5b", "--test-sku", "CCC_333")
+    out5b = r5b.stdout + r5b.stderr
+    check("② 有销量但无人工值 → 说明走的是推算并报出推算值", r5b.returncode != 0
+          and "脚本推算" in out5b and "推算值 10" in out5b, out5b.strip().split("\n")[-1][:70])
+    r5c = run(d, sales, prods, safety, f"{d}/o5c", "--test-sku", "EEE_555")
+    out5c = r5c.stdout + r5c.stderr
+    check("③ 有人工值但主数据里没有 → 直指产品主数据的导出筛选条件", r5c.returncode != 0
+          and "产品主数据里找不到" in out5c and "筛选条件" in out5c,
+          out5c.strip().split("\n")[-1][:70])
 
     print("\n【8】External ID 优先于数据库整数 ID")
     pr = pd.read_excel(prods)

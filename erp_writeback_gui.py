@@ -140,7 +140,9 @@ class App:
         common = self._section(self.root, "① 共用输入")
         self._file_row(common, "产品主数据:", self.products)
         self._hint(common, "ERP 的 product.product 导出，两个标签页共用同一份。"
-                           "请勾上 External ID / Quantity On Hand / Safety Stock / "
+                           "**筛选条件只勾 `can be sold`**——加别的条件会漏货"
+                           "（实测 `VO active=true` 只有 4575 行、漏掉 9 个在管商品）。\n"
+                           "列请勾上 External ID / Quantity On Hand / Safety Stock / "
                            "Supply Remark / FS —— 缺哪列只是降级，日志会明确告警。")
         fr = ttk.Frame(common); fr.pack(fill="x", pady=4)
         ttk.Label(fr, text="输出目录:", width=self.LABEL_W, anchor="e",

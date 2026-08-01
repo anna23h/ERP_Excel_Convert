@@ -336,7 +336,27 @@ def run(sales_path, products_path, safety_path=None, weeks=None, cover_weeks=2.0
     if test_sku:
         one = wb_all[wb_all["SKU"] == test_sku]
         if one.empty:
-            raise ValueError(f"试水 SKU {test_sku} 不在「有人工值且有 ERP ID」的集合里")
+            # 逐级判定到底缺哪一环。三种原因的处理方式完全不同（换销售导出 /
+            # 去安全库存表加一行 / 重导产品主数据），糊成一句话等于让人自己猜。
+            row = df[df["SKU"] == test_sku]
+            if row.empty:
+                raise ValueError(
+                    f"试水 SKU {test_sku} 不在销售数据里——这份销售导出里没有它的销量记录。\n"
+                    "检查 SKU 是否写错，或换一份覆盖到它的销售导出。")
+            r0 = row.iloc[0]
+            if pd.isna(r0["ERP_ID"]):
+                # 十有八九是产品主数据导出的筛选条件漏了一批，同类的一起列出来更快
+                lost_all = sorted(df[(df["安全库存来源"] == "运营人工")
+                                     & df["ERP_ID"].isna()]["SKU"])
+                raise ValueError(
+                    f"试水 SKU {test_sku} 在产品主数据里找不到，拿不到 ERP ID，无法回写。\n"
+                    "→ 多半是**产品主数据导出的筛选条件**把它排除了，请检查导出条件后重导。\n"
+                    + (f"同样情况的还有 {len(lost_all)} 个（很可能是同一个筛选造成的）：\n"
+                       f"  {', '.join(lost_all)}" if len(lost_all) > 1 else ""))
+            raise ValueError(
+                f"试水 SKU {test_sku} 在运营的安全库存表里没有值，走的是脚本推算"
+                f"（推算值 {r0['安全库存_推算']}），而推算值不进回写表。\n"
+                "→ 要试水它，先把它加进运营安全库存表；或改用回写表里已有的 SKU。")
         snap = write_simple(
             prods[prods["SKU"] == test_sku].merge(
                 df[df["SKU"] == test_sku][["SKU", "安全库存", "销量", "周均销量"]], on="SKU"),
