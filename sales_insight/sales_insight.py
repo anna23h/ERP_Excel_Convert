@@ -31,10 +31,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from common.xlsx import write_simple  # noqa: E402
 
 # product.product 导出的列名
-P_ID = "ID"                    # __export__.product_product_* —— 回写 ERP 的唯一映射码
+# ⚠ 回写映射码必须用 **External ID**（`__export__.product_product_*`），不是数据库 ID。
+# 不同导出模版下这两者的列名会打架：有的模版把 External ID 直接叫 `ID`（2026-07-30 那份），
+# 有的模版 `ID`=数据库整数 205448、另有一列 `External ID`=字符串（2026-08-01 那份）。
+# 故按「先找 External ID，找不到再看 ID 是不是 __export__ 形式」的顺序认。
+P_XID_CANDIDATES = ["External ID", "ID"]
 P_SKU = "Internal Reference"
 P_NAME = "Name"
 P_SHOP = "VO Shop Name"
+P_SAFETY = "Safety Stock"          # ERP 现值，用来看两边是否已同步
+P_FS = "Product/FS"                # 供应商（去谁家订），补货提醒里很有用
 # 在手库存列名在不同导出模版下可能不同，按顺序试
 P_ONHAND_CANDIDATES = ["Quantity On Hand", "Qty On Hand", "On Hand", "Quantity available"]
 
@@ -74,9 +80,13 @@ def read_sales(path):
 def read_products(path):
     """读 product.product 导出。Internal Reference 前面带 `\\t`（Odoo 强制文本），必须 strip。"""
     df = pd.read_excel(path)
-    for c in (P_ID, P_SKU):
-        if c not in df.columns:
-            raise SystemExit(f"产品主数据缺列 `{c}`（现有: {list(df.columns)}）")
+    if P_SKU not in df.columns:
+        raise SystemExit(f"产品主数据缺列 `{P_SKU}`（现有: {list(df.columns)}）")
+    xid = next((c for c in P_XID_CANDIDATES if c in df.columns
+                and df[c].astype(str).str.startswith("__export__").any()), None)
+    if xid is None:
+        raise SystemExit("产品主数据里找不到 External ID 列（`__export__.product_product_*` 形式）。\n"
+                         "导出时必须勾上 External ID —— 数据库整数 ID 不能当导入映射码。")
     df["SKU"] = df[P_SKU].astype(str).str.strip()
     df = df[df["SKU"].notna() & (df["SKU"] != "") & (df["SKU"] != "nan")]
     df = df.drop_duplicates(subset="SKU", keep="first")
@@ -84,12 +94,14 @@ def read_products(path):
     onhand = next((c for c in P_ONHAND_CANDIDATES if c in df.columns), None)
     out = pd.DataFrame({
         "SKU": df["SKU"],
-        "ERP_ID": df[P_ID],
+        "ERP_ID": df[xid],
         "商品名称": df[P_NAME] if P_NAME in df else "",
         "店铺": df[P_SHOP] if P_SHOP in df else "",
         "在手库存": pd.to_numeric(df[onhand], errors="coerce") if onhand else pd.NA,
+        "ERP现有安全库存": pd.to_numeric(df[P_SAFETY], errors="coerce") if P_SAFETY in df else pd.NA,
+        "供应商FS": df[P_FS] if P_FS in df else "",
     })
-    return out.reset_index(drop=True), onhand
+    return out.reset_index(drop=True), onhand, xid
 
 
 def read_safety(path):
@@ -151,10 +163,11 @@ def build(sales, prods, safety, weeks, cover_weeks):
     return df
 
 
-COLS_RANK = ["销量排名", "SKU", "商品名称", "店铺", "销量", "累计占比", "下单次数", "每单件数",
-             "销售额", "周均销量", "安全库存", "安全库存来源", "在手库存", "库存来源", "缺口", "备注"]
-COLS_ALERT = ["SKU", "商品名称", "在手库存", "安全库存", "缺口", "周均销量", "近4周均销",
-              "销量", "销量排名", "安全库存来源", "备注"]
+COLS_RANK = ["销量排名", "SKU", "商品名称", "供应商FS", "销量", "累计占比", "下单次数", "每单件数",
+             "销售额", "周均销量", "安全库存", "安全库存来源", "ERP现有安全库存", "在手库存",
+             "库存来源", "缺口", "备注"]
+COLS_ALERT = ["SKU", "商品名称", "供应商FS", "在手库存", "安全库存", "缺口", "周均销量",
+              "近4周均销", "销量", "销量排名", "安全库存来源", "备注"]
 
 
 def main():
@@ -166,14 +179,17 @@ def main():
                     help="销售数据覆盖的周数。**销售导出里没有任何日期，必须由你给**")
     ap.add_argument("--cover-weeks", type=float, default=2.0, help="安全库存按几周量算（默认 2）")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")
+    ap.add_argument("--test-sku", help="首次导入试水：只为这一个 SKU 产回写表，"
+                                       "外加一份导入前的全字段快照供事后比对")
     args = ap.parse_args()
 
     print(f"销售数据覆盖 {args.weeks:g} 周，安全库存按 {args.cover_weeks:g} 周量推算")
     print("  ⚠ 期间周数是你给的，销售导出里没有日期——给错了周均和推算值全错\n")
 
     sales = read_sales(args.sales)
-    prods, onhand_col = read_products(args.products)
+    prods, onhand_col, xid_col = read_products(args.products)
     print(f"销售数据 {len(sales)} 个 SKU / 产品主数据 {len(prods)} 个 SKU")
+    print(f"  · 回写映射码取自 `{xid_col}` 列")
     if onhand_col:
         print(f"  · 产品主数据带在手库存列 `{onhand_col}` —— 补货提醒可覆盖全部 SKU")
     else:
@@ -213,12 +229,27 @@ def main():
         print(f"   · {(df['库存来源'] == '缺').sum()} 个 SKU 没有任何库存数据，未参与提醒")
 
     # ---- 回写表：只放**运营人工审过**的值 ----
+    # 导入文件**只放 id + Safety Stock 两列**。Odoo 只写文件里出现的列，
+    # 但「出现且为空」会把该字段清空——所以绝不能捎带任何不打算改的列。
     wb = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].notna()]
-    imp = pd.DataFrame({"id": wb["ERP_ID"], "Safety Stock": wb["安全库存_人工"].astype("Int64"),
-                        "SKU": wb["SKU"], "商品名称": wb["商品名称"]})
-    p, _ = write_simple(imp, outdir, "安全库存回写表.xlsx", left_cols={"商品名称"})
+    if args.test_sku:
+        wb = wb[wb["SKU"] == args.test_sku]
+        if wb.empty:
+            raise SystemExit(f"--test-sku {args.test_sku} 不在「有人工值且有 ERP ID」的集合里")
+        snap = write_simple(
+            prods[prods["SKU"] == args.test_sku].merge(
+                df[df["SKU"] == args.test_sku][["SKU", "安全库存", "销量", "周均销量"]], on="SKU"),
+            outdir, f"导入前快照-{args.test_sku}.xlsx", left_cols={"商品名称", "供应商FS"})[0]
+        print(f"\n📸 导入前快照: {snap}（导入后再导一次同一商品，逐字段对比）")
+    imp = pd.DataFrame({"id": wb["ERP_ID"], "Safety Stock": wb["安全库存_人工"].astype("Int64")})
+    name = f"安全库存回写表{'-试' + args.test_sku if args.test_sku else ''}.xlsx"
+    p, _ = write_simple(imp, outdir, name)
     print(f"\n📤 安全库存回写表: {p}")
-    print(f"   {len(imp)} 条（仅运营人工值）→ 导入 ERP 产品主数据的 Safety Stock 字段")
+    print(f"   {len(imp)} 条，**只有 id + Safety Stock 两列** → 导入 ERP 产品主数据")
+    if args.test_sku:
+        r = wb.iloc[0]
+        print(f"   试水品 {args.test_sku}: ERP 现值 {df.set_index('SKU').loc[args.test_sku, 'ERP现有安全库存']}"
+              f" → 写入 {r['安全库存_人工']:.0f}")
     lost = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].isna()]
     if len(lost):
         print(f"   ⚠ {len(lost)} 个有人工值但主数据里找不到 ERP ID，无法回写: {', '.join(lost['SKU'])}")

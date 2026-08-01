@@ -44,6 +44,8 @@ def make_inputs(d, with_erp_onhand):
            "Internal Reference": f"\t{r[0]}",                          # ← \t 前缀，照真实导出
            "Barcode": f"400000000{i}", "Name": f"样例商品 {r[0]}",
            "VO Shop Name": "TKOF_SHOP1_VO",
+           "Safety Stock": 7 if r[0] == "AAA_111" else 0,   # ERP 现值，与运营值(40)不同
+           "Product/FS": "样例供应商",
            **({"Quantity On Hand": r[5]} if with_erp_onhand else {})}
           for i, r in enumerate(DATA) if r[4]]
     pd.DataFrame(pr).to_excel(prods, index=False)
@@ -112,15 +114,19 @@ def main():
     check("无库存的 DDD 未参与提醒", "DDD_444" not in set(alert["SKU"]))
 
     wb = pd.read_excel(f"{d}/o1/安全库存回写表.xlsx")
+    ids = {sku: f"__export__.product_product_{i}_abc" for i, (sku, *_) in enumerate(DATA)}
     check("回写表只含运营人工值且有 ERP ID（AAA/BBB，EEE 无主数据被排除）",
-          set(wb["SKU"]) == {"AAA_111", "BBB_222"}, f"得到 {sorted(wb['SKU'])}")
+          set(wb["id"]) == {ids["AAA_111"], ids["BBB_222"]}, f"得到 {sorted(wb['id'])}")
     check("回写表报出「有人工值但无 ERP ID」的 EEE", "EEE_555" in r.stdout)
-    check("回写表列名为 id / Safety Stock", list(wb.columns[:2]) == ["id", "Safety Stock"])
-    check("回写值 = 人工值", wb.set_index("SKU").loc["AAA_111", "Safety Stock"] == 40)
+    # 只放两列是硬要求：Odoo 会把「出现但为空」的列清空，多带一列就可能抹掉主数据
+    check("回写表恰好只有 id / Safety Stock 两列", list(wb.columns) == ["id", "Safety Stock"],
+          f"得到 {list(wb.columns)}")
+    check("回写值 = 人工值", wb.set_index("id").loc[ids["AAA_111"], "Safety Stock"] == 40)
 
     cand = pd.read_excel(f"{d}/o1/安全库存候选值.xlsx")
     check("候选值只含推算的", set(cand["SKU"]) == {"CCC_333", "DDD_444"}, f"得到 {sorted(cand['SKU'])}")
-    check("候选值与回写表无交集（推算值绝不自动写回）", not (set(cand["SKU"]) & set(wb["SKU"])))
+    check("候选值与回写表无交集（推算值绝不自动写回）",
+          not ({ids[s] for s in cand["SKU"]} & set(wb["id"])))
 
     print("\n【2】ERP 不带 On Hand —— 应降级到运营表并明确告警")
     sales2, prods2, safety2 = make_inputs(f"{d}", with_erp_onhand=False)
@@ -132,7 +138,35 @@ def main():
           and rank2.loc["AAA_111", "库存来源"] == "运营表")
     check("CCC 运营表里没有 → 库存来源「缺」", rank2.loc["CCC_333", "库存来源"] == "缺")
 
-    print("\n【3】--weeks 是必需参数（销售导出里没有日期，不许瞎猜）")
+    print("\n【3】--test-sku 首次导入试水")
+    r4 = run(d, sales, prods, safety, f"{d}/o4", "--test-sku", "AAA_111")
+    check("退出码 0", r4.returncode == 0)
+    wb4 = pd.read_excel(f"{d}/o4/安全库存回写表-试AAA_111.xlsx")
+    check("回写表只剩 1 行", len(wb4) == 1 and wb4.iloc[0]["id"] == ids["AAA_111"])
+    check("仍然只有两列", list(wb4.columns) == ["id", "Safety Stock"])
+    check("同时产出导入前快照", os.path.exists(f"{d}/o4/导入前快照-AAA_111.xlsx"))
+    snap = pd.read_excel(f"{d}/o4/导入前快照-AAA_111.xlsx")
+    check("快照带 ERP 现值供事后对比（7 → 将写入 40）",
+          snap.iloc[0]["ERP现有安全库存"] == 7, f"得到 {snap.iloc[0].get('ERP现有安全库存')}")
+    check("终端回显「现值 → 写入值」", "ERP 现值 7" in r4.stdout and "写入 40" in r4.stdout)
+    r5 = run(d, sales, prods, safety, f"{d}/o5", "--test-sku", "不存在的SKU")
+    check("--test-sku 给了不可回写的 SKU 时报错", r5.returncode != 0)
+
+    print("\n【4】External ID 优先于数据库整数 ID")
+    pr = pd.read_excel(prods)
+    pr = pr.rename(columns={"ID": "External ID"})
+    pr["ID"] = range(1000, 1000 + len(pr))          # 数据库整数 ID，绝不能被当映射码
+    p6 = os.path.join(d, "products_bothid.xlsx")
+    pr.to_excel(p6, index=False)
+    r6 = subprocess.run([sys.executable, SCRIPT, sales, "--products", p6, "--safety", safety,
+                         "--weeks", str(PERIOD_WEEKS), "-o", f"{d}/o6"], capture_output=True, text=True)
+    check("退出码 0", r6.returncode == 0, r6.stderr[-200:] if r6.returncode else "")
+    check("终端回显用了 External ID 列", "`External ID`" in r6.stdout)
+    wb6 = pd.read_excel(f"{d}/o6/安全库存回写表.xlsx")
+    check("映射码是 __export__ 形式而非整数",
+          wb6["id"].astype(str).str.startswith("__export__").all(), f"得到 {list(wb6['id'])[:2]}")
+
+    print("\n【5】--weeks 是必需参数（销售导出里没有日期，不许瞎猜）")
     r3 = subprocess.run([sys.executable, SCRIPT, sales, "--products", prods, "-o", f"{d}/o3"],
                         capture_output=True, text=True)
     check("缺 --weeks 时报错退出", r3.returncode != 0 and "weeks" in (r3.stderr + r3.stdout))
