@@ -9,7 +9,7 @@
 |---|---|---|---|
 | `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 在用 |
 | `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | 在用 |
-| `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用（仅 CLI） |
+| `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用 |
 | `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx> --weeks N` | 已实现，待上线 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | 算法就绪，待真实干净数据验证 |

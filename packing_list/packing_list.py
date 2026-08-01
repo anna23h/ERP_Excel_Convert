@@ -192,6 +192,50 @@ def build(orders, spare, made_on):
     return wb
 
 
+def run(export, outdir="output", spare=2):
+    """CLI 与 GUI 共用的入口：出表并返回 (输出路径, 摘要行)。
+
+    摘要行是给人对 SO 单用的，CLI 打到终端、GUI 打到日志区，两边同一份。
+    没有产品行时抛 ValueError（不用 SystemExit——它是 BaseException，
+    在 GUI 的后台线程里不会被捕获，界面会卡在「运行中」）。
+    """
+    orders = read_orders(export)
+    if not orders:
+        raise ValueError("导出里没有产品行")
+
+    # 箱单是打包当天产生的单据，日期取制单日（当下），与 SO 何时下的无关
+    made_on = dt.date.today()
+    wb = build(orders, spare, made_on)
+
+    # S02881+2882+2886 —— 首个 SO 写全，其余省略共同前缀
+    nums = [o["order"] for o in orders]
+    head = nums[0]
+    tail = [re.sub(r"^S0*", "", n) for n in nums[1:]]
+    name = f"{'+'.join([head] + tail)}箱单{made_on:%d.%m}.xlsx"
+
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / name
+    wb.save(path)
+
+    all_lines = [l for o in orders for l in o["lines"].values()]
+    blanks = sum(1 for l in all_lines if not l["barcode"])
+    hs_defaulted = sum(1 for l in all_lines if l["hs_defaulted"])
+    # 订购量不进箱单（L 列由仓库的箱规×箱数算），这里报出来供人工对 SO 单
+    lines = []
+    for o in orders:
+        qty = sum(l["qty"] for l in o["lines"].values())
+        lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / 订购 {qty:g} 件")
+    lines.append(f"  共 {len(orders)} 张 SO，每行预留 {spare} 行空行")
+    if blanks:
+        lines.append(f"  ⚠ {blanks} 行的 Bar Code 在 ERP 里为空，已标黄"
+                     f"——请回 ERP 补维护产品主数据")
+    if hs_defaulted:
+        lines.append(f"  · {hs_defaulted} 行的 HS Code 在 ERP 里为空，已按默认"
+                     f" {DEFAULT_HS} 填入")
+    return path, lines
+
+
 def main():
     ap = argparse.ArgumentParser(description="SO 导出 → 箱单半成品")
     ap.add_argument("export", help="ERP 导出的 sale.order xlsx")
@@ -200,40 +244,13 @@ def main():
                     help="每个 SKU 预留几行空行给仓库拆批次（默认 2）")
     args = ap.parse_args()
 
-    orders = read_orders(args.export)
-    if not orders:
-        raise SystemExit("导出里没有产品行")
-
-    # 箱单是打包当天产生的单据，日期取制单日（当下），与 SO 何时下的无关
-    made_on = dt.date.today()
-    wb = build(orders, args.spare, made_on)
-
-    # S02881+2882+2886 —— 首个 SO 写全，其余省略共同前缀
-    nums = [o["order"] for o in orders]
-    head = nums[0]
-    tail = [re.sub(r"^S0*", "", n) for n in nums[1:]]
-    name = f"{'+'.join([head] + tail)}箱单{made_on:%d.%m}.xlsx"
-
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    path = outdir / name
-    wb.save(path)
-
-    all_lines = [l for o in orders for l in o["lines"].values()]
-    blanks = sum(1 for l in all_lines if not l["barcode"])
-    hs_defaulted = sum(1 for l in all_lines if l["hs_defaulted"])
+    try:
+        path, lines = run(args.export, args.outdir, args.spare)
+    except ValueError as e:
+        raise SystemExit(str(e))
     print(path)
-    # 订购量不进箱单（L 列由仓库的箱规×箱数算），这里打出来供人工对 SO 单
-    for o in orders:
-        qty = sum(l["qty"] for l in o["lines"].values())
-        print(f"  {o['order']}: {len(o['lines'])} 行 SKU / 订购 {qty:g} 件")
-    print(f"  共 {len(orders)} 张 SO，每行预留 {args.spare} 行空行")
-    if blanks:
-        print(f"  ⚠ {blanks} 行的 Bar Code 在 ERP 里为空，已标黄"
-              f"——请回 ERP 补维护产品主数据")
-    if hs_defaulted:
-        print(f"  · {hs_defaulted} 行的 HS Code 在 ERP 里为空，已按默认"
-              f" {DEFAULT_HS} 填入")
+    for ln in lines:
+        print(ln)
 
 
 if __name__ == "__main__":
