@@ -27,6 +27,8 @@ DATA = [
     ("CCC_333", 150, 150, 1500.0, True,  1,    None, None, None),
     ("DDD_444",  60,  60,  600.0, True,  None, None, None, None),
     ("EEE_555",  30,  30,  300.0, False, None, 10,   0,    "主数据里没有，回写不了"),
+    # 销量低到推算值四舍五入成 0（5/30 周 ×2 = 0.4 → 0），验候选值把这类剔除
+    ("FFF_666",   5,   5,   50.0, True,  None, None, None, None),
 ]
 PERIOD_WEEKS = 30.0
 COVER_WEEKS = 2.0
@@ -48,6 +50,7 @@ WEEKLY = {
     "CCC_333": [0, 0, 60, 60, 30],          # 150；末4均 37.5，周均 30.0
     "DDD_444": [12, 12, 12, 12, 12],        # 60
     "EEE_555": [6, 6, 6, 6, 6],             # 30
+    "FFF_666": [1, 1, 1, 1, 1],             # 5
 }
 
 
@@ -146,9 +149,10 @@ def main():
     rank = pd.read_excel(f"{d}/o1/销量排名.xlsx").set_index("SKU")
 
     check("SKU 解析成功（缩进空格没挡住）", len(rank) == len(DATA), f"得到 {len(rank)} 行")
-    check("Internal Reference 的 \\t 已 strip（4 个 SKU 连上主数据）",
-          rank["商品名称"].notna().sum() == 4, f"得到 {rank['商品名称'].notna().sum()}")
-    check("销量降序 + 排名正确", list(rank["销量排名"]) == [1, 2, 3, 4, 5])
+    n_master = sum(1 for r in DATA if r[4])
+    check("Internal Reference 的 \\t 已 strip（主数据里的 SKU 全连上）",
+          rank["商品名称"].notna().sum() == n_master, f"得到 {rank['商品名称'].notna().sum()}")
+    check("销量降序 + 排名正确", list(rank["销量排名"]) == list(range(1, len(DATA) + 1)))
     check("AAA 每单件数 = 600/600 = 1.0", rank.loc["AAA_111", "每单件数"] == 1.0)
     check("BBB 每单件数 = 300/250 = 1.2", rank.loc["BBB_222", "每单件数"] == 1.2)
     check("累计占比末行 = 1.0", abs(rank["累计占比"].iloc[-1] - 1.0) < 1e-6)
@@ -178,9 +182,20 @@ def main():
     check("回写表报出「有人工值但无 ERP ID」的 EEE", "EEE_555" in r.stdout)
     check("回写值 = 人工值", wb.set_index("id").loc[IDS["AAA_111"], "Safety Stock"] == 40)
     cand = pd.read_excel(f"{d}/o1/安全库存候选值.xlsx")
-    check("候选值只含推算的", set(cand["SKU"]) == {"CCC_333", "DDD_444"}, f"得到 {sorted(cand['SKU'])}")
-    check("候选值与回写表无交集（推算值绝不自动写回）",
-          not ({IDS[s] for s in cand["SKU"]} & set(wb["id"])))
+    check("候选值只含推算的", set(cand["SKU(勿导入)"]) == {"CCC_333", "DDD_444"},
+          f"得到 {sorted(cand['SKU(勿导入)'])}")
+    check("候选值与回写表无交集（两张表各管一摊）",
+          not ({IDS[s] for s in cand["SKU(勿导入)"]} & set(wb["id"])))
+    # 推算=0 的低销量长尾必须剔除——导进去只会把它们的 Safety Stock 刷成 0
+    check("推算值为 0 的 FFF 被剔除", "FFF_666" not in set(cand["SKU(勿导入)"]))
+    check("候选值 Safety Stock 全部 >0", (cand["Safety Stock"] > 0).all())
+    check("终端报出被剔除的条数", "推算值为 0" in r.stdout)
+    # 前三列与回写表同头 → 审完可直接导；后面的中文列 Odoo 认不出，不会被写
+    check("候选值前三列与回写表一致", list(cand.columns)[:3] == WB_COLS[:3],
+          f"得到 {list(cand.columns)[:3]}")
+    check("候选值带审阅依据列", {"销量", "周均销量", "在手库存"} <= set(cand.columns))
+    check("候选值不带 Supply Remark（候选品没有运营备注，带了平白重写字段）",
+          "Supply Remark" not in cand.columns)
 
     print("\n【2】回写表的列：人可读的 SKU + 不会清空的 Supply Remark")
     check("列恰好是 id / SKU(勿导入) / Safety Stock / Supply Remark",
@@ -261,8 +276,18 @@ def main():
     r4 = run(d, sales, prods, safety, f"{d}/o4", "--test-sku", "AAA_111")
     check("退出码 0", r4.returncode == 0)
     wb4 = pd.read_excel(f"{d}/o4/安全库存回写表-试AAA_111.xlsx")
-    check("回写表只剩 1 行", len(wb4) == 1 and wb4.iloc[0]["id"] == IDS["AAA_111"])
+    check("试水表只剩 1 行", len(wb4) == 1 and wb4.iloc[0]["id"] == IDS["AAA_111"])
     check("列与正式回写表一致", list(wb4.columns) == WB_COLS, f"得到 {list(wb4.columns)}")
+    # 试水的同时也出全量——否则「验完再跑一遍拿全量」，两遍之间数据可能已变，
+    # 验过的和导入的就不是同一批了
+    check("试水时**同时**产出全量回写表", os.path.exists(f"{d}/o4/安全库存回写表.xlsx"))
+    full4 = pd.read_excel(f"{d}/o4/安全库存回写表.xlsx")
+    check("全量表与不试水时同样是 2 条", len(full4) == 2, f"得到 {len(full4)}")
+    row_t, row_f = wb4.iloc[0], full4[full4["id"] == IDS["AAA_111"]].iloc[0]
+    check("试水那条与全量里同一条逐格相等（验完可直接导全量）",
+          all((row_t[c] == row_f[c]) or (pd.isna(row_t[c]) and pd.isna(row_f[c]))
+              for c in WB_COLS))
+    check("终端说清先导哪份", "先导它" in r4.stdout and "全量" in r4.stdout)
     check("同时产出导入前快照", os.path.exists(f"{d}/o4/导入前快照-AAA_111.xlsx"))
     snap = pd.read_excel(f"{d}/o4/导入前快照-AAA_111.xlsx")
     check("快照带 ERP 现值供事后对比（7 → 将写入 40）",
@@ -288,7 +313,9 @@ def main():
     print("\n【9】旧的整期累计格式仍要求 --weeks（那种导出里真没有日期）")
     r3 = subprocess.run([sys.executable, SCRIPT, sales, "--products", prods, "-o", f"{d}/o3"],
                         capture_output=True, text=True)
-    check("缺 --weeks 时报错退出", r3.returncode != 0 and "weeks" in (r3.stderr + r3.stdout))
+    # 断言认「说清了缺什么」，不认旗标名——报错文案要同时服务 CLI 和 GUI，不能提 --weeks
+    check("缺周数时报错退出且说清原因", r3.returncode != 0
+          and "期间周数" in (r3.stderr + r3.stdout), (r3.stderr + r3.stdout)[-80:])
 
     print("\n" + ("全部通过 🎉" if not fails else f"❌ {len(fails)} 项失败: {fails}"))
     return 1 if fails else 0

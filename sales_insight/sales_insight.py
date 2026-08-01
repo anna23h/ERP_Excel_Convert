@@ -74,7 +74,7 @@ def merge_remark(old, new, d):
     return rk.merge(old, seg, REMARK_SIG)
 
 
-def read_sales(path):
+def read_sales(path, say=print):
     """读 Odoo「Sales Analysis」透视导出。新旧两种格式自动识别。
 
     两种都见过：
@@ -89,11 +89,14 @@ def read_sales(path):
     明细的商品列形如 `    [SKU] 商品名`——**前面有缩进空格**，正则必须容忍
     （`^\\[` 匹配不到，会得到 0 条，别问我怎么知道的）。
 
+    say: 告警去处。默认 print(CLI)，GUI 传进来的是日志区收集器——
+    这两条告警(SKU 解析失败、Total 对不上)正是解析出问题的信号，不能只在终端有。
+
     → (df[SKU/商品/销售额/下单次数/销量 + 每个周列], 周标签列表)
     """
     raw = pd.read_excel(path, header=None)
     if raw.shape[1] < 4 or (raw.shape[1] - 1) % 3:
-        raise SystemExit(f"销售导出应为「商品列 + 每 3 列一组」，实得 {raw.shape[1]} 列")
+        raise ValueError(f"销售导出应为「商品列 + 每 3 列一组」，实得 {raw.shape[1]} 列")
 
     # Total 行是锚。找不到就退回旧格式的固定位置（第 4 行）。
     first = raw[0].astype(str).str.strip()
@@ -112,7 +115,7 @@ def read_sales(path):
     weeks = [(lab, c) for lab, c in groups if lab]
     rest = [(lab, c) for lab, c in groups if not lab]
     if len(rest) != 1:
-        raise SystemExit(f"销售导出里认出 {len(weeks)} 个周分组、{len(rest)} 个合计组，"
+        raise ValueError(f"销售导出里认出 {len(weeks)} 个周分组、{len(rest)} 个合计组，"
                          "应恰好有一个不带 W 标签的合计组——导出模版可能变了")
     tot_c = rest[0][1]
 
@@ -121,7 +124,7 @@ def read_sales(path):
     out["SKU"] = out["商品"].astype(str).str.extract(r"^\s*\[([^\]]+)\]")[0]
     bad = out["SKU"].isna().sum()
     if bad:
-        print(f"  ⚠ {bad} 行解析不出 SKU，已跳过")
+        say(f"  ⚠ {bad} 行解析不出 SKU，已跳过")
     for name, off in (("销售额", 0), ("下单次数", 1), ("销量", 2)):
         out[name] = pd.to_numeric(df[tot_c + off], errors="coerce").fillna(0)
     # 某周无销售 = 空格，含义是 0 而非缺失，故 fillna(0) 后才能参与均值
@@ -135,7 +138,7 @@ def read_sales(path):
         want = pd.to_numeric(total[tot_c + off], errors="coerce")
         got = out[name].sum()
         if pd.notna(want) and abs(want - got) > 0.01:
-            print(f"  ⚠ {name} 明细求和 {got:.2f} ≠ 导出 Total {want:.2f}")
+            say(f"  ⚠ {name} 明细求和 {got:.2f} ≠ 导出 Total {want:.2f}")
     return out.reset_index(drop=True), [lab for lab, _ in weeks]
 
 
@@ -143,11 +146,11 @@ def read_products(path):
     """读 product.product 导出。Internal Reference 前面带 `\\t`（Odoo 强制文本），必须 strip。"""
     df = pd.read_excel(path)
     if P_SKU not in df.columns:
-        raise SystemExit(f"产品主数据缺列 `{P_SKU}`（现有: {list(df.columns)}）")
+        raise ValueError(f"产品主数据缺列 `{P_SKU}`（现有: {list(df.columns)}）")
     xid = next((c for c in P_XID_CANDIDATES if c in df.columns
                 and df[c].astype(str).str.startswith("__export__").any()), None)
     if xid is None:
-        raise SystemExit("产品主数据里找不到 External ID 列（`__export__.product_product_*` 形式）。\n"
+        raise ValueError("产品主数据里找不到 External ID 列（`__export__.product_product_*` 形式）。\n"
                          "导出时必须勾上 External ID —— 数据库整数 ID 不能当导入映射码。")
     df["SKU"] = df[P_SKU].astype(str).str.strip()
     df = df[df["SKU"].notna() & (df["SKU"] != "") & (df["SKU"] != "nan")]
@@ -179,7 +182,7 @@ def read_safety(path):
     sku_col = next((c for c in df.columns if "SKU" in str(c).upper()), df.columns[0])
     safe_col = next((c for c in df.columns if str(c).strip() == "安全库存"), None)
     if safe_col is None:
-        raise SystemExit(f"安全库存表里找不到「安全库存」列（现有: {list(df.columns)}）")
+        raise ValueError(f"安全库存表里找不到「安全库存」列（现有: {list(df.columns)}）")
     onhand_col = next((c for c in df.columns if "在手库存" in str(c)), None)
     note_col = next((c for c in df.columns if "备注" in str(c)), None)
     weeks = [c for c in df.columns if re.fullmatch(r"W\d+", str(c).strip())]
@@ -241,6 +244,164 @@ COLS_ALERT = ["SKU", "商品名称", "供应商FS", "在手库存", "安全库�
               "近4周均销", "销量", "销量排名", "安全库存来源", "备注"]
 
 
+def run(sales_path, products_path, safety_path=None, weeks=None, cover_weeks=2.0,
+        outdir=None, test_sku=None):
+    """跑完整条流水线 → (输出目录, 摘要行列表)。CLI 与 GUI 共用一份逻辑与摘要。
+
+    ⚠ 出错一律 `ValueError` 而非 `SystemExit`：后者是 BaseException，GUI 后台线程的
+    `except Exception` 抓不到，界面会永远卡在「运行中」按钮禁用态（箱单那次踩过）。
+    """
+    L = []
+    say = L.append
+
+    sales, week_cols = read_sales(sales_path, say)
+
+    # 期间周数：导出带周分组就数表头，比人工给靠谱得多（给错则周均和推算值全错）
+    if week_cols:
+        n_weeks = float(len(week_cols))
+        say(f"销售导出按周分组：{len(week_cols)} 个周（{week_cols[0]}–{week_cols[-1]}），"
+            f"期间周数自动取 {n_weeks:g}")
+        if weeks and weeks != n_weeks:
+            say(f"  ⚠ 你显式给了周数 {weeks:g}，与表头数出来的 {len(week_cols)} 不符，照你给的算")
+            n_weeks = weeks
+    elif weeks:
+        n_weeks = weeks
+        say(f"销售导出无周分组（整期累计），期间周数用你给的 {n_weeks:g} 周")
+        say("  ⚠ 这个数是你给的，导出里没有日期——给错了周均和推算值全错")
+    else:
+        raise ValueError("销售导出里认不出周分组（是整期累计格式），必须给出期间周数。\n"
+                         "或者在 ERP 里按周分组导出，脚本就能自己数出来。")
+    say(f"安全库存按 {cover_weeks:g} 周量推算\n")
+
+    prods, onhand_col, xid_col, has_remark = read_products(products_path)
+    say(f"销售数据 {len(sales)} 个 SKU / 产品主数据 {len(prods)} 个 SKU")
+    say(f"  · 回写映射码取自 `{xid_col}` 列")
+    if onhand_col:
+        say(f"  · 产品主数据带在手库存列 `{onhand_col}` —— 补货提醒可覆盖全部 SKU")
+    else:
+        say(f"  ⚠ 产品主数据没有在手库存列（试过 {P_ONHAND_CANDIDATES}）")
+        say("    → 补货提醒只能覆盖安全库存表里那些 SKU。导出时勾上 Quantity On Hand 即可全覆盖。")
+    if not has_remark:
+        say(f"  ⚠ 产品主数据没有 `{P_REMARK}` 列 —— 回写表将不带备注列")
+        say("    （带了会把 ERP 里已有的备注清空，故直接不写。导出时勾上该列即可回写运营备注。）")
+
+    hit = sales["SKU"].isin(set(prods["SKU"])).sum()
+    say(f"  · 销售 ∩ 主数据: {hit}/{len(sales)} ({hit / len(sales) * 100:.1f}%)")
+    miss = sorted(set(sales["SKU"]) - set(prods["SKU"]))
+    if miss:
+        say(f"    对不上主数据的 {len(miss)} 个（无 ERP ID，不能回写）: {', '.join(miss[:6])}"
+            + (" …" if len(miss) > 6 else ""))
+
+    safety = None
+    if safety_path:
+        safety, weeks_n, sc = read_safety(safety_path)
+        say(f"  · 安全库存表 {len(safety)} 个 SKU（{weeks_n} 个周列"
+            + (f"，在手库存列 `{sc}`" if sc else "") + "）")
+
+    df = build(sales, prods, safety, n_weeks, cover_weeks, week_cols)
+
+    outdir = outdir or os.path.join("output", f"{date.today():%Y%m%d}")
+    os.makedirs(outdir, exist_ok=True)
+
+    p, _ = write_simple(df[COLS_RANK], outdir, "销量排名.xlsx", left_cols={"商品名称", "备注"})
+    say(f"\n✅ 销量排名: {p}")
+    for q in (0.5, 0.8):
+        k = int((df["累计占比"] <= q).sum()) + 1
+        say(f"   前 {k} 个 SKU 贡献 {q * 100:.0f}% 销量（共 {len(df)} 个）")
+
+    alert = df[df["缺口"] > 0].sort_values("缺口", ascending=False)
+    p, _ = write_simple(alert[COLS_ALERT], outdir, "补货提醒.xlsx", left_cols={"商品名称", "备注"})
+    say(f"\n🔔 补货提醒: {p}")
+    known = df[df["库存来源"] != "缺"]
+    say(f"   {len(alert)} 个 SKU 低于安全库存（有库存数据的共 {len(known)} 个）")
+    if (df["库存来源"] == "缺").any():
+        say(f"   · {(df['库存来源'] == '缺').sum()} 个 SKU 没有任何库存数据，未参与提醒")
+
+    # ---- 回写表：只放**运营人工审过**的值 ----
+    # Odoo 只写文件里出现的列，但「出现且为空」会把该字段清空——所以每一列都要
+    # 么是真想改的、要么必须带上原值，绝不能出现「有列但留空」。
+    wb_all = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].notna()].copy()
+    today = f"{date.today():%Y%m%d}"
+
+    def _writeback(rows, fname):
+        """→ (落盘路径, 导入df)。列见 COLS_IMP 的说明。"""
+        t = pd.DataFrame({"id": rows["ERP_ID"],
+                          "SKU(勿导入)": rows["SKU"],
+                          "Safety Stock": rows["安全库存_人工"].astype("Int64")})
+        if has_remark:
+            t[P_REMARK] = [merge_remark(o, x, today) for o, x in
+                           zip(rows["ERP现有备注"], rows["备注"])]
+        return write_simple(t, outdir, fname, left_cols={P_REMARK})[0], t
+
+    if test_sku:
+        one = wb_all[wb_all["SKU"] == test_sku]
+        if one.empty:
+            raise ValueError(f"试水 SKU {test_sku} 不在「有人工值且有 ERP ID」的集合里")
+        snap = write_simple(
+            prods[prods["SKU"] == test_sku].merge(
+                df[df["SKU"] == test_sku][["SKU", "安全库存", "销量", "周均销量"]], on="SKU"),
+            outdir, f"导入前快照-{test_sku}.xlsx", left_cols={"商品名称", "供应商FS"})[0]
+        pt, _ = _writeback(one, f"安全库存回写表-试{test_sku}.xlsx")
+        say(f"\n📸 导入前快照: {snap}（导入后再导一次同一商品，逐字段对比）")
+        say(f"🧪 回写表·试水: {pt}")
+        say(f"   只有 {test_sku} 这一条。**先导它**，回 ERP 核对无误再导下面那份全量。")
+        r = one.iloc[0]
+        say(f"   ERP 现值 {df.set_index('SKU').loc[test_sku, 'ERP现有安全库存']}"
+            f" → 写入 {r['安全库存_人工']:.0f}")
+
+    # 全量那份**照出不误**：试水验完直接导它，不必为了拿全量再跑一遍
+    # （跑两遍之间数据可能已变，验过的和导入的就不是同一批了）
+    p, imp = _writeback(wb_all, "安全库存回写表.xlsx")
+    say(f"\n📤 安全库存回写表{'·全量' if test_sku else ''}: {p}")
+    say(f"   {len(imp)} 条，列: {' / '.join(imp.columns)} → 导入 ERP 产品主数据")
+    say("   · `SKU(勿导入)` 只是给你人工核对用，Odoo 认不出这个表头，不会被写进去")
+    if has_remark:
+        touched = sum(1 for o, x in zip(wb_all["ERP现有备注"], wb_all["备注"])
+                      if merge_remark(o, x, today) != (o or ""))
+        say(f"   · `{P_REMARK}`: {touched} 条带上了运营备注（前置 `{today}:安全库存 …`），"
+            f"其余 {len(imp) - touched} 条**原样带回 ERP 现值**")
+        say("     （不带原值的话，Odoo 会把这些产品已有的备注清空——含 FS 回写写进去的供应商画像）")
+    lost = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].isna()]
+    if len(lost):
+        say(f"   ⚠ {len(lost)} 个有人工值但主数据里找不到 ERP ID，无法回写: {', '.join(lost['SKU'])}")
+
+    # ---- 候选值：推算出来的，待运营审阅 ----
+    # 前三列与回写表**完全一致**，审完可直接导；后面的中文表头 Odoo 认不出、
+    # 显示为未映射，不勾就不会被写——与 `SKU(勿导入)` 同一个路子，
+    # 这样「能直接导」和「审的时候看得到依据」不必二选一。
+    # 不带 Supply Remark：候选品不在运营安全库存表里、没有运营备注，
+    # 带这列只会平白无故重写该字段。
+    cand = df[(df["安全库存来源"] == "脚本推算") & (df["安全库存_推算"] > 0)
+              & df["ERP_ID"].notna()].copy()
+    cand = cand.sort_values("销量", ascending=False)
+    ct = pd.DataFrame({"id": cand["ERP_ID"],
+                       "SKU(勿导入)": cand["SKU"],
+                       "Safety Stock": cand["安全库存_推算"].astype("Int64"),
+                       "商品名称": cand["商品名称"], "销量": cand["销量"],
+                       "销量排名": cand["销量排名"], "周均销量": cand["周均销量"],
+                       "在手库存": cand["在手库存"]})
+    p, _ = write_simple(ct, outdir, "安全库存候选值.xlsx", left_cols={"商品名称"})
+    n_zero = int(((df["安全库存来源"] == "脚本推算") & (df["安全库存_推算"] <= 0)).sum())
+    say(f"\n📝 安全库存候选值: {p}")
+    say(f"   {len(ct)} 个 SKU 没有人工值，已按 周均×{cover_weeks:g}周 推算候选值。")
+    say(f"   列与回写表同头，审完可直接导；`商品名称` 起的中文列 Odoo 认不出，不会被写。")
+    if n_zero:
+        say(f"   · 另有 {n_zero} 个推算值为 0（低销量长尾）已剔除——导进去只会把它们刷成 0")
+    say("   ⚠ 推算基于期间均值，会低估上升期新品、高估下滑品，**务必先人审**。")
+
+    # ---- 推算口径自检：拿运营已给的值反过来校准 ----
+    both = df[df["安全库存来源"] == "运营人工"].dropna(subset=["安全库存_推算"])
+    if len(both) >= 5:
+        dev = (both["安全库存_推算"].astype(float) - both["安全库存_人工"])
+        within = (dev.abs() <= both["安全库存_人工"] * 0.5).mean()
+        say(f"\n🔍 推算口径自检（拿运营已给的 {len(both)} 个值反过来对）：")
+        say(f"   推算值与人工值偏差在 ±50% 以内的占 {within * 100:.0f}%；"
+            f"中位偏差 {dev.median():+.0f} 件")
+        say(f"   偏差大说明 期间 {n_weeks:g} 周 或 覆盖 {cover_weeks:g} 周 可能不对，"
+            f"或该品销量趋势变化大")
+    return outdir, L
+
+
 def main():
     ap = argparse.ArgumentParser(description="销售分析 + 安全库存提醒 + Safety Stock 回写")
     ap.add_argument("sales", help="Odoo「Sales Analysis」透视导出")
@@ -254,133 +415,12 @@ def main():
     ap.add_argument("--test-sku", help="首次导入试水：只为这一个 SKU 产回写表，"
                                        "外加一份导入前的全字段快照供事后比对")
     args = ap.parse_args()
-
-    sales, week_cols = read_sales(args.sales)
-
-    # 期间周数：导出带周分组就数表头，比人工给靠谱得多（给错则周均和推算值全错）
-    if week_cols:
-        weeks = float(len(week_cols))
-        print(f"销售导出按周分组：{len(week_cols)} 个周（{week_cols[0]}–{week_cols[-1]}），"
-              f"期间周数自动取 {weeks:g}")
-        if args.weeks and args.weeks != weeks:
-            weeks = args.weeks
-            print(f"  ⚠ 你显式给了 --weeks {weeks:g}，与表头数出来的 {len(week_cols)} 不符，"
-                  "照你给的算")
-    elif args.weeks:
-        weeks = args.weeks
-        print(f"销售导出无周分组（整期累计），期间周数用你给的 {weeks:g} 周")
-        print("  ⚠ 这个数是你给的，导出里没有日期——给错了周均和推算值全错")
-    else:
-        raise SystemExit("销售导出里认不出周分组（是整期累计格式），必须用 --weeks 给出期间周数。\n"
-                         "或者在 ERP 里按周分组导出，脚本就能自己数出来。")
-    print(f"安全库存按 {args.cover_weeks:g} 周量推算\n")
-
-    prods, onhand_col, xid_col, has_remark = read_products(args.products)
-    print(f"销售数据 {len(sales)} 个 SKU / 产品主数据 {len(prods)} 个 SKU")
-    print(f"  · 回写映射码取自 `{xid_col}` 列")
-    if onhand_col:
-        print(f"  · 产品主数据带在手库存列 `{onhand_col}` —— 补货提醒可覆盖全部 SKU")
-    else:
-        print(f"  ⚠ 产品主数据没有在手库存列（试过 {P_ONHAND_CANDIDATES}）")
-        print("    → 补货提醒只能覆盖安全库存表里那些 SKU。导出时勾上 Quantity On Hand 即可全覆盖。")
-    if not has_remark:
-        print(f"  ⚠ 产品主数据没有 `{P_REMARK}` 列 —— 回写表将不带备注列")
-        print("    （带了会把 ERP 里已有的备注清空，故直接不写。导出时勾上该列即可回写运营备注。）")
-
-    hit = sales["SKU"].isin(set(prods["SKU"])).sum()
-    print(f"  · 销售 ∩ 主数据: {hit}/{len(sales)} ({hit / len(sales) * 100:.1f}%)")
-    miss = sorted(set(sales["SKU"]) - set(prods["SKU"]))
-    if miss:
-        print(f"    对不上主数据的 {len(miss)} 个（无 ERP ID，不能回写）: {', '.join(miss[:6])}"
-              + (" …" if len(miss) > 6 else ""))
-
-    safety = weeks_n = None
-    if args.safety:
-        safety, weeks_n, sc = read_safety(args.safety)
-        print(f"  · 安全库存表 {len(safety)} 个 SKU（{weeks_n} 个周列"
-              + (f"，在手库存列 `{sc}`" if sc else "") + "）")
-
-    df = build(sales, prods, safety, weeks, args.cover_weeks, week_cols)
-
-    outdir = args.outdir or os.path.join("output", f"{date.today():%Y%m%d}")
-    os.makedirs(outdir, exist_ok=True)
-
-    p, _ = write_simple(df[COLS_RANK], outdir, "销量排名.xlsx", left_cols={"商品名称", "备注"})
-    print(f"\n✅ 销量排名: {p}")
-    for q in (0.5, 0.8):
-        n = int((df["累计占比"] <= q).sum()) + 1
-        print(f"   前 {n} 个 SKU 贡献 {q * 100:.0f}% 销量（共 {len(df)} 个）")
-
-    alert = df[df["缺口"] > 0].sort_values("缺口", ascending=False)
-    p, _ = write_simple(alert[COLS_ALERT], outdir, "补货提醒.xlsx", left_cols={"商品名称", "备注"})
-    print(f"\n🔔 补货提醒: {p}")
-    known = df[df["库存来源"] != "缺"]
-    print(f"   {len(alert)} 个 SKU 低于安全库存（有库存数据的共 {len(known)} 个）")
-    if (df["库存来源"] == "缺").any():
-        print(f"   · {(df['库存来源'] == '缺').sum()} 个 SKU 没有任何库存数据，未参与提醒")
-
-    # ---- 回写表：只放**运营人工审过**的值 ----
-    # Odoo 只写文件里出现的列，但「出现且为空」会把该字段清空——所以每一列都要
-    # 么是真想改的、要么必须带上原值，绝不能出现「有列但留空」。
-    wb = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].notna()].copy()
-    if args.test_sku:
-        wb = wb[wb["SKU"] == args.test_sku]
-        if wb.empty:
-            raise SystemExit(f"--test-sku {args.test_sku} 不在「有人工值且有 ERP ID」的集合里")
-        snap = write_simple(
-            prods[prods["SKU"] == args.test_sku].merge(
-                df[df["SKU"] == args.test_sku][["SKU", "安全库存", "销量", "周均销量"]], on="SKU"),
-            outdir, f"导入前快照-{args.test_sku}.xlsx", left_cols={"商品名称", "供应商FS"})[0]
-        print(f"\n📸 导入前快照: {snap}（导入后再导一次同一商品，逐字段对比）")
-    # `SKU(勿导入)` 这个表头 Odoo 认不出，导入界面会显示为未映射——纯给人看，
-    # 用来在导入后一眼定位「哪个货的安全库存是多少」。**不能叫 Internal Reference**：
-    # 那样会被自动映射上，一旦忘了取消勾选就把 SKU 重写一遍（导出值带 \t 前缀，等于改数据）。
-    imp = pd.DataFrame({"id": wb["ERP_ID"],
-                        "SKU(勿导入)": wb["SKU"],
-                        "Safety Stock": wb["安全库存_人工"].astype("Int64")})
-    d = f"{date.today():%Y%m%d}"
-    if has_remark:
-        imp[P_REMARK] = [merge_remark(o, n, d) for o, n in
-                         zip(wb["ERP现有备注"], wb["备注"])]
-    name = f"安全库存回写表{'-试' + args.test_sku if args.test_sku else ''}.xlsx"
-    p, _ = write_simple(imp, outdir, name, left_cols={P_REMARK})
-    print(f"\n📤 安全库存回写表: {p}")
-    print(f"   {len(imp)} 条，列: {' / '.join(imp.columns)} → 导入 ERP 产品主数据")
-    print("   · `SKU(勿导入)` 只是给你人工核对用，Odoo 认不出这个表头，不会被写进去")
-    if has_remark:
-        touched = sum(1 for o, n in zip(wb["ERP现有备注"], wb["备注"])
-                      if merge_remark(o, n, d) != (o or ""))
-        print(f"   · `{P_REMARK}`: {touched} 条带上了运营备注（前置 `{d}:安全库存 …`），"
-              f"其余 {len(imp) - touched} 条**原样带回 ERP 现值**")
-        print("     （不带原值的话，Odoo 会把这些产品已有的备注清空——含 FS 回写写进去的供应商画像）")
-    if args.test_sku:
-        r = wb.iloc[0]
-        print(f"   试水品 {args.test_sku}: ERP 现值 {df.set_index('SKU').loc[args.test_sku, 'ERP现有安全库存']}"
-              f" → 写入 {r['安全库存_人工']:.0f}")
-    lost = df[(df["安全库存来源"] == "运营人工") & df["ERP_ID"].isna()]
-    if len(lost):
-        print(f"   ⚠ {len(lost)} 个有人工值但主数据里找不到 ERP ID，无法回写: {', '.join(lost['SKU'])}")
-
-    # ---- 候选值：推算出来的，待运营审阅，**不进回写表** ----
-    cand = df[(df["安全库存来源"] == "脚本推算") & (df["销量"] > 0)].copy()
-    cand = cand.sort_values("销量", ascending=False)
-    cc = ["SKU", "商品名称", "销量", "销量排名", "周均销量", "安全库存_推算", "在手库存", "ERP_ID"]
-    p, _ = write_simple(cand[cc], outdir, "安全库存候选值.xlsx", left_cols={"商品名称"})
-    print(f"\n📝 安全库存候选值: {p}")
-    print(f"   {len(cand)} 个 SKU 没有人工值，已按 周均×{args.cover_weeks:g}周 推算候选值。")
-    print("   这些值**不在回写表里**——推算基于期间均值，会低估上升期新品、高估下滑品，")
-    print("   请运营审阅后并入安全库存表，下次跑就会走「运营人工」并进回写表。")
-
-    # ---- 推算口径自检：拿运营已给的值反过来校准 ----
-    both = df[df["安全库存来源"] == "运营人工"].dropna(subset=["安全库存_推算"])
-    if len(both) >= 5:
-        d = (both["安全库存_推算"].astype(float) - both["安全库存_人工"])
-        within = (d.abs() <= both["安全库存_人工"] * 0.5).mean()
-        print(f"\n🔍 推算口径自检（拿运营已给的 {len(both)} 个值反过来对）：")
-        print(f"   推算值与人工值偏差在 ±50% 以内的占 {within * 100:.0f}%；"
-              f"中位偏差 {d.median():+.0f} 件")
-        print(f"   偏差大说明 期间 {weeks:g} 周 或 --cover-weeks {args.cover_weeks:g} 可能不对，"
-              f"或该品销量趋势变化大")
+    try:
+        _, lines = run(args.sales, args.products, args.safety, args.weeks,
+                       args.cover_weeks, args.outdir, args.test_sku)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":

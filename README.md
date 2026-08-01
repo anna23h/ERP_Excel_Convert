@@ -11,11 +11,17 @@
 | `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | 在用 |
 | `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用 |
 | `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | 在用 |
-| `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx> --weeks N` | 已实现，待上线 |
+| `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | 在用 |
+| `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | 算法就绪，待真实干净数据验证 |
-| `common/` | 跨流水线共享层（Excel 排版 / 供应商简称） | 不单独运行 | — |
+| `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
+
+**两个 GUI 是刻意分开的，不是忘了合并**：`vo_orders/gui.py`（VOTool）给办公室同事用，
+里面**没有任何 ERP 回写入口**；`erp_writeback_gui.py` 是个人月频维护工具，产 ERP 导入文件。
+同事没有入口就不会误触回写（2026-07-08 决定，2026-08-01 加 GUI 时复核维持）。
+后者只在 Mac 上跑源码，不打包 exe。
 
 ## 目标（VO 拉单）
 

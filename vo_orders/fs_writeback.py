@@ -15,7 +15,8 @@
 产出: 单文件两 sheet——「导入」(id/FS，直接上 Odoo 导入界面) +
       「对照」(全部有采购记录的商品 + 处理/FS新旧 + Supply Remark 现值作只读上下文)。
 上传保持人工。product 导出本身即现值备份，请保留原文件。
-个人月频维护工具，不进 GUI(同事无入口即不会误触 ERP 回写)。
+个人月频维护工具。**不进 VOTool**(同事无入口即不会误触 ERP 回写)——
+2026-08-01 起有界面了，但是单独的 `erp_writeback_gui.py`，那条隔离仍然成立。
 
 ⚠ **本脚本不写 `Supply Remark`，那个字段属于运营同事**——留给他们自己修改/添加，
 机器不占位。2026-07-08 建这个脚本时曾往里前置带日期的采购画像段，做得很克制
@@ -30,9 +31,11 @@ from datetime import date
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
+# 2026-08-01 起不再 import build_excel——采购画像已搬去 common/po，
+# 于是本模块只依赖 common/，调用方(erp_writeback_gui)不必再把 vo_orders/ 塞进 sys.path。
 from common.xlsx import unique_path  # noqa: E402
 from common import vendor as vd  # noqa: E402
-import build_excel as be  # noqa: E402
+from common.po import load_po_stats, _po_base_sku  # noqa: E402
 
 # Supply Remark 只用于「对照」sheet 的只读上下文(复核 FS 该不该覆盖时，
 # 看一眼这货是不是"停产"很有用)，不是回写目标。
@@ -83,7 +86,7 @@ def make_writeback(po_path, prod_path):
     对照 df 含**全部有采购记录的商品**（跳过的也在里面，`处理` 列标明原因），
     这样"哪些没被回写、为什么"一眼可查，不用去翻终端。
     """
-    stats, info = be.load_po_stats(po_path)
+    stats, info = load_po_stats(po_path)
     s = stats.set_index("_sku")
     prod = pd.read_excel(prod_path, dtype=str)
     missing = [c for c in PROD_NEED if c not in prod.columns]
@@ -94,7 +97,7 @@ def make_writeback(po_path, prod_path):
     imp, chk = [], []
     n = {"无采购记录": 0, "新增": 0, "覆盖": 0, "跳过(FS像人写的)": 0, "跳过(费用类SKU)": 0}
     for _, p in prod.iterrows():
-        base = be._po_base_sku(p["Internal Reference"])
+        base = _po_base_sku(p["Internal Reference"])
         if base not in s.index:
             n["无采购记录"] += 1
             continue
@@ -166,18 +169,14 @@ def sample(imp, chk, k):
     return s_imp, s_chk
 
 
-def main():
-    args = sys.argv[1:]
-    k = 0
-    if "--sample" in args:                      # 位置参数保持 po/prod/[outdir] 向后兼容
-        i = args.index("--sample")
-        k = int(args[i + 1])
-        args = args[:i] + args[i + 2:]
-    if len(args) < 2:
-        print(__doc__)
-        return
-    po_path, prod_path = args[0], args[1]
-    outdir = args[2] if len(args) > 2 else "output"
+def run(po_path, prod_path, outdir="output", k=0):
+    """跑一次回写 → (落盘路径, 摘要行列表)。CLI 与 GUI 共用一份逻辑与摘要。
+
+    k>0 时只出试水样本（见 sample()）。
+    出错抛 ValueError 而非 SystemExit——后者 GUI 后台线程的 except Exception 抓不到。
+    """
+    L = []
+    say = L.append
     os.makedirs(outdir, exist_ok=True)
     imp, chk, n, info = make_writeback(po_path, prod_path)
     d = date.today().strftime("%Y%m%d")
@@ -189,28 +188,47 @@ def main():
     with pd.ExcelWriter(path) as xw:
         imp.to_excel(xw, sheet_name="导入", index=False)
         chk.to_excel(xw, sheet_name="对照", index=False)
-    print(f"采购参考: {info}")
-    print(f"已生成: {path}")
+    say(f"采购参考: {info}")
+    say(f"已生成: {path}")
     if k:
         c = chk["处理"].value_counts()
-        print(f"🧪 首次导入试水样本 {len(imp)} 行（全量 {full} 行，本次**只导这批**）")
-        print(f"   新增 {c.get('新增', 0)} / 覆盖 {c.get('覆盖', 0)}；"
-              f"FS 新值 {chk['FS 新'].nunique()} 种互不相同、FS 旧值 {chk['FS 旧'].nunique()} 种")
-        print(f"   形态覆盖: {' / '.join(sorted(set(chk['FS 新'].map(_shape))))}")
+        say(f"🧪 首次导入试水样本 {len(imp)} 行（全量 {full} 行，本次**只导这批**）")
+        say(f"   新增 {c.get('新增', 0)} / 覆盖 {c.get('覆盖', 0)}；"
+            f"FS 新值 {chk['FS 新'].nunique()} 种互不相同、FS 旧值 {chk['FS 旧'].nunique()} 种")
+        say(f"   形态覆盖: {' / '.join(sorted(set(chk['FS 新'].map(_shape))))}")
         if len(imp) < k:
-            print(f"   （你要 {k} 行，只给出 {len(imp)} —— 「FS 值各不同」是硬约束，"
-                  f"全量里不同的 FS 值就这么多）")
-        print("   导完回 ERP 抽查几行，确认代号与覆盖行为都对，再不带 --sample 跑全量。\n")
-    print(f"{'全量口径: ' if k else ''}回写 {full} 个商品的 FS "
-          f"= 新增 {n['新增']} + 覆盖 {n['覆盖']}")
-    print(f"  · 跳过 {n['跳过(FS像人写的)']} 个：FS 现值像人写的采购判断，不拿聚合结果盖掉")
-    print(f"  · 跳过 {n['跳过(费用类SKU)']} 个：费用/耗材类 SKU，不是进货商品")
-    print(f"  · 跳过 {n['无采购记录']} 个：近期无采购记录，FS 原样不动")
+            say(f"   （你要 {k} 行，只给出 {len(imp)} —— 「FS 值各不同」是硬约束，"
+                f"全量里不同的 FS 值就这么多）")
+        say("   导完回 ERP 抽查几行，确认代号与覆盖行为都对，再跑全量（试水行数填 0）。\n")
+    say(f"{'全量口径: ' if k else ''}回写 {full} 个商品的 FS "
+        f"= 新增 {n['新增']} + 覆盖 {n['覆盖']}")
+    say(f"  · 跳过 {n['跳过(FS像人写的)']} 个：FS 现值像人写的采购判断，不拿聚合结果盖掉")
+    say(f"  · 跳过 {n['跳过(费用类SKU)']} 个：费用/耗材类 SKU，不是进货商品")
+    say(f"  · 跳过 {n['无采购记录']} 个：近期无采购记录，FS 原样不动")
     if not vd.VENDOR_ALIAS:
-        print("  ⚠ 没读到供应商代号对照(config.py 的 VENDOR_ALIAS)，FS 会写成供应商真名")
-    print("· 本脚本**只写 FS**，不碰 Supply Remark——那个字段留给运营同事自己维护。")
-    print("  「对照」sheet 里的 Supply Remark 是现值，只作复核上下文，不会被写回。")
-    print("上传前请先看「对照」sheet 复核(含被跳过的行及原因)；Odoo 导入界面选「导入」sheet。")
+        say("  ⚠ 没读到供应商代号对照(config.py 的 VENDOR_ALIAS)，FS 会写成供应商真名")
+    say("· 本脚本**只写 FS**，不碰 Supply Remark——那个字段留给运营同事自己维护。")
+    say("  「对照」sheet 里的 Supply Remark 是现值，只作复核上下文，不会被写回。")
+    say("上传前请先看「对照」sheet 复核(含被跳过的行及原因)；Odoo 导入界面选「导入」sheet。")
+    return path, L
+
+
+def main():
+    args = sys.argv[1:]
+    k = 0
+    if "--sample" in args:                      # 位置参数保持 po/prod/[outdir] 向后兼容
+        i = args.index("--sample")
+        k = int(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    if len(args) < 2:
+        print(__doc__)
+        return
+    outdir = args[2] if len(args) > 2 else "output"
+    try:
+        _, lines = run(args[0], args[1], outdir, k)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
