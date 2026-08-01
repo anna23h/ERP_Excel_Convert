@@ -3,6 +3,7 @@
 
 用法:
     python3 fs_writeback.py <purchase.order.xlsx> <product.product.xlsx> [outdir]
+    python3 fs_writeback.py ... --sample 24     # 首次导入试水：按覆盖面挑 24 行
 
 范围: product 导出里有近期采购记录的商品；无采购记录的整行跳过不动。
 策略: FS = 近期供应商代号列表("/"分隔，对齐公司现有 "DM/ROSSMANN" 记法)。
@@ -110,7 +111,8 @@ def make_writeback(po_path, prod_path):
             act = "新增" if not fs_old else "覆盖"
             imp.append({"id": p["External ID"], "FS": fs_new})
         n[act] += 1
-        chk.append({"Internal Reference": p["Internal Reference"],
+        chk.append({"id": p["External ID"],
+                    "Internal Reference": p["Internal Reference"],
                     "处理": act,
                     "FS 旧": fs_old,
                     "FS 新": fs_new if act != "跳过(FS像人写的)" else "",
@@ -120,8 +122,57 @@ def make_writeback(po_path, prod_path):
     return pd.DataFrame(imp), pd.DataFrame(chk), n, info
 
 
+def _shape(fs):
+    """FS 新值的形态：几段、是否含真实供应商名。取样按它铺开覆盖面。"""
+    ts = [t.strip() for t in str(fs).split("/") if t.strip()]
+    kind = "含真名" if any(" " in t or len(t) > 6 for t in ts) else "纯代号"
+    return f"{kind}({len(ts)}段)"
+
+
+def sample(imp, chk, k):
+    """从全量里挑 k 行做首次导入试水 → (导入df, 对照df)。
+
+    **不是切前 k 行**——前 k 行大概率全是同一种情形(单代号新增)，验不到覆盖、
+    多代号、含真名。改为按覆盖面取样：
+      · 批内每行 FS 新值互不相同(用户 2026-08-01 要求"FS 值各不同")
+      · 轮流从每个「形态 × 处理」格子里取，稀有格子先取，保证都露面
+      · 同等条件下优先挑 FS 旧值没出现过的，让覆盖情形也铺开
+    """
+    pool = chk[chk["处理"].isin(["新增", "覆盖"])].copy()
+    pool["_形态"] = pool["FS 新"].map(_shape)
+    # 稀有格子排前面：轮流取时它们先被满足，不会被大格子挤掉
+    cells = sorted(pool.groupby(["_形态", "处理"]).groups.items(), key=lambda kv: len(kv[1]))
+    buckets = [list(pool.loc[idx].to_dict("records")) for _, idx in cells]
+
+    picked, seen_new, seen_old = [], set(), set()
+    while len(picked) < k and any(buckets):
+        for b in buckets:
+            if len(picked) >= k:
+                break
+            # 先要「新旧都没见过」的，退而求其次只要新值没见过
+            cand = next((r for r in b if r["FS 新"] not in seen_new
+                         and r["FS 旧"] not in seen_old), None) \
+                or next((r for r in b if r["FS 新"] not in seen_new), None)
+            if cand is None:
+                b.clear()
+                continue
+            b.remove(cand)
+            picked.append(cand)
+            seen_new.add(cand["FS 新"])
+            seen_old.add(cand["FS 旧"])
+
+    s_chk = pd.DataFrame(picked).drop(columns=["_形态"])
+    s_imp = imp[imp["id"].isin(set(s_chk["id"]))]
+    return s_imp, s_chk
+
+
 def main():
     args = sys.argv[1:]
+    k = 0
+    if "--sample" in args:                      # 位置参数保持 po/prod/[outdir] 向后兼容
+        i = args.index("--sample")
+        k = int(args[i + 1])
+        args = args[:i] + args[i + 2:]
     if len(args) < 2:
         print(__doc__)
         return
@@ -130,13 +181,28 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     imp, chk, n, info = make_writeback(po_path, prod_path)
     d = date.today().strftime("%Y%m%d")
-    path = unique_path(os.path.join(outdir, f"FS回写导入 {d}.xlsx"))
+    full = len(imp)
+    if k:
+        imp, chk = sample(imp, chk, k)
+    tag = f"-试{len(imp)}" if k else ""
+    path = unique_path(os.path.join(outdir, f"FS回写导入 {d}{tag}.xlsx"))
     with pd.ExcelWriter(path) as xw:
         imp.to_excel(xw, sheet_name="导入", index=False)
         chk.to_excel(xw, sheet_name="对照", index=False)
     print(f"采购参考: {info}")
     print(f"已生成: {path}")
-    print(f"回写 {len(imp)} 个商品的 FS = 新增 {n['新增']} + 覆盖 {n['覆盖']}")
+    if k:
+        c = chk["处理"].value_counts()
+        print(f"🧪 首次导入试水样本 {len(imp)} 行（全量 {full} 行，本次**只导这批**）")
+        print(f"   新增 {c.get('新增', 0)} / 覆盖 {c.get('覆盖', 0)}；"
+              f"FS 新值 {chk['FS 新'].nunique()} 种互不相同、FS 旧值 {chk['FS 旧'].nunique()} 种")
+        print(f"   形态覆盖: {' / '.join(sorted(set(chk['FS 新'].map(_shape))))}")
+        if len(imp) < k:
+            print(f"   （你要 {k} 行，只给出 {len(imp)} —— 「FS 值各不同」是硬约束，"
+                  f"全量里不同的 FS 值就这么多）")
+        print("   导完回 ERP 抽查几行，确认代号与覆盖行为都对，再不带 --sample 跑全量。\n")
+    print(f"{'全量口径: ' if k else ''}回写 {full} 个商品的 FS "
+          f"= 新增 {n['新增']} + 覆盖 {n['覆盖']}")
     print(f"  · 跳过 {n['跳过(FS像人写的)']} 个：FS 现值像人写的采购判断，不拿聚合结果盖掉")
     print(f"  · 跳过 {n['跳过(费用类SKU)']} 个：费用/耗材类 SKU，不是进货商品")
     print(f"  · 跳过 {n['无采购记录']} 个：近期无采购记录，FS 原样不动")
