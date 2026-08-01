@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/session-start-pull.sh\"",
+            "timeout": 90,
+            "statusMessage": "开工前拉取（公开库 + 私有库）…"
+          }
+        ]
+      }
+    ]
+  }
+}
