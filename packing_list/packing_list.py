@@ -22,7 +22,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
-from common.xlsx import BORDER, YELLOW as WARN_FILL  # noqa: E402
+from common.xlsx import BORDER, YELLOW as WARN_FILL, unique_path  # noqa: E402
 
 # ---- 成品箱单的固定排版 ----
 COMPANY = "IHTCT GmbH \nHansaallee. 189, 40549 Düsseldorf \n"
@@ -215,8 +215,11 @@ def run(export, outdir="output", spare=2):
 
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / name
+    # 防覆盖：文件名只含 SO 号 + 制单日，同一批 SO 当天重跑必然重名。
+    # 旧的那份仓库可能已经在填了，不能悄悄盖掉 → 重名自动加 (1)/(2)。
+    path = Path(unique_path(str(out / name)))
     wb.save(path)
+    renamed = path.name != name
 
     all_lines = [l for o in orders for l in o["lines"].values()]
     blanks = sum(1 for l in all_lines if not l["barcode"])
@@ -227,6 +230,8 @@ def run(export, outdir="output", spare=2):
         qty = sum(l["qty"] for l in o["lines"].values())
         lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / 订购 {qty:g} 件")
     lines.append(f"  共 {len(orders)} 张 SO，每行预留 {spare} 行空行")
+    if renamed:
+        lines.append(f"  · 同名文件 {name} 已存在，本次另存为 {path.name}（不覆盖）")
     if blanks:
         lines.append(f"  ⚠ {blanks} 行的 Bar Code 在 ERP 里为空，已标黄"
                      f"——请回 ERP 补维护产品主数据")
