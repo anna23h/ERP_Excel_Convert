@@ -10,7 +10,7 @@
 | `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 本文档 + [SPEC.md](SPEC.md) | 在用 |
 | `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | [订货辅助输入说明](启动说明/订货辅助输入说明.md) | 在用 |
 | `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | [下方章节](#出口箱单b2b) | 在用 |
-| `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
+| `扫码/` | **运单扫码回流**——**非独立流水线**：VO 拉单阶段一↔阶段二之间的可选替换段（单文件 HTML，零依赖，跑在仓库机） | 浏览器打开 `扫码/扫码回流.html` | [扫码/README.md](扫码/README.md) + [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
@@ -112,25 +112,31 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 
 ## 运单扫码回流（替代纸质勾选 + 手工转录）
 
+> 📖 **完整文档（含给仓库/新同事的使用说明）**：[扫码/README.md](扫码/README.md)。
+> 那里讲清了它的层级位置（**不是独立流水线**，是 VO 拉单阶段一↔阶段二之间的可选替换段）、
+> 与其它流水线的关系（无）、四态反馈、导出文件去向、存储降级与恢复三前提。本节是概览。
+
 **选用**功能，替代仓库在打印件上「纸笔勾选完成打包的订单 → 员工手工把勾选结果录进 Excel」这两步。核心心智：**扫到 = 有货，清单内未扫到 = 无货**。扫码集合直接对齐阶段二「有货订单清单」入口，无信息量损失（SKU 级缺货仍由拣货员标在拣货单上，无货勾选本就是逐订单 0/1）。
 
 ```
 阶段一 vo_orders/build_excel.py  →  扫码清单{店}.csv        （与拣货表+面单同源同批）
                             │ 仓库机浏览器载入
-扫码端 扫码/扫码回流.html  →  有货清单{店}.csv        （扫一单记一单）
+扫码端 扫码/扫码回流.html  →  有货清单{店}{n}单.csv   （扫一单记一单；按店各一份）
                             │ 投阶段二「有货订单清单」入口
+                            └→  未知来源运单{n}单.csv   （有名单外扫描时才产出，交人工核对）
 阶段二 stage2 load_shipped_map  →  实际发货集合      （吃 .csv，见下）
 ```
 
-**扫码端 `扫码/扫码回流.html`**：单个 HTML 文件、零安装、仓库机浏览器直接打开（USB / 蓝牙 HID 扫码枪对浏览器行为一致，换硬件零改动）。载入当日 `扫码清单{店}.csv` 作**封闭白名单**，扫面单顶部 LP 一维码（= VO Tracking No）校验三态：
+**扫码端 `扫码/扫码回流.html`**：单个 HTML 文件、零安装、仓库机浏览器直接打开（USB / 蓝牙 HID 扫码枪对浏览器行为一致，换硬件零改动）。载入当日 `扫码清单{店}.csv` 作白名单（**可多选/多次追加，两店可一起载入**，追加不清空已扫），扫面单顶部 LP 一维码（= VO Tracking No）校验四态：
 
 | 扫码结果 | 反馈 |
 |---|---|
-| 清单内 + 首次 | 绿底满屏大字 + 确认音 + 记录 |
+| 清单内 + 首次 | 绿底满屏大字 + 确认音 + 记入有货 |
 | 清单内 + 重复 | 红底 + 报警音 + 拒绝（勿重复装箱）|
-| 不在清单 | 红底 + 报警音 + 拒绝；区分「LP 结构·名单外」（串批/隔日）与「非 LP 格式」（扫到 SF 号/订单号/二维码）|
+| LP 结构但不在任何已载入清单 | **黄底 + 上行双音 + 记入「未知来源」**（隔日残留/串批本就会一起寄走，硬拒与流程冲突）；单独导出交人工 |
+| 非 LP 格式（SF 号/订单号/二维码）| 红底 + 报警音 + 拒绝 |
 
-全程无需点击确认，**声音为主异常通道**（400 单节奏下操作员手在贴单放箱、不盯屏）；红色状态挂到下一次成功扫描。界面常驻已扫/总计数 + 时钟 + 最近记录；`localStorage` 按「店+日期」存已扫，误刷不丢。收工点「导出有货清单」得 `有货清单{店}.csv`。
+全程无需点击确认，**声音为主异常通道**（400 单节奏下操作员手在贴单放箱、不盯屏）；红色状态挂到下一次成功扫描。界面常驻 已扫/总 + 未知来源计数 + 时钟 + 最近记录。持久化按日期存档、误刷不丢，写失败自动降级 IndexedDB（顶栏常驻黄「⚠备用存储」）、两者皆挂则仅内存（红「⚠仅内存·勿刷新」）——**任何降级都不阻断扫码与导出**（数据源是内存），只影响刷新兜底；启动自动清理 30 天前旧存档。收工点「导出有货清单」得上面 n+1 份。
 
 **阶段二入口**：`stage2.load_shipped_map` 已兼容 `.csv`（`_read_tables`：`.csv` 走 `pd.read_csv`，否则 `pd.read_excel`），把导出文件填进 GUI 阶段二「有货订单清单」即可（连接键由每行 `SCP\d+` 提取，不认列名/sheet）。走**有货清单（单号集合）**而非无货勾选 0/1 网格，天然绕开多品订单多行触发留空报警的隐患。
 
@@ -228,7 +234,7 @@ Python + pandas + openpyxl。
 - [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出；**同时出第二份「天猫回执」**（发货单号后15位合并去重，上传天猫）。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
-- [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `扫码清单{店}.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验三态（首次绿+确认音 / 重复红 / 名单外红，区分非 LP 与不在清单），声音为主、红态挂到下次成功、localStorage 防误刷，导出 `有货清单{店}.csv`；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
+- [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `扫码清单{店}.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 30 天自动清理，导出 n+1 份 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
 - [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位；连接键 Product ID 优先（数字/External ID 归一互通）+ 逐行回退 PZN，绕开官方 PZN 空白/脏值。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
 - [x] **重构：按流水线拆目录**（`vo_orders/` / `reorder/` / `packing_list/`）+ 抽最小 `common/`（`xlsx` 排版 / `vendor` 供应商简称 / `po` 采购画像 / `remark` Supply Remark 分段）。
 - [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 用公式；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
