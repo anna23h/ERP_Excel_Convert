@@ -13,13 +13,11 @@ results/
 # 因机器而异的本地配置
 config.py
 
-# === PII 兜底：任何位置的表格一律不提交（samples/ 显式放行脱敏样例）===
+# === PII 兜底：任何位置的表格一律不提交，无例外目录 ===
+# 原留有 samples/ 放行规则（脱敏样例），该目录从未真正建过，2026-08-02 一并删除。
 *.xlsx
 *.ods
 *.csv
-!samples/
-!samples/*.xlsx
-!samples/*.csv
 
 # PyInstaller 打包产物
 build/

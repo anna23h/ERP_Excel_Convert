@@ -1,22 +1,24 @@
-# erp_orders_convert
+# erp_excel_convert
 
 围绕同一套 ERP 导出的本地 Excel 自动化脚本。**多条互不相干的流水线共处一个仓库**——
 业务上各管一摊，技术上共用 `common/`（Excel 排版）、双击运行分发、多机同步与 journal/ISSUES 工作流。
 
 ## 仓库结构
 
-| 目录 | 流水线 | 入口 | 状态 |
-|---|---|---|---|
-| `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 在用 |
-| `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | 在用 |
-| `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | 在用 |
-| `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | 在用 |
-| `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | 在用 |
-| `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | 在用 |
-| `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | 算法就绪，待真实干净数据验证 |
-| `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — |
+| 目录 | 流水线 | 入口 | 详细文档 | 状态 |
+|---|---|---|---|---|
+| `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 本文档 + [SPEC.md](SPEC.md) | 在用 |
+| `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | [订货辅助输入说明](启动说明/订货辅助输入说明.md) | 在用 |
+| `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | [下方章节](#出口箱单b2b) | 在用 |
+| `扫码/` | **运单扫码回流**（单文件 HTML，零依赖） | 浏览器打开 `扫码/扫码回流.html` | [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
+| `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
+| `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
+| `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
+| `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
+| `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
+**所有入口与 CLI 参数的一站式清单**：[启动说明/运行指令.md](启动说明/运行指令.md)。
 
 **两个 GUI 是刻意分开的，不是忘了合并**：`vo_orders/gui.py`（VOTool）给办公室同事用，
 里面**没有任何 ERP 回写入口**；`erp_writeback_gui.py` 是个人月频维护工具，产 ERP 导入文件。
@@ -28,7 +30,7 @@
 把 [[VO拉单流程逻辑梳理]] 里**第一档**（本地确定性数据处理）的人工 Excel 操作替换为脚本：
 
 - 步骤4：提取15位履约单号、VLOOKUP 合并 ERP 导出 + 天猫导出、筛选「履约取消/平台申请取消」、状态字段改写、无运单处理、已补运单回填
-- 步骤6：与昨天发货表 VO Tracking No 去重比对
+- ~~步骤6：与昨天发货表 VO Tracking No 去重比对~~ → **方案已否决**，改用「发货集合反查完整天猫真实状态」的护栏（覆盖面更大，见进度节）
 - 步骤7：捡货单数据透视 + 格式美化
 - 步骤8：面单筛选高亮（x2 两件装 / 剔除单件 / VO Delivery=CC）
 - 步骤9：命名 + 打印格式
@@ -38,7 +40,8 @@
 ## 数据与合规
 
 - `raw_data/` 存真实订单数据，**含个人信息（收件人姓名/电话/地址），已在 .gitignore 中排除，绝不提交、绝不放进 Obsidian vault（iCloud 同步）**。
-- 开发/分享用脱敏样例，放 `samples/`（结构真、内容假）。
+- 测试/参考数据放 `test-data/`、产出放 `output/`，均已 gitignore，两台 Mac 间走 Syncthing 同步，不走 git。
+- **任何位置的表格文件（`*.xlsx` / `*.ods` / `*.csv`）一律不提交**，这是 .gitignore 里的 PII 兜底规则，没有例外目录。
 
 ## 输入文件类型（来自 raw_data）
 
@@ -62,8 +65,8 @@
 | `YYYY年MM月DD日{店}{n}单 拣货表+面单.xlsx` | 发货+已补运单（含无货勾选页）| 打印交仓库 |
 | `扫码清单{店}.csv` | 订单级白名单（序号 / Order Reference / VO Tracking No / 店），与拣货表+面单同源同批 | 载入扫码 HTML，走[运单扫码回流](#运单扫码回流替代纸质勾选--手工转录)（选用） |
 | `回传ERP销售上传表{店}.xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复 |
-| `已补运单清单{店}.xlsx` | 系统履约单号 | 天猫后台批量打面单、发群 |
 | `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
+| `{店}补货预判清单.xlsx` | 今日需求 / 在手 / 缺口 + `FS` + `Safety Stock` + 采购画像（**仅 GUI 有入口**：需在阶段一选填「采购单导出」；ERP 导出还须勾上 `FS`/`Safety Stock`/`Supply Remark` 三列）| 补货决策；读的 `Safety Stock` 正是 `sales_insight` 写回 ERP 的那个字段 |
 
 **阶段二（仓库反馈缺货后）：**
 
@@ -74,13 +77,16 @@
 | `账单上传.xlsx` (D) | External ID + 账单标签 → ERP 开账单 |
 | `出库单{店}.xlsx` (E) | stock picking 过滤+统一发货日期 → ERP 标记出库 |
 | `取消出库单.xlsx` | stock picking 过滤取消订单，Tracking Reference 统一写 `订单取消`、不写 Carrier/ID、**合并一张不分店** → ERP 按标记筛出批量取消 |
-| `缺货记录.xlsx` | 明细 + SKU 汇总，回连 ERP 库存/条码/货位 |
+
+> ⚠ **`缺货记录.xlsx` 已从阶段二移除**，现在不产出。未来单独成一个阶段（无货清单 × 库存 ERP 筛查），
+> `build_shortage()` / `read_marked()` 作休眠代码保留（`stage2.py:356` 起）。
 
 **当天收尾（跨店）：**
 
 | 产出 | 内容 |
 |---|---|
 | `IHTCTGMBH+IH{YYYYMMDD}+{单数}.xlsx` | N 份发货表合并去重 → 上传货代核对（唯一跨店产出）|
+| `YYYY年MM月DD日{n}单 天猫回执.xlsx` | 同一次货代合并的第二份产出：所有发货 Order Reference 后15位、各渠道合并去重 → 上传天猫做回执 |
 
 阶段二无货入口采用**「直接取有货(0)」**：仓库返回表按 0/1 标记，多品订单全 0 才整单发货，任一无货整单不发、任一留空报警——漏返回不会默认全发。
 
@@ -159,6 +165,49 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
   python3 reorder/reorder_helper.py <需求清单.xlsx> <purchase order.xlsx> [out.xlsx] [--master product.product.xlsx]
   ```
 
+## 出口箱单（B2B）
+
+与拉单主流程无关的独立流水线：ERP 导出的 `sale.order` **行明细** → 可直接交仓库填的 Packing List 半成品。
+入口在 VO 拉单 GUI 的「箱单」标签页（同事日常用），CLI 见 [运行指令](启动说明/运行指令.md#二箱单b2b-出口)。
+
+**分工原则：机器知道的填好，现场才知道的留空。** 品名 / SKU / 条码 / HS 编码 / 原产国由脚本填；
+托盘号 / 批次号 / 箱号 / 箱规 / 箱数 / 保质期 / 毛重 / 尺寸 / 体积重留空给仓库手填；
+`Quantity total` 写成公式 `=箱规×箱数`，仓库填完自动出数。每个 SKU 底下预留空行（默认 2）供拆批次。
+要几张 SO 合并成一张箱单，就在 ERP 里一次性导到同一份文件里，脚本按 `Order Reference` 自动分单。
+输出同名自动加序号，不覆盖。
+
+## ERP 回写两条（销售分析 / FS 回写）
+
+这两条共用入口 `ERP回写-Mac.command` → `erp_writeback_gui.py`，是**个人月频维护工具**，
+产出的是给 Odoo 导入界面用的文件——**上传一律保持人工**，脚本不碰 ERP。
+
+| | 销售分析 · 安全库存 | FS 回写 |
+|---|---|---|
+| 写回哪个字段 | `Safety Stock`（+ `Supply Remark` 的自己那一段） | `FS`（**不碰 `Supply Remark`**） |
+| 输入 | 销售数据（按周分组导出）+ `product.product` + 运营的安全库存表（选填但优先） | `purchase.order` + `product.product` |
+| 首次导入试水 | `--test-sku <SKU>`：出单条表核对，**同时照常出全量**，验完直接导全量 | `--sample N`：按覆盖面挑 N 行（每行 FS 值互不相同） |
+| 详细文档 | [sales_insight/README.md](sales_insight/README.md) | `vo_orders/fs_writeback.py` 顶部 docstring |
+
+**两条吃同一份产品主数据导出，筛选条件写死：只勾 `can be sold`。**
+加别的条件会实打实漏货——2026-08-02 实测 `VO active=true` 只有 4575 行（无筛选 10331 行），
+漏掉 9 个运营在管的 SKU（多为 `x2`/`x3` 组合装与渠道变体，但也有普通 SKU）。
+
+两道保护（2026-08-02 首次真正导入 ERP 后已在真实数据上验证）：
+- **FS 现值看着像人写的采购判断时整行跳过**（如「首选AEP 不在Phoenix订」「MHD原因暂时停止订货」）——
+  那是画像给不了的业务经验，机器不该拿聚合结果盖掉。
+- **`Supply Remark` 重跑不堆叠**：按签名认出自己写的旧段**替换**，别人的段与人工原文原样保留。
+
+供应商代号来自 `config.py` 的 `VENDOR_ALIAS`（不进公开库）：写进 ERP 的是代号不是供应商真名。
+
+## 采购对账（算法就绪，待验证）
+
+采购在一张 PO 里记订购需求，财务按每批实收另建 PO，于是采购单永远显示原始订购量、看不出还缺什么。
+`po_reconcile` 比对两边算出未到货量，并可回写采购 PO。详见 [po_reconcile/README.md](po_reconcile/README.md)。
+
+它依赖两条前提（财务单每件都是对这张采购单的交付；采购单是订购的完整记录）。
+一旦出现「财务单已收 > 订购量」说明前提被破，脚本**拒绝生成回写导入表并以退出码 2 中止**——
+负的未到量在满足前提的数据上不可能发生，此时回写只会把错误写进 ERP。
+
 ## 环境
 
 Python + pandas + openpyxl。
@@ -172,12 +221,19 @@ Python + pandas + openpyxl。
 - [x] **新订单获单清单**（缺口补全）：`履约单状态=新订单` ∩ ERP → 系统履约单号，桥接「确认 order」与「天猫批量获单」两个手工步。
 - [x] **回传ERP销售上传表**（三合一）：取消/无运单/已补运单三类 Terms 写回合并**一张**（替代原 取消单/无运单清单 两文件）。
 - [x] 第二阶段 B/C/D（`stage2.py`）；无货入口改**直接取有货(0)**，多品全0才发、未确认报警，消除「漏返回默认全发」。
-- [x] 缺货记录（明细按SKU合并 + SKU汇总，回连ERP增强库存/条码/货位）
+- [x] ~~缺货记录（明细按SKU合并 + SKU汇总，回连ERP增强库存/条码/货位）~~ → **已从阶段二移除**，未来单独成一个阶段（无货清单 × 库存 ERP 筛查），代码休眠保留
 - [x] 步骤9 文件命名 + 打印格式
 - [x] E 出库单（`stage2.build_E`）：stock picking 过滤+统一发货日期，拆 VO/GW，回传 Odoo 标记出库。
 - [x] **取消出库单**（`stage2.build_cancel`，与 build_E 共享 `build_picking_writeback` 原语）：过滤取消订单 picking，Tracking Reference 写 `订单取消`、不写 Carrier/ID、合并一张 → ERP 批量取消。阶段一播种取消清单 + 人工补后到的 + 阶段二生成；可仅取消模式单独补跑。
-- [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出。
+- [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出；**同时出第二份「天猫回执」**（发货单号后15位合并去重，上传天猫）。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `扫码清单{店}.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验三态（首次绿+确认音 / 重复红 / 名单外红，区分非 LP 与不在清单），声音为主、红态挂到下次成功、localStorage 防误刷，导出 `有货清单{店}.csv`；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
 - [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位；连接键 Product ID 优先（数字/External ID 归一互通）+ 逐行回退 PZN，绕开官方 PZN 空白/脏值。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
+- [x] **重构：按流水线拆目录**（`vo_orders/` / `reorder/` / `packing_list/`）+ 抽最小 `common/`（`xlsx` 排版 / `vendor` 供应商简称 / `po` 采购画像 / `remark` Supply Remark 分段）。
+- [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 用公式；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
+- [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。回写的 `Safety Stock` 被阶段一「补货预判清单」读走——两条流水线在此接上。
+- [x] **FS 回写**（`vo_orders/fs_writeback.py`）：采购画像 → 供应商**代号**写回产品主数据 `FS`；`--sample N` 按覆盖面挑试水样本；人写的采购判断整行跳过；滤掉测试单与费用类 SKU；**只写 FS，不碰 `Supply Remark`**（那字段属于运营）。
+- [x] **ERP 回写 GUI**（`erp_writeback_gui.py`）：销售分析 / FS 回写两页，个人月频维护用。**与 VOTool 刻意分开**——同事界面里没有任何 ERP 回写入口就不会误触（2026-07-08 决定，2026-08-01 复核维持）；只在 Mac 跑源码，不打包 exe。
+- [x] **两条回写首次真正导入 ERP 并反向复核**（2026-08-02）：FS 1569/1569 一致；人写值与费用类 SKU 两道保护实证生效；`Supply Remark` 重跑替换而非堆叠、人写原文保住。产品主数据导出条件由此写死为**只勾 `can be sold`**。
+- [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。
