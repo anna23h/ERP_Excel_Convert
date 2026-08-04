@@ -60,16 +60,45 @@
   input[type=file] { display: none; }
   #note { font-size: 13px; opacity: .8; }
   kbd { background: rgba(0,0,0,.4); padding: 0 .35em; border-radius: 4px; font-size: .9em; }
+
+  /* 分批清点：顶栏本批进度 */
+  #cpprog { font-weight: 700; padding: .1em .5em; border: 2px solid rgba(255,255,255,.5); border-radius: 6px; opacity: .75; }
+  #cpprog.hot { background: var(--bad); border-color: rgba(255,255,255,.9); opacity: 1; }
+  /* 分批清点：本批分段进度条（N 个格子，每扫一件亮一格；数亮格=当前 x/N）*/
+  #cpbar { flex: 0 0 auto; display: flex; gap: 3px; padding: 5px 10px; background: rgba(0,0,0,.28); }
+  #cpbar[hidden] { display: none; }
+  #cpbar .seg { flex: 1; height: 14px; border-radius: 3px; background: rgba(255,255,255,.16); transition: background .1s; }
+  #cpbar .seg.on   { background: var(--ink); }                 /* 已扫入本批 */
+  /* 分批清点：底栏配置 */
+  #cpcfg { display: flex; align-items: center; gap: .3rem; font-size: 14px; opacity: .9; }
+  #cpcfg.off { opacity: .45; }
+  #cpcfg input[type=number] { width: 3.2em; font: inherit; padding: .15em .3em; border-radius: 5px; border: 0; text-align: center; }
+  /* 分批清点：检查点浮层（全屏，须点击才继续；扫码期间暂停）*/
+  #cp {
+    position: fixed; inset: 0; z-index: 50; background: var(--warn);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 1rem; gap: 1rem;
+  }
+  #cp[hidden] { display: none; }
+  #cp .cp-big { font-size: clamp(40px, 10vw, 150px); font-weight: 900; line-height: 1; }
+  #cp .cp-sub { font-size: clamp(18px, 3.5vw, 40px); font-weight: 600; word-break: break-all; }
+  #cp .cp-btns { display: flex; gap: 1.2rem; flex-wrap: wrap; justify-content: center; margin-top: .6rem; }
+  #cp button { font-size: clamp(18px, 3vw, 34px); padding: .6em 1.4em; border-radius: 12px; font-weight: 800; }
+  #cp .cp-ok  { background: var(--ok);  color: #fff; }
+  #cp .cp-bad { background: #fff; color: var(--bad); }
 </style>
 </head>
 <body class="state-idle">
   <div id="bar">
     <span id="count">已扫 0 <small>/ 0 单</small></span>
     <span id="unknown">未知来源 0</span>
+    <span id="cpprog" hidden></span>
     <span id="storg" hidden></span>
     <span class="grow"></span>
     <span id="clock">--:--:--</span>
   </div>
+
+  <div id="cpbar" hidden></div>
 
   <div id="stage">
     <div id="big">载入清单</div>
@@ -82,9 +111,20 @@
     <label class="filebtn">载入扫码清单<input type="file" id="file" accept=".csv,text/csv" multiple></label>
     <button id="export" disabled>导出有货清单</button>
     <button id="reset" disabled>清空今日</button>
+    <span id="cpcfg">分批清点 每 <input type="number" id="cpn" min="1" value="10"> 件 <input type="checkbox" id="cptoggle" checked></span>
     <span id="note"></span>
     <span class="grow"></span>
     <div id="recent"></div>
+  </div>
+
+  <!-- 分批清点检查点浮层：每扫满 N 件弹出，须点击一个按钮才能继续扫 -->
+  <div id="cp" hidden>
+    <div class="cp-big" id="cpbig">清点这一批</div>
+    <div class="cp-sub" id="cpsub">应为 <b>10</b> 件，数一下刚才这一摞，对上再继续</div>
+    <div class="cp-btns">
+      <button class="cp-ok"  id="cpok">✓ 对上了</button>
+      <button class="cp-bad" id="cpbad">⚠ 对不上</button>
+    </div>
   </div>
 
 <script>
@@ -103,6 +143,15 @@ let offlist = new Map();     // 名单外(未知来源)已扫 LP -> { track, at 
 let buf = "";                // 扫码枪逐字符缓冲
 let lastKeyTs = 0;
 
+// —— 分批清点：每扫满 N 件停一次，把「收工清点」拆进扫描过程，把误差定位范围从全天缩到 N ——
+let cpEnabled = true;        // 默认开启（可在底栏关闭）
+let cpN = 10;               // 每批件数；与打包员定的物理单元容量对齐（现场核验后可在页面上改）
+let cpSince = 0;            // 距上次检查点已成功扫入的件数（只计绿色，重复/未知来源不计）
+let cpLog = [];            // 检查点记录 [{idx,at,size,result:'ok'|'mismatch',final}]，供刷新恢复与收工复盘
+let cpActive = false;      // 浮层展示中 → 扫码暂停，让操作员专心清点
+let cpCur = null;         // 当前浮层 { size, final }
+let cpPending = null;     // 收尾检查点（收工导出触发）ack 后要执行的回调
+
 // —— 声音（WebAudio，避免任何外部文件；首次用户手势解锁）——
 let ac = null;
 function unlockAudio() { if (!ac) { try { ac = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){} } if (ac && ac.state === "suspended") ac.resume(); }
@@ -118,6 +167,7 @@ function tone(freq, ms, type, gain) {
 function beepOK()   { tone(1046, 110, "sine", 0.3); }                       // 短促清亮确认音
 function beepBad()  { tone(220, 260, "square", 0.32); setTimeout(()=>tone(180, 340, "square", 0.32), 200); } // 低沉双响报警
 function beepWarn() { tone(700, 120, "sine", 0.3); setTimeout(()=>tone(990, 150, "sine", 0.3), 120); }       // 上行双音「已记录·留意」（区别于绿/红）
+function beepCP()   { tone(880, 150, "triangle", 0.3); setTimeout(()=>tone(660, 200, "triangle", 0.3), 160); } // 下行双音「停下清点」（区别于绿/黄/红）
 
 // —— 时钟 ——
 function tick() { const d = new Date(); $("clock").textContent = d.toTimeString().slice(0,8); }
@@ -167,6 +217,63 @@ function pushRecent(text, bad) {
   const r = $("recent"); r.prepend(el);
   while (r.children.length > 6) r.removeChild(r.lastChild);
 }
+
+// —— 分批清点 —— 分段进度条：N 个格子，前 cpSince 个点亮（数亮格=当前 x/N）
+function renderCpBar() {
+  const bar = $("cpbar");
+  if (!cpEnabled) { bar.hidden = true; return; }
+  bar.hidden = false;
+  while (bar.children.length > cpN) bar.removeChild(bar.lastChild);   // 增量增删（cpN 变了才动），不整段重建
+  while (bar.children.length < cpN) { const s = document.createElement("span"); s.className = "seg"; bar.appendChild(s); }
+  for (let i = 0; i < cpN; i++) bar.children[i].className = "seg" + (i < cpSince ? " on" : "");
+}
+// —— 分批清点 —— 顶栏「本批 x/N」+ 对不上累计 + 进度条；关闭时全隐藏
+function updateCpProg() {
+  const el = $("cpprog");
+  if (!cpEnabled) { el.hidden = true; renderCpBar(); return; }
+  el.hidden = false;
+  const miss = cpLog.filter(c => c.result === "mismatch").length;
+  el.textContent = "本批 " + cpSince + "/" + cpN + (miss ? "  对不上 " + miss : "");
+  el.classList.toggle("hot", miss > 0);
+  renderCpBar();
+}
+// 把配置状态同步到底栏控件（启动 + 恢复存档后调用）
+function syncCpUI() {
+  $("cpn").value = cpN;
+  $("cptoggle").checked = cpEnabled;
+  $("cpcfg").classList.toggle("off", !cpEnabled);
+  updateCpProg();
+}
+// 弹出检查点浮层：size=本批应有件数；final=收尾批（不足 N）；onAck=点掉后要跑的回调
+function showCheckpoint(size, final, onAck) {
+  cpActive = true; cpCur = { size, final: !!final }; cpPending = onAck || null;
+  $("cpbig").textContent = final ? "收尾清点" : "清点这一批";
+  $("cpsub").innerHTML = "应为 <b>" + size + "</b> 件，数一下刚才这一" + (final ? "批" : "摞") + "，对上再继续";
+  $("cp").hidden = false;
+  beepCP();
+}
+// 点掉浮层：记录本检查点结果 → 归零本批计数 → 继续（或跑收尾回调）
+function ackCheckpoint(result) {
+  if (!cpActive || !cpCur) return;
+  cpLog.push({ idx: cpLog.length + 1, at: new Date().toISOString(), size: cpCur.size, result, final: cpCur.final });
+  cpSince = 0; cpActive = false; cpCur = null;
+  $("cp").hidden = true; buf = "";          // 清掉浮层期间可能积累的杂散字符
+  persist(); updateCpProg();
+  const cb = cpPending; cpPending = null;
+  if (cb) cb(result);
+}
+$("cpok").addEventListener("click",  () => ackCheckpoint("ok"));
+$("cpbad").addEventListener("click", () => ackCheckpoint("mismatch"));
+$("cpn").addEventListener("change", () => {
+  const v = parseInt($("cpn").value, 10);
+  cpN = (isFinite(v) && v >= 1) ? v : cpN;
+  $("cpn").value = cpN; updateCpProg(); persist();
+});
+$("cptoggle").addEventListener("change", () => {
+  cpEnabled = $("cptoggle").checked;
+  $("cpcfg").classList.toggle("off", !cpEnabled);
+  updateCpProg(); persist();
+});
 
 // —— 持久层：内存 Map 是数据源；localStorage 为主，写失败自动降级 IndexedDB，两者皆挂则仅内存 ——
 // 降级不阻断扫码（能一直扫、导出读内存），只影响「刷新/崩溃兜底」的持久性 → 降级时红屏报警 + 顶栏常驻提示。
@@ -225,7 +332,8 @@ function failMem(err) {                                 // 连 IDB 也失败：�
 }
 
 function persist() {                                    // 每扫一单调用；内存已先写，这里做旁路持久化
-  const payload = JSON.stringify({ scanned: [...scanned.values()], offlist: [...offlist.values()] });
+  const payload = JSON.stringify({ scanned: [...scanned.values()], offlist: [...offlist.values()],
+    cp: { since: cpSince, log: cpLog, n: cpN, enabled: cpEnabled } });
   if (storageMode === "ls") {
     try { localStorage.setItem(todayKey(), payload); return; } catch(e) { degrade(e); }
   }
@@ -251,6 +359,12 @@ function mergePayload(raw) {
     } else if (!offlist.has(k)) {
       offlist.set(k, it);
     }
+  }
+  if (d.cp) {                                            // 恢复分批清点位置：本批计数、检查点记录、配置
+    if (typeof d.cp.since === "number") cpSince = d.cp.since;
+    if (Array.isArray(d.cp.log)) cpLog = d.cp.log;
+    if (typeof d.cp.n === "number" && d.cp.n >= 1) cpN = d.cp.n;
+    if (typeof d.cp.enabled === "boolean") cpEnabled = d.cp.enabled;
   }
   return n;
 }
@@ -278,6 +392,7 @@ function cleanupIDBOld() {
   }).catch(() => {});
 }
 cleanupLSOld();
+syncCpUI();                            // 启动即把分批清点默认态（开启·N=10）呈现到界面
 
 // —— 载入白名单（多选/多次追加，各店合并；不清空已扫）——
 function readText(f) {
@@ -291,7 +406,7 @@ $("file").addEventListener("change", async e => {
   unlockAudio();
   const files = [...e.target.files]; e.target.value = "";   // 允许重载同名/再次追加
   if (!files.length) return;
-  const stores = new Set(); const bad = []; let anyOk = false;
+  const bad = []; let anyOk = false;
   for (const f of files) {
     let text; try { text = await readText(f); } catch(_) { bad.push(f.name); continue; }
     const { rows, header } = parseCSV(text);
@@ -305,19 +420,22 @@ $("file").addEventListener("change", async e => {
       if (!k) continue;
       const st = cStore ? (r[cStore] || "") : "";
       whitelist.set(k, { ref: r[cRef], seq: cSeq ? r[cSeq] : "", track: r[cTrack], store: st });
-      if (st) stores.add(st);
       anyOk = true;
     }
   }
   const restored = await restore();
   persist();                          // 保存 restore 可能触发的「名单外→有货」迁移
-  updateCount();
+  updateCount(); syncCpUI();          // 恢复的分批清点配置/进度同步到界面
   if (!anyOk && !whitelist.size) {
     setState("bad", "清单格式错", "", "所选文件都缺 <b>VO Tracking No</b> 或 <b>Order Reference</b> 列，检查是否选错文件", "");
     beepBad(); return;
   }
   $("export").disabled = false; $("reset").disabled = false;
-  const storeTxt   = stores.size ? `（店：${[...stores].join("+")}）` : "";
+  const dist = new Map();                       // 从累计白名单算每店单数（不只本批），避免「总数是两份之和、店却只显示本批」的歧义
+  for (const w of whitelist.values()) { const s = w.store || ""; if (s) dist.set(s, (dist.get(s) || 0) + 1); }
+  let storeTxt = "";
+  if (dist.size === 1) storeTxt = `（店：${[...dist.keys()][0]}）`;                                  // 单店：照旧
+  else if (dist.size > 1) storeTxt = `（${[...dist].map(([s, n]) => `${s} ${n} 单`).join(" + ")}）`;  // 多店：摊开每店各几单
   const noteRestore = restored ? `，已恢复今日已扫 ${restored} 单` : "";
   const badTxt     = bad.length ? `；⚠跳过 ${bad.length} 个文件：${bad.join("、")}` : "";
   setState(bad.length ? "bad" : "idle", "就绪", "",
@@ -330,6 +448,7 @@ $("file").addEventListener("change", async e => {
 
 // —— 扫码处理 ——
 function handleScan(raw) {
+  if (cpActive) return;                        // 检查点浮层期间暂停扫码，专心清点
   const code = norm(raw);
   if (!code) return;
   unlockAudio();
@@ -348,6 +467,10 @@ function handleScan(raw) {
       scanned.set(code, rec); persist(); updateCount();
       setState("ok", "OK", "序号 " + (hit.seq||"?"), hit.ref, hit.track);
       beepOK(); pushRecent("✓ " + (hit.seq||"?"), false);
+      if (cpEnabled) {                           // 分批清点：只对成功记入有货的绿色扫描计数
+        cpSince++; updateCpProg();
+        if (cpSince >= cpN) showCheckpoint(cpN, false, null);
+      }
     }
   } else if (isLP(code)) {                        // LP 结构但不在任何已载入清单
     if (offlist.has(code)) {                      // 名单外 + 重复
@@ -367,6 +490,7 @@ function handleScan(raw) {
 
 // —— 键盘楔入采集（扫码枪当键盘打字，末尾回车触发）——
 document.addEventListener("keydown", e => {
+  if (cpActive) return;                  // 检查点浮层期间不采集扫码，避免把杂散字符攒进下一批
   const now = Date.now();
   if (now - lastKeyTs > 500) buf = "";   // 间隔过久视为新一次扫描，清缓冲
   lastKeyTs = now;
@@ -388,6 +512,11 @@ function downloadCSV(name, csv) {
   a.click(); URL.revokeObjectURL(a.href);
 }
 $("export").addEventListener("click", () => {
+  // 收工=最后一次清点：若本批还有没核对的余数，先弹收尾检查点，点掉再真正导出
+  if (cpEnabled && cpSince > 0) { showCheckpoint(cpSince, true, doExport); return; }
+  doExport();
+});
+function doExport() {
   const byStore = new Map();                       // 店 -> 记录数组
   for (const r of scanned.values()) {
     const s = r.store || "";
@@ -411,15 +540,21 @@ $("export").addEventListener("click", () => {
     beepBad(); return;
   }
   jobs.forEach(([name, csv], i) => setTimeout(() => downloadCSV(name, csv), i * 300));  // 错峰触发多文件下载
-  setState("idle", "已导出", "",
-    `已导出 <b>${jobs.length}</b> 份：${jobs.map(j => j[0]).join("、")}`,
+  const miss = cpLog.filter(c => c.result === "mismatch").length;
+  const cpTxt = cpLog.length
+    ? `；分批清点 ${cpLog.length} 批` + (miss ? `，其中 ${miss} 批当场对不上，收工请复核` : `，全部对上`)
+    : "";
+  setState(miss ? "warn" : "idle", "已导出", "",
+    `已导出 <b>${jobs.length}</b> 份：${jobs.map(j => j[0]).join("、")}${cpTxt}`,
     "浏览器若提示「下载多个文件」请允许");
-});
+}
 
 // —— 清空今日（收工重来 / 换批）——
 $("reset").addEventListener("click", () => {
   if (!confirm("清空今日已扫的 " + scanned.size + " 单 + 未知来源 " + offlist.size + " 单记录？（不影响白名单）")) return;
-  scanned = new Map(); offlist = new Map(); persist(); updateCount();
+  scanned = new Map(); offlist = new Map();
+  cpSince = 0; cpLog = [];                          // 分批清点计数与检查点记录一并清零（配置保留）
+  persist(); updateCount(); updateCpProg();
   setState("idle", "已清空", "", "已扫记录清零，白名单保留。可重新开扫", "");
 });
 </script>
