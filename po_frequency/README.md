@@ -41,7 +41,7 @@ python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor NAME] [--ou
 ## 口径（三条固定规则，保证可复现）
 
 1. **订单头字段向下 ffill**（补齐导出里空着的头字段）。
-2. **SKU 归一**：复用 `common/po.py::_po_base_sku`，去掉 `x2 / *2 / _VO` 尾缀，令同一产品的多件装/渠道变体并到一行。
+2. **SKU 归一**：复用 `common/po.py::_po_base_sku`，去掉 `xN/XN · *N · _VO · _GW` 尾缀（组合后缀如 `x2_GW` 整体脱），令同一产品的多件装/门店渠道变体并到一行。
 3. **频次 = 不同 `Order Reference` 去重计数**：同一张采购单里同一产品拆成多行，只算 **1 次**采购（该单内多行数量先合并，再计入 Avg/Min/Max per Purchase）。因此 Details 的行数可能略多于 Summary 的频次之和——这是 ERP 拆行造成的，不是错。
 
 ## 测试

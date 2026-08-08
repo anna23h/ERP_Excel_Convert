@@ -23,8 +23,10 @@ PO_CUSTOMER_PAT = "Alibaba Health"
 PO_NOISE_PATS = [PO_CUSTOMER_PAT, "VO Test Order"]
 
 def _po_base_sku(s):
-    """SKU 归一：去掉多件装 x2 / 变体 *2 / 渠道 _VO 等尾缀，对齐采购单里的基础 SKU。"""
-    return re.sub(r"(x\d+|\*\d+|_VO)+$", "", str(s).strip())
+    """SKU 归一：去掉多件装 xN/XN、变体 *N、渠道/门店 _VO/_GW 等尾缀，对齐采购单里的基础 SKU。
+    组合后缀也整体脱（如 `x2_GW` → 去 `_GW` 再去 `x2`）。全仓统一口径，见 ISSUES [common] 2026-08-08:
+    补货预判(build_excel)、FS 回写(fs_writeback)、采购频次(po_frequency)共用本函数。"""
+    return re.sub(r"([xX]\d+|\*\d+|_VO|_GW)+$", "", str(s).strip())
 
 
 def load_po_stats(path):

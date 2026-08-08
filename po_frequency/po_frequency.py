@@ -21,7 +21,7 @@
 
 口径（与 2026-08-08 交付表一致）:
     ① 订单头字段向下 ffill；
-    ② SKU 归一（common/po._po_base_sku，去 x2/*2/_VO 尾缀，令多件装/渠道变体并到一行）；
+    ② SKU 归一（common/po._po_base_sku，去 xN/XN·*N·_VO·_GW 尾缀，令多件装/渠道变体并到一行）；
     ③ 频次 = 不同 Order Reference 去重计数（同单同产品多行算 1 次）。
 """
 import argparse
