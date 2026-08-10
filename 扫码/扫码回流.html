@@ -604,13 +604,22 @@ function doExport() {
     "下载后解压，把每份有货清单 CSV 投阶段二；未知来源那份交人工核对");
 }
 
-// —— 清空今日（收工重来 / 换批）——
+// —— 清空今日（彻底重来 / 载错清单换清单）：连白名单+本机今日存档一起清，回到初始载入态 ——
+// 白名单已入库、刷新会自动恢复，故换清单必须能连白名单一并清掉——否则错清单会一直跟着（旧版只清已扫、留白名单，那是白名单未入库时代的语义）。
+function purgeToday() {                                 // 删今日存档：localStorage + IDB（曾降级过则数据在 IDB）
+  try { localStorage.removeItem(todayKey()); } catch(e) {}
+  openIDB().then(db => { db.transaction("kv", "readwrite").objectStore("kv").delete(todayKey()); }).catch(() => {});
+}
 $("reset").addEventListener("click", () => {
-  if (!confirm("清空今日已扫的 " + scanned.size + " 单 + 未知来源 " + offlist.size + " 单记录？（不影响白名单）")) return;
-  scanned = new Map(); offlist = new Map();
-  cpSince = 0; cpLog = [];                          // 分批清点计数与检查点记录一并清零（配置保留）
-  persist(); updateCount(); updateCpProg();
-  setState("idle", "已清空", "", "已扫记录清零，白名单保留。可重新开扫", "");
+  if (!confirm("清空今日全部：白名单 " + whitelist.size + " 单 + 已扫 " + scanned.size + " 单 + 未知来源 " + offlist.size +
+    " 单，并删除本机今日存档，回到载入清单前？\n用于载错清单、要改载别的清单；继续请重新载入。")) return;
+  whitelist = new Map(); scanned = new Map(); offlist = new Map();
+  cpSince = 0; cpLog = [];                          // 计数/检查点清零；cpN/cpEnabled 属偏好，内存保留
+  purgeToday(); updateCount(); updateCpProg();
+  $("export").disabled = true; $("reset").disabled = true;
+  setState("idle", "载入清单", "",
+    '已清空今日全部记录与白名单。点下方「载入扫码清单」，选今天的 <b>扫码清单{店}.csv</b>（<b>可多选/多次</b>，两店可一起载入）',
+    "扫码枪需配「回车(Enter)后缀」并使用实时传输模式");
 });
 </script>
 </body>
