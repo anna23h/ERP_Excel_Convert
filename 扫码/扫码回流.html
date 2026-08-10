@@ -332,7 +332,7 @@ function failMem(err) {                                 // 连 IDB 也失败：�
 }
 
 function persist() {                                    // 每扫一单调用；内存已先写，这里做旁路持久化
-  const payload = JSON.stringify({ scanned: [...scanned.values()], offlist: [...offlist.values()],
+  const payload = JSON.stringify({ whitelist: [...whitelist.values()], scanned: [...scanned.values()], offlist: [...offlist.values()],
     cp: { since: cpSince, log: cpLog, n: cpN, enabled: cpEnabled } });
   if (storageMode === "ls") {
     try { localStorage.setItem(todayKey(), payload); return; } catch(e) { degrade(e); }
@@ -345,6 +345,10 @@ function persist() {                                    // 每扫一单调用；
 function mergePayload(raw) {
   let d; try { d = JSON.parse(raw); } catch(e) { return 0; }
   let n = 0;
+  for (const it of (d.whitelist || [])) {               // 先重建白名单：已扫恢复按白名单过滤，白名单须先在位
+    const k = norm(it.track);
+    if (k && !whitelist.has(k)) whitelist.set(k, it);    // 只增不删（同日多份清单取并集，本工具白名单本就只增）
+  }
   for (const it of (d.scanned || [])) {
     const k = norm(it.track);
     if (whitelist.has(k) && !scanned.has(k)) { scanned.set(k, it); n++; }
@@ -393,6 +397,26 @@ function cleanupIDBOld() {
 }
 cleanupLSOld();
 syncCpUI();                            // 启动即把分批清点默认态（开启·N=10）呈现到界面
+
+// —— 启动自动恢复：读回今日存档（含白名单），刷新/崩溃后原样回来，无需重载清单 ——
+// 白名单现随存档持久化，故 restore() 能重建白名单→再并已扫，恢复不再依赖「手动重载 CSV」。
+(async function startupRestore() {
+  let restored = 0;
+  try { restored = await restore(); } catch(e) {}
+  if (!whitelist.size) return;                       // 今日无存档（新的一天/新机器）→ 保持初始「载入清单」态
+  $("export").disabled = false; $("reset").disabled = false;
+  updateCount(); syncCpUI();                         // 恢复的已扫计数、分批清点进度/配置同步到界面
+  const dist = new Map();
+  for (const w of whitelist.values()) { const s = w.store || ""; if (s) dist.set(s, (dist.get(s) || 0) + 1); }
+  let storeTxt = "";
+  if (dist.size === 1) storeTxt = `（店：${[...dist.keys()][0]}）`;
+  else if (dist.size > 1) storeTxt = `（${[...dist].map(([s, n]) => `${s} ${n} 单`).join(" + ")}）`;
+  setState("idle", "已恢复今日", "",
+    `刷新前的记录已找回：白名单 <b>${whitelist.size}</b> 单${storeTxt}，已扫 <b>${scanned.size}</b> 单` +
+    (offlist.size ? `，未知来源 ${offlist.size}` : ""),
+    "接着扫即可。若要追加另一店清单，仍可再「载入扫码清单」");
+  pushRecent("已恢复 " + scanned.size + " 单", false);
+})();
 
 // —— 载入白名单（多选/多次追加，各店合并；不清空已扫）——
 function readText(f) {
@@ -503,13 +527,41 @@ document.addEventListener("keydown", e => {
   }
 });
 
-// —— 导出（n+1 份，utf-8-sig BOM）：n 份按店「有货清单{店}{n}单」→ stage2 入口；+1 份「未知来源运单」供人工核对 ——
-function downloadCSV(name, csv) {
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+// —— 导出：n+1 份 CSV 打进一个 store-only zip 一次下载，规避 Chrome「下载多个文件」拦截（曾静默丢掉整店清单）——
+// n 份按店「有货清单{店}{n}单.csv」→ stage2 入口；+1 份「未知来源运单」供人工核对。内层 CSV 名/格式不变，操作员解压后投递。
+function downloadBlob(name, blob) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click(); URL.revokeObjectURL(a.href);
+}
+// -- 手写零依赖 store-only ZIP（不压缩）：本地头30B + 中央目录46B + EOCD22B，通用位标记 bit11=UTF-8 文件名（中文不乱码）--
+const _crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(bytes) { let c = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) c = _crcTable[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) {                                // files: [{ name, bytes:Uint8Array }]
+  const enc = new TextEncoder();
+  const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+  const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  const parts = [], central = []; let offset = 0;
+  for (const f of files) {
+    const nb = enc.encode(f.name), crc = crc32(f.bytes), sz = f.bytes.length;
+    const local = [].concat(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(crc), u32(sz), u32(sz), u16(nb.length), u16(0));
+    parts.push(new Uint8Array(local), nb, f.bytes);
+    central.push({ nb, crc, sz, offset });
+    offset += local.length + nb.length + sz;
+  }
+  const cdStart = offset; let cdLen = 0; const cd = [];
+  for (const c of central) {
+    const rec = [].concat(u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(c.crc), u32(c.sz), u32(c.sz),
+      u16(c.nb.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(c.offset));
+    cd.push(new Uint8Array(rec), c.nb); cdLen += rec.length + c.nb.length;
+  }
+  const eocd = [].concat(u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length), u32(cdLen), u32(cdStart), u16(0));
+  return new Blob([...parts, ...cd, new Uint8Array(eocd)], { type: "application/zip" });
 }
 $("export").addEventListener("click", () => {
   // 收工=最后一次清点：若本批还有没核对的余数，先弹收尾检查点，点掉再真正导出
@@ -539,14 +591,17 @@ function doExport() {
     setState("bad", "无可导出", "", "还没扫到任何单", "");
     beepBad(); return;
   }
-  jobs.forEach(([name, csv], i) => setTimeout(() => downloadCSV(name, csv), i * 300));  // 错峰触发多文件下载
+  const enc = new TextEncoder();
+  const zipFiles = jobs.map(([name, csv]) => ({ name, bytes: enc.encode("﻿" + csv) }));  // 内层 CSV 保留 utf-8-sig BOM
+  const zipName = "有货清单打包_" + new Date().toISOString().slice(0,10) + ".zip";
+  downloadBlob(zipName, makeZip(zipFiles));            // 单次下载，不触发多文件拦截
   const miss = cpLog.filter(c => c.result === "mismatch").length;
   const cpTxt = cpLog.length
     ? `；分批清点 ${cpLog.length} 批` + (miss ? `，其中 ${miss} 批当场对不上，收工请复核` : `，全部对上`)
     : "";
   setState(miss ? "warn" : "idle", "已导出", "",
-    `已导出 <b>${jobs.length}</b> 份：${jobs.map(j => j[0]).join("、")}${cpTxt}`,
-    "浏览器若提示「下载多个文件」请允许");
+    `已打包 <b>${jobs.length}</b> 份为 <b>${zipName}</b>：${jobs.map(j => j[0]).join("、")}${cpTxt}`,
+    "下载后解压，把每份有货清单 CSV 投阶段二；未知来源那份交人工核对");
 }
 
 // —— 清空今日（收工重来 / 换批）——
