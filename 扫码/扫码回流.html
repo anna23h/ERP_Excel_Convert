@@ -54,6 +54,7 @@
     background: rgba(255,255,255,.92); color: #111; cursor: pointer; font-weight: 600;
   }
   button:disabled { opacity: .4; cursor: not-allowed; }
+  #reset { background: var(--bad); color: #fff; }   /* 标红：它会连白名单+今日存档一并清，误点代价大 */
   #recent { display: flex; gap: .4rem; overflow-x: auto; max-width: 100%; }
   #recent span { white-space: nowrap; padding: .1em .5em; border-radius: 5px; background: rgba(0,0,0,.35); }
   #recent span.r-bad { background: rgba(255,255,255,.9); color: var(--bad); font-weight: 700; }
@@ -110,7 +111,7 @@
   <div id="foot">
     <label class="filebtn">载入扫码清单<input type="file" id="file" accept=".csv,text/csv" multiple></label>
     <button id="export" disabled>导出有货清单</button>
-    <button id="reset" disabled>清空今日</button>
+    <button id="reset" disabled>清空</button>
     <span id="cpcfg">分批清点 每 <input type="number" id="cpn" min="1" value="10"> 件 <input type="checkbox" id="cptoggle" checked></span>
     <span id="note"></span>
     <span class="grow"></span>
