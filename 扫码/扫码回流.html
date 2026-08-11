@@ -165,8 +165,12 @@ function tone(freq, ms, type, gain) {
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
   o.connect(g).connect(ac.destination); o.start(t0); o.stop(t0 + ms/1000 + 0.02);
 }
-function beepOK()   { tone(1046, 110, "sine", 0.3); }                       // 短促清亮确认音
-function beepBad()  { tone(220, 260, "square", 0.32); setTimeout(()=>tone(180, 340, "square", 0.32), 200); } // 低沉双响报警
+function beepOK()   { tone(1175, 90, "sine", 0.3); }                        // 短促清亮确认音（更短更高，与红音拉开）
+function beepBad()  {                                                        // 低沉三连递降 + 叠失谐低音，重浊拖长，明显区别于绿
+  tone(196, 300, "square", 0.34); tone(185, 300, "sawtooth", 0.18);         // 第1响：G3 方波 + 失谐锯齿垫底（发浊）
+  setTimeout(()=>{ tone(165, 320, "square", 0.34); tone(155, 320, "sawtooth", 0.18); }, 240); // 第2响：更低
+  setTimeout(()=>{ tone(131, 460, "square", 0.36); tone(123, 460, "sawtooth", 0.20); }, 500); // 第3响：最低最长，收尾"拦停"
+}
 function beepWarn() { tone(700, 120, "sine", 0.3); setTimeout(()=>tone(990, 150, "sine", 0.3), 120); }       // 上行双音「已记录·留意」（区别于绿/红）
 function beepCP()   { tone(880, 150, "triangle", 0.3); setTimeout(()=>tone(660, 200, "triangle", 0.3), 160); } // 下行双音「停下清点」（区别于绿/黄/红）
 
