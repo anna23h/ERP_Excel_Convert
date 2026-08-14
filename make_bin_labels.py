@@ -96,7 +96,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("xlsx")
     ap.add_argument("-c", "--column", default="储位编码")
-    ap.add_argument("-o", "--outdir", default=".")
+    ap.add_argument("-o", "--outdir", default="output/labels")
     args = ap.parse_args()
 
     if args.xlsx.lower().endswith(".txt"):
