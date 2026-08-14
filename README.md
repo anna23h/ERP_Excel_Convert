@@ -15,6 +15,7 @@
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
+| `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
@@ -245,4 +246,5 @@ Python + pandas + openpyxl。
 - [x] **两条回写首次真正导入 ERP 并反向复核**（2026-08-02）：FS 1569/1569 一致；人写值与费用类 SKU 两道保护实证生效；`Supply Remark` 重跑替换而非堆叠、人写原文保住。产品主数据导出条件由此写死为**只勾 `can be sold`**。
 - [x] **采购数量+频次**（`po_frequency/po_frequency.py`）：单一供应商 purchase.order 行式导出 → `Summary`（每产品：采购频次/总量/均·最·大 per purchase/首末采购/跨度/平均间隔）+ `Details` 两 sheet 英文表头；`--vendor` 子串过滤、`--out` 可覆盖默认落位。复用 `common/po` 归一 + `common/xlsx` 排版（Details 上万行走轻量表头样式，27s→3.3s）。纯数量+频次、不掺结论/分析列。
 - [x] **SKU 归一统一**（`common/po._po_base_sku`）：口径统一为 `([xX]\d+|\*\d+|_VO|_GW)+$`，全仓一套；修掉 `x2_GW` 组合后缀旧规则脱不掉的漏匹配；三调用方（po_frequency / 补货预判 / FS 回写）对称受益。
+- [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。UTF-8 控制台兜底免去 Windows cp1252 崩溃。早期 Code128 三变体版 `make_bin_labels.py` 保留备用。打印须选「实际大小 / 100%」，否则模块宽被缩放。
 - [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。
