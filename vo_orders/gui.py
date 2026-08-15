@@ -192,7 +192,7 @@ class App:
         self._file_row(t2, "无货勾选返回:", self.nogoods, optional=True, multi=True)
         self._hint(t2, "两者填其一即可(都填以有货为准)：有货订单清单=仓库已发货的单号；无货勾选返回=仓库标了缺货的文件。")
         self._file_row(t2, "出库原始数据:", self.picking, optional=True, multi=True)
-        self._hint(t2, "选 ERP 导出的出库单文件(可多选)，程序自动筛出本次发货的、按店(VO/GW)拆开。")
+        self._hint(t2, "选 ERP 导出的出库单文件(可多选)，程序自动筛出本次发货的，合并成一份(不分店)。")
         self._file_row(t2, "取消订单清单:", self.cancel_list, optional=True, multi=True)
         self._hint(t2, "选填。传阶段一产出的『取消订单清单』(回传天猫后把后到的取消单补录进去)，"
                        "配上面『出库原始数据』→ 多产出一张『取消出库单』(运单号统一写『订单取消』、"

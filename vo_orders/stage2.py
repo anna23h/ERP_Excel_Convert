@@ -340,10 +340,10 @@ def build_picking_writeback(picking_paths, keys, trk_value, outdir, name,
 
 def build_E(picking_paths, shipped, shipdate, outdir):
     """出库单：过滤实际发货订单的 picking，Tracking Reference 覆盖为发货日期、
-    Carrier/ID 固定承运商，按 VO/GW 拆两份。"""
+    Carrier/ID 固定承运商，合并成唯一一张(不按 VO/GW 拆；一批发货一次导入 ERP)。"""
     return build_picking_writeback(picking_paths, shipped["_key"].tolist(),
                                    shipdate, outdir, "出库单",
-                                   carrier_id=CARRIER_ID, split_channel=True)
+                                   carrier_id=CARRIER_ID, split_channel=False)
 
 
 def build_cancel(picking_paths, cancel_keys, outdir):

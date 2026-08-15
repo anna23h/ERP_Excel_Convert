@@ -104,7 +104,7 @@
   <div id="stage">
     <div id="big">载入清单</div>
     <div id="seq"></div>
-    <div id="detail">点击下方「载入扫码清单」，选今天的 <b>扫码清单{店}.csv</b>（<b>可多选/多次</b>，两店可一起载入）</div>
+    <div id="detail">点击下方「载入扫码清单」，选<b>今天日期</b>的 <b>…扫码清单.csv</b>（<b>可多选/多次</b>，两店可一起载入）</div>
     <div id="sub">扫码枪需配「回车(Enter)后缀」并使用<b>实时传输</b>模式</div>
   </div>
 
@@ -131,7 +131,7 @@
 <script>
 "use strict";
 // —— 运单扫码回流（单文件，零依赖）——
-// 载入 stage1 产出的 `扫码清单{店}.csv` 作封闭白名单；扫 LP(=Tracking) 校验三态：
+// 载入 stage1 产出的 `YYYY年MM月DD日{店}{n}单 扫码清单.csv` 作封闭白名单；扫 LP(=Tracking) 校验三态：
 //   清单内+首次 → 绿 + 确认音 + 记录 ; 清单内+重复 → 红 + 报警 + 拒绝 ; 不在清单 → 红 + 报警 + 拒绝
 // 声音为主异常通道；红色状态挂到下一次成功扫描。收工导出 `有货清单{店}.csv` 投 stage2「有货订单清单」入口。
 
@@ -623,7 +623,7 @@ $("reset").addEventListener("click", () => {
   purgeToday(); updateCount(); updateCpProg();
   $("export").disabled = true; $("reset").disabled = true;
   setState("idle", "载入清单", "",
-    '已清空今日全部记录与白名单。点下方「载入扫码清单」，选今天的 <b>扫码清单{店}.csv</b>（<b>可多选/多次</b>，两店可一起载入）',
+    '已清空今日全部记录与白名单。点下方「载入扫码清单」，选<b>今天日期</b>的 <b>…扫码清单.csv</b>（<b>可多选/多次</b>，两店可一起载入）',
     "扫码枪需配「回车(Enter)后缀」并使用实时传输模式");
 });
 </script>

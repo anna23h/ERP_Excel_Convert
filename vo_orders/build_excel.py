@@ -249,11 +249,14 @@ def _wu_strip(series):
 
 
 def _write_scanlist(facesheet, ch, outdir):
-    """产出扫码清单 `扫码清单{店}.csv`（订单级白名单，见 build_scanlist）。
+    """产出扫码清单 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，见 build_scanlist）。
+    命名与 make_output_name/stage2_name 同惯例：每天各一份、同批产出并排可辨。
     UTF-8-BOM(utf-8-sig)：Excel 直接打开中文列头不乱码，浏览器端读时自行剥 BOM。
     返回 (路径, 单数)。"""
     df = build_scanlist(facesheet, ch)
-    path = unique_path(os.path.join(outdir, f"扫码清单{ch}.csv"))
+    d = date.today()
+    fname = f"{d.year}年{d.month:02d}月{d.day:02d}日{ch}{len(df)}单 扫码清单.csv"
+    path = unique_path(os.path.join(outdir, fname))
     df.to_csv(path, index=False, encoding="utf-8-sig")
     return path, len(df)
 
