@@ -1,3 +1,13 @@
 pandas
 openpyxl
 pyinstaller
+
+# 储位标签生成 make_labels.py
+segno
+reportlab
+Pillow
+
+# make_labels.py --verify(打印前退化回测) 才需要，非必装：
+# numpy
+# opencv-python
+# pyzbar
