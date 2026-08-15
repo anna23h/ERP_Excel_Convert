@@ -1,0 +1,4 @@
+# 开发/打包用。同事不装这个。
+-r requirements.txt
+
+pyinstaller          # build_exe.bat / build_reorder_exe.bat 打 Windows exe 才需要

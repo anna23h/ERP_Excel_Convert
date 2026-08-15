@@ -1,0 +1,10 @@
+# 储位标签生成 make_labels.py 专用(仅本人用)，按需单独装：
+#   pip install -r requirements-labels.txt
+segno
+reportlab
+Pillow
+
+# 下面三个仅 make_labels.py --verify(打印前退化回测)需要，惰性 import，可不装：
+# numpy
+# opencv-python
+# pyzbar

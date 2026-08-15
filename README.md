@@ -20,6 +20,8 @@
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
+
+**依赖按受众分三份**（2026-08-15）：`requirements.txt` = `pandas`+`openpyxl`，**启动器给同事装的最小集**（上表七条流水线的三方依赖完全相同，仅此两项）；`requirements-dev.txt` = 最小集 + `pyinstaller`（打 exe，`build_exe.bat`/`build_reorder_exe.bat` 用）；`requirements-labels.txt` = `segno`/`reportlab`/`Pillow`（储位标签专用，按需单独装）。**别往 `requirements.txt` 加只有开发/个别工具才用的包**——启动器会替同事装，装不上就直接挡住他跑拉单。启动器另有两条兜底：`.venv` 每次**探活**（目录在但已坏则自动重建）、装依赖失败**只警告不阻断**（真缺包时 Python 报清楚的 ImportError，好过打不开）。
 **所有入口与 CLI 参数的一站式清单**：[启动说明/运行指令.md](启动说明/运行指令.md)。
 
 **两个 GUI 是刻意分开的，不是忘了合并**：`vo_orders/gui.py`（VOTool）给办公室同事用，
@@ -246,5 +248,5 @@ Python + pandas + openpyxl。
 - [x] **两条回写首次真正导入 ERP 并反向复核**（2026-08-02）：FS 1569/1569 一致；人写值与费用类 SKU 两道保护实证生效；`Supply Remark` 重跑替换而非堆叠、人写原文保住。产品主数据导出条件由此写死为**只勾 `can be sold`**。
 - [x] **采购数量+频次**（`po_frequency/po_frequency.py`）：单一供应商 purchase.order 行式导出 → `Summary`（每产品：采购频次/总量/均·最·大 per purchase/首末采购/跨度/平均间隔）+ `Details` 两 sheet 英文表头；`--vendor` 子串过滤、`--out` 可覆盖默认落位。复用 `common/po` 归一 + `common/xlsx` 排版（Details 上万行走轻量表头样式，27s→3.3s）。纯数量+频次、不掺结论/分析列。
 - [x] **SKU 归一统一**（`common/po._po_base_sku`）：口径统一为 `([xX]\d+|\*\d+|_VO|_GW)+$`，全仓一套；修掉 `x2_GW` 组合后缀旧规则脱不掉的漏匹配；三调用方（po_frequency / 补货预判 / FS 回写）对称受益。
-- [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。UTF-8 控制台兜底免去 Windows cp1252 崩溃。打印须选「实际大小 / 100%」，否则模块宽被缩放。早期 Code128 三变体版 `make_bin_labels.py` **已删除**（2026-08-15）：其 QR 变体是本脚本的劣化版（模块 0.375mm、位置不吸附点阵、无版本锁定/下限校验、文字按 7 位硬切），独有的 Code128 与 20×40 竖版现场未采用；将来若要，做成本脚本的开关复用同一套点阵吸附与校验，不再另起脚本。
+- [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。依赖不在主 requirements 里，按需 `pip install -r requirements-labels.txt`。UTF-8 控制台兜底免去 Windows cp1252 崩溃。打印须选「实际大小 / 100%」，否则模块宽被缩放。早期 Code128 三变体版 `make_bin_labels.py` **已删除**（2026-08-15）：其 QR 变体是本脚本的劣化版（模块 0.375mm、位置不吸附点阵、无版本锁定/下限校验、文字按 7 位硬切），独有的 Code128 与 20×40 竖版现场未采用；将来若要，做成本脚本的开关复用同一套点阵吸附与校验，不再另起脚本。
 - [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。

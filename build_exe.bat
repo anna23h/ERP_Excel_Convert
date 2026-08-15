@@ -33,7 +33,7 @@ echo [1/3] Upgrading pip...
 
 echo.
 echo [2/3] Installing dependencies...
-%PY% -m pip install -r requirements.txt
+%PY% -m pip install -r requirements-dev.txt
 if errorlevel 1 goto fail
 
 echo.

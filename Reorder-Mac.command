@@ -10,11 +10,18 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 VENV=".venv"
+VPY="$VENV/bin/python"
+# Health check: the folder can exist yet be broken (repo renamed / Python upgraded) - rebuild it
+if [ -d "$VENV" ] && ! "$VPY" -c "import sys" >/dev/null 2>&1; then
+  echo "Environment looks broken (repo renamed / Python upgraded), rebuilding it..."
+  rm -rf "$VENV"
+fi
 if [ ! -d "$VENV" ]; then
   echo "First run: creating the environment and installing deps (about 1-2 minutes, only once)…"
   python3 -m venv "$VENV" || { echo "Failed to create virtual environment"; read -n 1 -s -r; exit 1; }
-  "$VENV/bin/pip" install --upgrade pip >/dev/null 2>&1
-  "$VENV/bin/pip" install -r requirements.txt || { echo "Failed to install dependencies"; read -n 1 -s -r; exit 1; }
+  "$VPY" -m pip install --upgrade pip >/dev/null 2>&1
+  # Dep install failure only warns, never blocks: a real gap surfaces as a clear ImportError
+  "$VPY" -m pip install -r requirements.txt || echo "WARNING: dependency install failed (check network/proxy). Starting anyway; send any ImportError text to the developer."
 fi
 
-"$VENV/bin/python" reorder/reorder_gui.py
+"$VPY" reorder/reorder_gui.py

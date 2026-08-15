@@ -58,6 +58,14 @@ if not defined PY (
 set "VENV=.venv"
 set "VPY=%VENV%\Scripts\python.exe"
 
+REM --- Health check: the folder can exist yet be broken (repo renamed, Python upgraded).
+REM     Only "it exists" is not enough - probe it, and rebuild if the probe fails.
+if exist "%VPY%" "%VPY%" -c "import sys" >nul 2>&1
+if exist "%VPY%" if errorlevel 1 (
+  echo Environment looks broken, rebuilding it...
+  rmdir /s /q "%VENV%"
+)
+
 REM First run needs an environment; after an update deps may change, reinstall once
 set "NEED_DEP="
 if not exist "%VPY%" (
@@ -71,7 +79,10 @@ if defined OLD if defined NEW if not "!OLD!"=="!NEW!" set "NEED_DEP=1"
 if defined NEED_DEP (
   echo Installing/updating dependencies...
   "%VPY%" -m pip install --upgrade pip >nul 2>&1
-  "%VPY%" -m pip install -r requirements.txt || ( echo Failed to install dependencies ^(check network/proxy^) & pause & goto :eof )
+  REM Dep install failure only warns: do NOT block startup. If something is really
+  REM   missing, Python raises a clear ImportError - far better than "cannot open".
+  "%VPY%" -m pip install -r requirements.txt
+  if errorlevel 1 echo WARNING: dependency install failed ^(check network/proxy^). Starting anyway; send any ImportError text to the developer.
 )
 
 echo Starting Reorder Helper... ^(closing this window will close the program^)

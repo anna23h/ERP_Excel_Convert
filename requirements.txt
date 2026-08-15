@@ -1,13 +1,6 @@
+# 运行时最小集 —— 同事双击运行装的就是这两个。
+# 七条流水线(common/vo_orders/reorder/packing_list/po_frequency/po_reconcile/
+# sales_insight)的三方依赖完全相同，仅此两项(tkinter 属标准库)。
+# 别往这里加只有开发/个别工具才用的包：启动器会给同事装，装不上就是白挡人。
 pandas
 openpyxl
-pyinstaller
-
-# 储位标签生成 make_labels.py
-segno
-reportlab
-Pillow
-
-# make_labels.py --verify(打印前退化回测) 才需要，非必装：
-# numpy
-# opencv-python
-# pyzbar
