@@ -270,7 +270,10 @@ class App:
             try:
                 lines = work()
                 self.root.after(0, lambda: self._done(lines))
-            except Exception as e:
+            except BaseException as e:  # noqa: BLE001
+                # 刻意兜 BaseException 而非 Exception：子脚本图省事写 raise SystemExit(msg)
+                # 时，SystemExit 不是 Exception，会逃出本线程 → _set_busy(False) 不执行 →
+                # 界面永久卡「运行中」。这是最后一道网，各脚本仍应优先抛 ValueError。
                 tb = traceback.format_exc()
                 self.root.after(0, lambda e=e, tb=tb: self._fail(e, tb))
         threading.Thread(target=task, daemon=True).start()
@@ -282,10 +285,12 @@ class App:
         self._set_busy(False)
 
     def _fail(self, e, tb):
-        self._write("❌ 出错：" + str(e))
+        # SystemExit(None) 等空消息异常 str() 为空串，弹窗会空白 → 回退到类型名
+        msg = str(e) or f"{type(e).__name__}（脚本异常退出，详见日志）"
+        self._write("❌ 出错：" + msg)
         self._write(tb)
         self._set_busy(False)
-        messagebox.showerror("出错", str(e))
+        messagebox.showerror("出错", msg)
 
     # ---------- actions ----------
     def _erp_list(self):

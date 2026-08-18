@@ -45,13 +45,16 @@ COL_ITEM, COL_NAME, COL_SKU, COL_BARCODE, COL_HS = 1, 2, 3, 4, 5
 COL_BOXSPEC, COL_BOXCOUNT = 8, 9
 COL_ORIGIN, COL_QTY = 11, 12
 
-# ERP 导出的列名（模版固定）
-F_ORDER = "Order Reference"
-F_NAME = "Order Lines/Product/Name"
-F_SKU = "Order Lines/Product/Internal Reference"
-F_BARCODE = "Order Lines/Product/Barcode"
-F_HS = "Order Lines/Product/HS Code"
-F_QTY = "Order Lines/Quantity"
+# ERP 导出的列名。Odoo 导出会跟界面语言走：英文一套、德文一套（用户机器语言不定，
+# 德文导出会给 Auftragsreferenz/... 这类列名）。每个字段列出「英文名, 德文名」别名，
+# read_orders 按别名逐一在表头里找，找到哪套算哪套。加新语言就往元组里再补一个名。
+F_ORDER = ("Order Reference", "Auftragsreferenz")
+F_NAME = ("Order Lines/Product/Name", "Auftragszeilen/Produkt/Name")
+F_SKU = ("Order Lines/Product/Internal Reference",
+         "Auftragszeilen/Produkt/Interne Referenz")
+F_BARCODE = ("Order Lines/Product/Barcode", "Auftragszeilen/Produkt/Strichcode")
+F_HS = ("Order Lines/Product/HS Code", "Auftragszeilen/Produkt/HS-Code")
+F_QTY = ("Order Lines/Quantity", "Auftragszeilen/Menge")
 
 
 def _clean(value):
@@ -68,11 +71,21 @@ def read_orders(path):
     """
     ws = openpyxl.load_workbook(path, data_only=True).active
     header = [_clean(c.value) for c in ws[1]]
+
+    def col(aliases):
+        """在表头里按别名(英/德…)找列位；都找不到抛 ValueError。
+        用 ValueError 而非 SystemExit——后者是 BaseException，会逃出 GUI 后台线程的
+        `except Exception` 导致界面卡在「运行中」(run() docstring 记的就是这个坑)。"""
+        for name in aliases:
+            if name in header:
+                return header.index(name)
+        raise ValueError(aliases[0])
+
     try:
-        idx = {f: header.index(f) for f in
+        idx = {f: col(f) for f in
                (F_ORDER, F_NAME, F_SKU, F_BARCODE, F_HS, F_QTY)}
     except ValueError as e:
-        raise SystemExit(f"导出缺列：{e}\n实际表头：{header}")
+        raise ValueError(f"导出缺列（英文/德文列名都没找到）：{e}\n实际表头：{header}")
 
     orders = []
     current = None
