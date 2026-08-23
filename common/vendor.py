@@ -17,18 +17,9 @@ VENDOR_ALIAS = {}
 
 
 def _load_alias():
-    """从仓库根的 config.py 读 VENDOR_ALIAS。按文件位置直接加载，不靠 sys.path——
-    各入口对 sys.path 的处理不一致，靠 `import config` 会时灵时不灵。"""
-    import importlib.util
-    import os
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "config.py")
-    if not os.path.exists(path):
-        return {}
-    spec = importlib.util.spec_from_file_location("_erp_config", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return dict(getattr(mod, "VENDOR_ALIAS", {}) or {})
+    """从仓库根的 config.py 读 VENDOR_ALIAS（加载细节见 common/localconf.py）。"""
+    from common import localconf
+    return dict(localconf.get("VENDOR_ALIAS", {}) or {})
 
 
 VENDOR_ALIAS = _load_alias()

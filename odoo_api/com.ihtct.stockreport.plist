@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 样例：每周一 08:30 跑一次库存周报。
+     安装：改下面两处路径 → cp 到 ~/Library/LaunchAgents/ → launchctl load。
+     具体步骤见 odoo_api/README.md「部署」一节。 -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ihtct.stockreport</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/CHANGEME/projects/erp_excel_convert/odoo_api/run_weekly.sh</string>
+    <string>--weeks</string><string>4</string>
+    <!-- 只算天猫 C 端（VO/GW）。不加这条则销量是全渠道口径，会被 B 端整箱单主导：
+         2026-08-23 实测 B 端只占 378 行订单却占 90% 的件数。 -->
+    <string>--ref-contains</string><string>VO,GW</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>1</integer>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <!-- 到点时机器睡着了就在唤醒后补跑一次。cron 没有这个行为，这也是选 launchd 的理由。 -->
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/CHANGEME/projects/erp_excel_convert/output/launchd.out</string>
+  <key>StandardErrorPath</key><string>/Users/CHANGEME/projects/erp_excel_convert/output/launchd.err</string>
+</dict>
+</plist>

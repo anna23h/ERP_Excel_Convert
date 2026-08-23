@@ -15,13 +15,33 @@
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
+| `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
 
-**依赖按受众分三份**（2026-08-15）：`requirements.txt` = `pandas`+`openpyxl`，**启动器给同事装的最小集**（上表七条流水线的三方依赖完全相同，仅此两项）；`requirements-dev.txt` = 最小集 + `pyinstaller`（打 exe，`build_exe.bat`/`build_reorder_exe.bat` 用）；`requirements-labels.txt` = `segno`/`reportlab`/`Pillow`（储位标签专用，按需单独装）。**别往 `requirements.txt` 加只有开发/个别工具才用的包**——启动器会替同事装，装不上就直接挡住他跑拉单。启动器另有两条兜底：`.venv` 每次**探活**（目录在但已坏则自动重建）、装依赖失败**只警告不阻断**（真缺包时 Python 报清楚的 ImportError，好过打不开）。
+**依赖按受众分三份**（2026-08-15）：`requirements.txt` = `pandas`+`openpyxl`，**启动器给同事装的最小集**（上表各条流水线的三方依赖完全相同，仅此两项）；`requirements-dev.txt` = 最小集 + `pyinstaller`（打 exe，`build_exe.bat`/`build_reorder_exe.bat` 用）；`requirements-labels.txt` = `segno`/`reportlab`/`Pillow`（储位标签专用，按需单独装）。**别往 `requirements.txt` 加只有开发/个别工具才用的包**——启动器会替同事装，装不上就直接挡住他跑拉单。启动器另有两条兜底：`.venv` 每次**探活**（目录在但已坏则自动重建）、装依赖失败**只警告不阻断**（真缺包时 Python 报清楚的 ImportError，好过打不开）。
+`odoo_api/` **渠道口径必须显式给，这是最容易错且错了不报错的地方**。销量默认是全渠道；2026-08-23 实测
+B 端（`S0` 开头的订单）只占 378 行订单却占 **90% 的件数**（整箱走货），而安全库存是给天猫
+C 端维护的。同一窗口下「销量前 50 名里配了安全库存的」，全渠道口径算出来 3 个、
+C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会把人引向完全相反的结论。
+筛选时并列多出 `销量_其它渠道` / `销量_全渠道` 两列；`可撑周数` 一律按全渠道算
+（库存被所有渠道一起消耗）。launchd plist 默认带 `--ref-contains VO,GW`。
+
+**与手工导出对拍已通过**（2026-08-23，同窗口同渠道 vs `sales_insight` 2026-08-01 产出）：
+安全库存 62 个运营人工值 **59 个与 ERP 现值完全相等**（另 3 个手工为 0、ERP 为空，等价）；
+销量 567 个共有 SKU 中 324 个完全一致、差异中位数 0；排名 Spearman **0.913**，
+前 20 名重叠 19/20。**注意 `sale.report` 是实时视图不是快照**——同一历史窗口过些天再拉数字会变
+（窗口内 4.9% 的已确认单在导出后被改动过），**周报不可事后复现，要留证据就留产出文件**。
+
+多产一张 `安全库存待配清单.csv`（有销量但两路都没配安全库存，按销量降序）：
+单看销量排名不知道哪些没设防线，单看安全库存清单不知道漏掉的是不是要紧货，
+这是三路数据合并后才看得见的东西。
+
+**不引入新依赖**：`xmlrpc.client` 是标准库，pandas/openpyxl 已在最小集里。
+
 **所有入口与 CLI 参数的一站式清单**：[启动说明/运行指令.md](启动说明/运行指令.md)。
 
 **两个 GUI 是刻意分开的，不是忘了合并**：`vo_orders/gui.py`（VOTool）给办公室同事用，
@@ -218,6 +238,26 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 一旦出现「财务单已收 > 订购量」说明前提被破，脚本**拒绝生成回写导入表并以退出码 2 中止**——
 负的未到量在满足前提的数据上不可能发生，此时回写只会把错误写进 ERP。
 
+## 库存周报（`odoo_api/`，Odoo 只读拉数，代码就绪待连通验证）
+
+上面两条回写吃的是**手工导出**的三份 Excel。周频跑一次，每次都要人进 ERP 点导出、
+还得记住筛选条件。`odoo_api/` 把这一步换成 XML-RPC 拉数：销量（`sale.report`，
+默认近 4 周）× 在手库存（`stock.quant`，内部库位汇总）× 安全库存（**两路并列**）
+合成一张周报，`launchd` 每周一自动跑。详见 [odoo_api/README.md](odoo_api/README.md)。
+
+**只读。** 本层不写 ERP——`Safety Stock` 回写继续走人工导入表，保留人工过目、出错能中断
+（沿用 SPEC「第二档 Odoo API 暂不自动化」的判断，本次只放开读）。写方法在客户端就被拦下，
+不指望服务端权限兜底。
+
+**安全库存两路并列是刻意的**：A = 产品主数据上的自定义 `Safety Stock` 字段
+（`sales_insight` 回写、补货预判清单读的就是它），B = `stock.warehouse.orderpoint.product_min_qty`
+（Odoo 标准补货规则，须滤掉 `trigger=manual` 的临时建议——该字段 Odoo 14 就有，2026-08-23 实测 5 条里 4 条正是 manual）。**2026-08-23 首测已给出答案：A 侧 152 个、B 侧 1 个，补货规则基本没在用**，所以「不一致」只报真冲突（都有但不等 / 只有 B），「只有 A」是常态、只报计数——所以并列成两列 + 单出一张
+`安全库存不一致.csv`，先看清楚再谈以谁为准。缺口暂按 A 算，A 空退回 B。
+
+**不引入新依赖**：`xmlrpc.client` 是标准库，pandas/openpyxl 已在最小集里。
+凭据走 `config.py` 的 `ODOO = {...}` 或环境变量，用 **API Key** 不用登录密码。
+脚本账号只需 Sales 与 Inventory 的读权限，**不需要 Administration/Settings，不需要 Studio**。
+
 ## 环境
 
 Python + pandas + openpyxl。
@@ -250,3 +290,4 @@ Python + pandas + openpyxl。
 - [x] **SKU 归一统一**（`common/po._po_base_sku`）：口径统一为 `([xX]\d+|\*\d+|_VO|_GW)+$`，全仓一套；修掉 `x2_GW` 组合后缀旧规则脱不掉的漏匹配；三调用方（po_frequency / 补货预判 / FS 回写）对称受益。
 - [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。依赖不在主 requirements 里，按需 `pip install -r requirements-labels.txt`。UTF-8 控制台兜底免去 Windows cp1252 崩溃。打印须选「实际大小 / 100%」，否则模块宽被缩放。早期 Code128 三变体版 `make_bin_labels.py` **已删除**（2026-08-15）：其 QR 变体是本脚本的劣化版（模块 0.375mm、位置不吸附点阵、无版本锁定/下限校验、文字按 7 位硬切），独有的 Code128 与 20×40 竖版现场未采用；将来若要，做成本脚本的开关复用同一套点阵吸附与校验，不再另起脚本。
 - [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。
+- [ ] **库存周报**（`odoo_api/`）：XML-RPC **只读**拉数替掉三份手工导出——`sale.report` 自定义窗口销量（默认近 4 周，不用周期写死 12 个月的 `sales_count`）× `stock.quant` 内部库位在手 × 安全库存两路并列（产品自定义字段 vs `orderpoint.product_min_qty`，后者已滤 `trigger=manual` 临时建议）→ `库存周报.xlsx/.csv` + `安全库存不一致.csv`；产品范围取并集（`sale_ok` ∪ 有销量 ∪ 有库存 ∪ 有规则），避免漏掉已下架但仍在卖的货；`discover.py` 环境探针先跑、`test_stock_report.py` 构造数据 21 项断言通过；`launchd` 周一 08:30。**代码就绪，待用真实凭据跑通并与手工导出逐列对拍**。

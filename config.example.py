@@ -11,3 +11,15 @@ VENDOR_ALIAS = {
     # "某大批发商": "P",
     # "某连锁药房": "B",
 }
+
+# --- Odoo XML-RPC 只读拉数（odoo_api/）---------------------------------
+# 也可以改用环境变量 ODOO_URL / ODOO_DB / ODOO_USER / ODOO_API_KEY，环境变量优先。
+# api_key 用 Odoo 的 **API Key**（用户头像 → 我的资料 → 账号安全 → 开发者 API 密钥），
+# 不要用登录密码：密钥能单独吊销、不受双因素影响、泄露了不等于账号被接管。
+# config.py 已 gitignore；**凭据不要贴进对话、不要写进任何 .py 以外的地方**。
+ODOO = {
+    "url": "http://erp.example.local:8888",
+    "db": "your_db_name",
+    "user": "script_bot@example.com",
+    "api_key": "",
+}
