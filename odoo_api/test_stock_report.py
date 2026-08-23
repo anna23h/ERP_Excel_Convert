@@ -8,6 +8,8 @@
   - phantom BoM 套件：quant 上是 0，在手必须取 qty_available，且标 套件=是
   - 违规数据：vo_sku 剥店铺前缀、只算缺货类、被罚过未配安全库存的要标出来
   - 峰值口径：同样销量下，尖峰型 SKU 的可撑峰值周数必须显著低于平稳型
+  - 补货优先级：近期零销 + 无货 → 待观察（**不降级**，零销可能正是缺货造成的）；
+    近期零销 + 有货 → 降级；新品豁免
   - 有库存无销量 / 有销量无库存
   - 安全库存只有 A / 只有 B / 两边都有且不等 / 两边相等
   - 自定义字段挂在 product.template 上（要经 product_tmpl_id 取值）
@@ -49,6 +51,11 @@ SALES_C_END = {1: 20, 2: 300, 7: 50, 4: 120, 5: 60}
 # 周分布（4 周窗口）。A-002 平稳、A-007 尖峰型：同样卖 200 件，一周就吃掉 170。
 WEEKLY = {1: [125, 125, 125, 125], 2: [75, 75, 75, 75],
           7: [10, 10, 10, 170], 4: [120, 0, 0, 0], 5: [15, 15, 15, 15]}
+# 近 2 周销量：A-004 归零(有货→该降级)、A-005 归零(无货→待观察)、A-008 归零但是新品
+RECENT = {1: 60, 2: 150, 7: 100}
+# 首次产生销量的日期。A-008 很新（不能因近期零销而降级）；其余都是老品。
+FIRST_SALE = {1: "2024-01-05", 2: "2024-02-01", 4: "2023-06-01",
+              5: "2023-07-01", 7: "2024-03-01", 8: "2026-08-01"}
 QUANTS = [  # (product_id, warehouse_id, warehouse_name, qty, reserved)
     (1, 1, "主仓", 200.0, 20.0), (1, 2, "分仓", 50.0, 0.0),
     (2, 1, "主仓", 10.0, 0.0),
@@ -100,6 +107,9 @@ class FakeOdoo:
                  "ttype": "integer", "store": True}]
 
     def read_group_all(self, model, domain, fields, groupby, lazy=False, **kw):
+        if model == "sale.report" and fields and fields[0].startswith("date:min"):
+            return [{"product_id": [p, PRODUCTS[p][1]], "date": d}
+                    for p, d in FIRST_SALE.items()]
         if model == "sale.report" and "date:week" in groupby:
             out = []
             for p, ws in WEEKLY.items():
@@ -109,6 +119,11 @@ class FakeOdoo:
                                     "date:week": f"W{20 + i} 2026", "product_uom_qty": q})
             return out
         if model == "sale.report":
+            # 近 N 周那次查询：domain 里带 date >= 的下界且不是整窗口 → 返回 RECENT
+            lows = [t[2] for t in domain if isinstance(t, tuple) and t[0] == "date" and t[1] == ">="]
+            if lows and str(lows[0]) >= "2026-08-09":
+                return [{"product_id": [p, PRODUCTS[p][1]], "product_uom_qty": q,
+                         "nbr": 1, "price_total": 1.0} for p, q in RECENT.items()]
             # 假 Odoo 只认「domain 里有没有 name 的 like 条件」，够用来验渠道分支
             filtered = any(isinstance(t, tuple) and t[0] == "name" for t in domain)
             rows = []
@@ -202,21 +217,35 @@ def main():
     check(r.loc["A-001", "套件"] == "", "非套件行不标")
     check(r.loc["A-001", "在手库存"] == r.loc["A-001", "实物库存"] == 250.0,
           "非套件的在手与实物一致")
-    check(r.loc["A-001", "预测库存"] == 250.0, "无在途/待出时预测库存 = 在手")
     check(r.loc["A-007", "峰值周销量"] == 170.0, "A-007 峰值周 170 件")
     check(r.loc["A-002", "峰值周销量"] == 75.0, "A-002 平稳，峰值 = 周均 75")
     check(r.loc["A-002", "峰值倍数"] == 1.0, "平稳型峰值倍数 = 1.0")
     check(r.loc["A-007", "有销周数"] == 4, "A-007 四周都有销量")
     check(r.loc["A-007", "可撑峰值周数"] == 0.2,
-          f"A-007 在手 30 / 峰值 170 = 0.2 周，实际 {r.loc['A-007','可撑峰值周数']}")
-    check(r.loc["A-007", "峰值缺口"] == 140.0, "A-007 峰值缺口 = 170 - 30")
+          f"A-007 **在手** 30 ÷ 峰值 170 = 0.2 周（分子是在手不是预测），"
+          f"实际 {r.loc['A-007','可撑峰值周数']}")
+    check(r.loc["A-007", "峰值缺口"] == 140.0, "A-007 峰值缺口 = 峰值 170 − **在手** 30")
+    # ---- 补货优先级 ----
+    check(r.loc["A-001", "补货优先级"] == "1-在卖", "近 2 周有销量 → 在卖")
+    check(r.loc["A-004", "补货优先级"] == "3-待观察",
+          "A-004 近期零销**且在手 0** → 待观察，不降级"
+          "（零销可能正是缺货造成的，这是最要紧的一条）")
+    check(r.loc["A-005", "补货优先级"] == "4-降级",
+          "A-005 近期零销但在手 5 → 有货卖不动，需求确实弱，降级")
+    check(r.loc["A-008", "补货优先级"] == "2-新品",
+          f"A-008 首销 2026-08-01（22 天）→ 新品豁免，不因零销降级，"
+          f"实际 {r.loc['A-008', '补货优先级']}")
+    check(r.loc["A-003", "补货优先级"] == "5-无销量", "A-003 窗口内完全没卖过")
+    check(r.loc["A-002", "近2周销量"] == 150, "近 2 周销量列取的是近期窗口，不是整窗口")
+    check(r.loc["A-001", "首销日"] == "2024-01-05", "首销日来自 sale.report 的 date:min")
     check(pd.isna(r.loc["A-001", "峰值缺口"]),
           "A-001 在手 250 > 峰值 125 → 峰值缺口为空")
     # 关键对比：A-007 按周均看能撑 0.6 周，按峰值看只有 0.2 周 —— 均值口径低估 3 倍
     check(round(r.loc["A-007", "可撑周数"] / r.loc["A-007", "可撑峰值周数"], 1) == 3.0,
           "尖峰型 SKU：均值口径给出的覆盖是峰值口径的 3 倍（正是它会漏判的原因）")
-    check(r.loc["A-002", "预测缺口"] == r.loc["A-002", "缺口"] == 40.0,
-          "无在途时预测缺口与缺口一致")
+    check("预测库存" not in df.columns and "预测缺口" not in df.columns,
+          "预测库存/预测缺口已移除——会掺进虚拟库存，一律以在手为分子")
+    check(r.loc["A-002", "在途入库(仅参考)"] == 0.0, "在途只作参考列保留")
     check(r.loc["A-004", "在售"] == "否", "已下架但有销量 → 进表且标 在售=否")
     check(r.loc["A-003", "销量"] == 0, "有库存无销量 → 销量 0")
     check(r.loc["A-001", "在手库存"] == 250, "多仓在手合计 200+50=250")
@@ -301,7 +330,15 @@ def main():
     check(v.loc["A-001", "缺货罚款EUR"] == 30.0, "A-001 缺货罚款 10+20=30，不含退货退款那 1")
     check(v.loc["A-001", "违规单数_全部"] == 3, "全部违规单数含非缺货类")
     check(v.loc["A-007", "缺货违规单数"] == 1 and v.loc["A-007", "缺货罚款EUR"] == 7.0,
-          "「晚于应发货时间」不计入缺货类（那 99 EUR 不进）")
+          "默认（窄口径）下「晚于应发货时间」不计入缺货类（那 99 EUR 不进）")
+
+    vw = read_violations(vf, mode="wide")
+    check(vw.loc["A-007", "缺货违规单数"] == 2,
+          "宽口径把「晚于应发货时间」也算进来（A-007 从 1 条变 2 条）")
+    check(vw.loc["A-007", "缺货罚款EUR"] == 106.0, "宽口径罚款 7 + 99 = 106")
+    check(vw.loc["A-007", "明确缺货罚款EUR"] == 7.0,
+          "明确缺货那列仍只算窄口径的 7，可分辨性不丢")
+    check(v.loc["A-007", "缺货罚款EUR"] == 7.0, "窄口径不受影响")
 
     v2 = read_violations(vf, since="2026-06-01")
     check("A-005" not in v2.index, "--violation-since 生效，2026-01 那条被排除")
