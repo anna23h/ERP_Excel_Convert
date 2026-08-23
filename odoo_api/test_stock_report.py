@@ -104,6 +104,8 @@ class FakeOdoo:
             rows.append({"product_id": False, "product_uom_qty": 9, "nbr": 1,
                          "price_total": 1.0})       # 产品已删的历史行
             return rows
+        if model == "stock.move":
+            return []      # 构造数据不测在途，只保证不崩（真实链路已在 ERP 上验过）
         if model == "stock.quant":
             by_wh = "warehouse_id" in groupby
             agg = {}
@@ -131,6 +133,10 @@ class FakeOdoo:
             rows = [(p, v, t) for p, v, t in ORDERPOINTS if not want or t == want[0]]
             return [{"product_id": [p, PRODUCTS[p][1]], "product_min_qty": v,
                      "warehouse_id": [1, "主仓"]} for p, v, t in rows]
+        if model == "stock.move":
+            return []          # 构造数据里不测在途，只保证不崩（真实链路已在 ERP 上验过）
+        if model == "res.partner":
+            return []
         if model == "mrp.bom":
             return [{"product_tmpl_id": [PRODUCTS[k][2], PRODUCTS[k][1]]} for k in KITS]
         if model == "ir.model.data":
@@ -179,6 +185,9 @@ def main():
     check(r.loc["A-001", "套件"] == "", "非套件行不标")
     check(r.loc["A-001", "在手库存"] == r.loc["A-001", "实物库存"] == 250.0,
           "非套件的在手与实物一致")
+    check(r.loc["A-001", "预测库存"] == 250.0, "无在途/待出时预测库存 = 在手")
+    check(r.loc["A-002", "预测缺口"] == r.loc["A-002", "缺口"] == 40.0,
+          "无在途时预测缺口与缺口一致")
     check(r.loc["A-004", "在售"] == "否", "已下架但有销量 → 进表且标 在售=否")
     check(r.loc["A-003", "销量"] == 0, "有库存无销量 → 销量 0")
     check(r.loc["A-001", "在手库存"] == 250, "多仓在手合计 200+50=250")

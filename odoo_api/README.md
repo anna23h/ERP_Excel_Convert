@@ -47,6 +47,7 @@ python3 odoo_api/stock_report.py --csv-only                 # 定时任务用
 | `--states` | `sale,done` | 计入销量的订单状态，逗号分隔 |
 | `--ref-contains` | 空（全渠道） | 只算 Order Reference 含这些子串的订单，逗号分隔、**OR** 语义。`VO,GW` = 只看天猫 C 端 |
 | `--ref-excludes` | 空 | 排除 Order Reference 含这些子串的订单，逗号分隔、**AND** 语义 |
+| `--exclude-vendor` | 读 `config.py` 的 `ODOO_EXCLUDE_VENDORS` | 算在途/预测时排除这些供应商的采购单（名字子串）。剔除不会真收货的技术性采购单（见坑 3） |
 | `--by-warehouse` | 关 | 在手库存按仓拆成 `在手·<仓名>` 多列 |
 | `--orderpoint-agg` | `sum` | 同一产品多条补货规则怎么合（`sum` / `max`） |
 | `--company-id` | — | 多公司环境锁定公司 |
@@ -62,6 +63,11 @@ python3 odoo_api/stock_report.py --csv-only                 # 定时任务用
 | `库存周报.xlsx` / `.csv` | 全 SKU 按销量降序：排名 / 累计占比(ABC) / 销量 / 周均销量 / 下单次数 / 销售额 / 在手 / 已预留 / 可用 / **两路安全库存并列** / 取用值 / 缺口 / 可撑周数 / 在售 / 产品ID |
 | `安全库存不一致.csv` | 两路**真正冲突**的行：都有值但不等 / 只有补货规则。「只有产品字段」不进这张表——B 侧没在用时那是常态，只在终端报个计数 |
 | `安全库存待配清单.csv` | **有销量但两路都没配安全库存**的 SKU，按销量降序。三路数据合并后才看得见的东西 |
+
+周报的库存相关列：`在手库存`（`qty_available`）/ `实物库存`（quant 原值）/ `已预留` / `可用库存`
+/ `在途入库` / `待出库` / `预测库存`（= 在手 + 在途 − 待出）/ `缺口`（按在手）/ `预测缺口`（按预测）。
+**`缺口` 与 `预测缺口` 并存不是冗余**——「现在缺不缺」和「按当前进出算下来会不会缺」是两个问题。
+2026-08-23 实测：按在手 59 个 SKU 低于安全库存，按预测是 75 个。
 
 ### 3. `test_stock_report.py` —— 不连 ERP 的构造数据测试
 
@@ -134,29 +140,40 @@ launchctl unload ~/Library/LaunchAgents/com.ihtct.stockreport.plist
    `实物库存` 列保留 quant 原值，与在手对照即可认出套件。
    ⚠ **在手列不可跨行求和**：套件与其基础款的在手是同一批实物。
    非套件产品两种口径**完全等价**（实测 314 个变化全是套件，非套件零变化）。
-3. **产品范围取并集不取 `sale_ok` 单条**。`sale_ok=True ∪ 有销量 ∪ 有库存 ∪ 有补货规则`。
+3. **在途/预测必须先剔掉不会真收货的技术性采购单**。并非所有确认状态的采购单都会真的收货——某些系统集成会用 PO 建技术性映射，这类单永远不到货，却在 Odoo 里是确认状态、会生成未完成入库 move。
+   2026-08-23 实测：全局 **7460 条未完成入库里 7350 条（98.5%）来自单一供应商的这类单**，
+   真实在途只有 105 条 / 88 个产品 / 8,318 件；不排除的话 6482 个产品都显示有在途。
+   **不排除就别加这两列，加了还不如不加。** 哪些供应商属于此类是**业务知识**，
+   配在 `config.py` 的 `ODOO_EXCLUDE_VENDORS`，不写死在代码里。
+   识别要**两条路都堵**：链得到 PO 行的看 `purchase_line_id.order_id.partner_id`，
+   链不到的（实测有 5 条 `purchase_line_id` 为空、只有 `origin` 还留着单号，都是几年前的旧单）
+   拿 `origin` 对被排除 PO 的单号表。只用其中一条会漏。
+   排除 domain 必须带 `purchase_line_id = False` 这一支，否则调拨/退货等非采购 move 会被一并滤掉。
+   ⚠ 这类单里若有**已完成**的入库，那部分已经真的进了在手库存，本层不修正
+   （要改得动 quant，属 ERP 数据订正）——终端会报出条数提醒。
+4. **产品范围取并集不取 `sale_ok` 单条**。`sale_ok=True ∪ 有销量 ∪ 有库存 ∪ 有补货规则`。
    只按 `sale_ok` 会把「已下架但仍有销量/仍有库存」的货静默漏掉，这类恰恰最该看见。
    报表里用 `在售` 列标出来。
-4. **`stock.warehouse.orderpoint` 混着临时建议**。Replenishment 视图会现场生成
+5. **`stock.warehouse.orderpoint` 混着临时建议**。Replenishment 视图会现场生成
    `trigger='manual'` 的记录，它们不是人工配置的安全库存，必须滤掉，只取 `trigger='auto'`。
    **`trigger` 字段在 Odoo 14 就有了**（2026-08-23 实测：5 条 orderpoint 里 4 条是 manual，
    不滤的话 B 列 80% 是垃圾）。更早的版本没有该字段，代码按 `fields_get` 判断它在不在、
    自动走对应分支，**不要改成按版本号硬编码**；探针第 4 节会把两类各有多少条数出来。
-5. **自定义字段技术名不许猜**。`Safety Stock` 的技术名（`x_studio_*` 之类）按**界面标签**
+6. **自定义字段技术名不许猜**。`Safety Stock` 的技术名（`x_studio_*` 之类）按**界面标签**
    经 `ir.model.fields` 反查。字段可能挂在 `product.template` 上，此时要经 `product_tmpl_id`
    取值而不是用 `product.product` 的 id。
-6. **分页**。`search_read` 必须 limit/offset 循环，并且 `order='id'`——翻页期间有人改数据时，
+7. **分页**。`search_read` 必须 limit/offset 循环，并且 `order='id'`——翻页期间有人改数据时，
    非稳定排序会漏行或重行。`read_group` 服务端一次返回全部分组，不分页；但按多字段分组
    必须 `lazy=False`。
-7. **`sale.report` 字段跨版本改名**。数量/行数/金额都按候选名列表认（`fields_get` 查有没有），
+8. **`sale.report` 字段跨版本改名**。数量/行数/金额都按候选名列表认（`fields_get` 查有没有），
    沿用 `packing_list` 德文列名那次的「别名元组」做法。
-8. **多币种不做二次换算**。`sale.report.price_total` 已是 Odoo 按下单时汇率折算到公司本位币
+9. **多币种不做二次换算**。`sale.report.price_total` 已是 Odoo 按下单时汇率折算到公司本位币
    的值。排名按**数量**不按金额，币种对结论没有影响；金额列只作参考。
-9. **多公司**。不传 `allowed_company_ids` 时读到的是「当前用户默认公司」，换台机器/换账号
+10. **多公司**。不传 `allowed_company_ids` 时读到的是「当前用户默认公司」，换台机器/换账号
    跑结果会变。探针会数出可见公司数并在 >1 时告警。
-10. **计量单位**。`sale.report` 的数量是 Odoo 折算到产品参考 UoM 后的值，可跨订单行相加。
+11. **计量单位**。`sale.report` 的数量是 Odoo 折算到产品参考 UoM 后的值，可跨订单行相加。
    若将来有产品按箱卖按瓶存，这里要重新核。
-11. **超时**。`xmlrpc.client.ServerProxy` 默认**没有超时**，Odoo 一卡 launchd 任务就永远挂着。
+12. **超时**。`xmlrpc.client.ServerProxy` 默认**没有超时**，Odoo 一卡 launchd 任务就永远挂着。
     客户端自带了带超时的 Transport，默认 180 秒，网络类错误退避重试 2 次。
 
 ## 渠道口径：**必须显式指定，否则排名被 B 端主导**

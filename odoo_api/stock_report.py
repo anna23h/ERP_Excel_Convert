@@ -4,11 +4,13 @@
     python3 odoo_api/stock_report.py --weeks 12         # 换窗口
     python3 odoo_api/stock_report.py --since 2026-06-01 --until 2026-08-23
     python3 odoo_api/stock_report.py --ref-contains VO,GW   # 只看天猫 C 端，剔除 B 端整箱单
+    python3 odoo_api/stock_report.py --exclude-vendor "供应商名"  # 覆盖 config 的排除表
     python3 odoo_api/stock_report.py --by-warehouse     # 在手库存按仓拆列
     python3 odoo_api/stock_report.py --csv-only         # 只出 CSV（cron 用）
 
 产出（默认 output/YYYYMMDD/）：
     库存周报.xlsx / .csv        全 SKU，按销量降序，含 ABC 累计占比与两路安全库存对比
+                                另有 在途入库/待出库/预测库存（已剔除测试供应商的假在途）
     安全库存不一致.csv          两路真正冲突的行（都有但不等 / 只有补货规则）
     安全库存待配清单.csv        有销量但没配任何安全库存的 SKU，按销量降序
 
@@ -137,6 +139,68 @@ def pull_qty_available(od, pids, label="在手(qty_available)"):
     return out
 
 
+def resolve_excluded_vendors(od, names):
+    """供应商名子串 → partner id 列表。找不到就告警，不静默当成"没有要排除的"。"""
+    if not names:
+        return []
+    dom = ["|"] * (len(names) - 1) + [("name", "ilike", n) for n in names]
+    rows = od.search_read_all("res.partner", dom, ["name"])
+    if not rows:
+        say(f"  ⚠ 按名字找不到要排除的供应商 {names}，未做任何排除。")
+        return []
+    say("  排除供应商: " + "、".join(f"{r['name']}(id={r['id']})" for r in rows))
+    return [r["id"] for r in rows]
+
+
+def pull_in_transit(od, exclude_ids):
+    """未完成的进/出库 move → ({pid: 在途入库}, {pid: 待出库})。
+
+    ⚠ 必须能排除**不会真的收货的技术性采购单**（某些系统集成会用确认状态的 PO 建映射），
+    否则这两列是垃圾：2026-08-23 实测全局 7460 条未完成入库里 **7350 条（98.5%）**
+    来自单一供应商的这类单，真实在途只剩 105 条。不排除的话 6482 个产品都显示有在途，
+    实际只有 88 个有。哪些供应商属于此类是**业务知识**，配在 config.py，不写死在代码里。
+
+    用 `purchase_line_id.order_id.partner_id` 精确切分，**不要用 `origin` 字符串匹配**
+    （PO 号可能撞）。排除条件必须带 `purchase_line_id = False` 这一支，
+    否则调拨/退货等非采购来源的 move 会被一并滤掉。
+    """
+    pending = [("state", "not in", ["done", "cancel", "draft"])]
+    inc = pending + [("location_id.usage", "in", ["supplier", "transit"]),
+                     ("location_dest_id.usage", "=", "internal")]
+    out = pending + [("location_id.usage", "=", "internal"),
+                     ("location_dest_id.usage", "in", ["customer", "transit"])]
+    skip = []
+    if exclude_ids:
+        n_all = od.count("stock.move", inc)
+        # 光靠 purchase_line_id 会漏：实测有 move 的 purchase_line_id 是空的、
+        # 只有 origin 还写着被排除 PO 的单号（2026-08-23 实测 5 条 / 5 个产品 / 2100 件，
+        # 都是几年前的旧单，链大概是历史迁移中断的）。所以两条路都要堵：
+        #   链得到 PO 行 → 看它的供应商；链不到 → 拿 origin 对测试 PO 的单号表。
+        po_names = [o["name"] for o in od.search_read_all(
+            "purchase.order", [("partner_id", "in", exclude_ids)], ["name"])]
+        skip = ["|",
+                "&", ("purchase_line_id", "!=", False),
+                ("purchase_line_id.order_id.partner_id", "not in", exclude_ids),
+                "&", ("purchase_line_id", "=", False),
+                "|", ("origin", "=", False), ("origin", "not in", po_names)]
+        n_keep = od.count("stock.move", inc + skip)
+        say(f"  在途: 未完成入库 {n_all} 条，排除测试供应商（{len(po_names)} 张 PO）后剩 "
+            f"{n_keep} 条（滤掉 {n_all - n_keep} 条）")
+        n_done = od.count("stock.move", [("state", "=", "done"),
+                                         ("location_dest_id.usage", "=", "internal"),
+                                         ("purchase_line_id.order_id.partner_id", "in", exclude_ids)])
+        if n_done:
+            say(f"  ⚠ 被排除的供应商还有 {n_done} 条**已完成**入库——那部分已经真的进了在手库存，"
+                "本层不做修正（要改得动 quant，属 ERP 数据订正）。")
+
+    def agg(domain):
+        return {m2o_id(r["product_id"]): r["product_uom_qty"] or 0
+                for r in od.read_group_all("stock.move", domain,
+                                           ["product_uom_qty:sum"], ["product_id"])
+                if m2o_id(r.get("product_id")) is not None}
+    return agg(inc + skip), agg(out)
+
+
 def pull_stock(od, by_warehouse):
     """stock.quant → {product_id: dict(在手, 已预留[, 各仓])}。
 
@@ -247,7 +311,7 @@ def pull_external_ids(od, pids):
 # 合并
 # --------------------------------------------------------------------------
 def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
-          contains=None, excludes=None):
+          contains=None, excludes=None, exclude_vendors=None):
     rd = ref_domain(contains, excludes)
     if rd:
         sales, sfields = pull_sales(od, since, until, states, rd,
@@ -260,12 +324,15 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             "排名会被前者主导——用 --ref-contains 指定渠道。")
     stock, wh_names = pull_stock(od, by_warehouse)
     kits = pull_kits(od)
+    vend_ids = resolve_excluded_vendors(od, exclude_vendors)
+    incoming, outgoing = pull_in_transit(od, vend_ids)
     safety_a, safety_src, safety_key = pull_safety_field(od)
     safety_b = pull_orderpoints(od, op_agg)
 
     sellable = set(od.execute("product.product", "search", [[("sale_ok", "=", True)]]))
     say(f"  产品: sale_ok=True {len(sellable)} 个")
-    pids = sellable | set(sales) | set(allsales) | set(stock) | set(safety_b)
+    pids = (sellable | set(sales) | set(allsales) | set(stock) | set(safety_b)
+            | set(incoming) | set(outgoing))
     extra = pids - sellable
     if extra:
         say(f"  ⚠ 另有 {len(extra)} 个产品不在 sale_ok 清单里但有销量/库存/补货规则，"
@@ -290,6 +357,7 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         onhand = onhands.get(pid, st.get("在手库存", 0.0))
         qty = s.get("销量", 0) or 0
         qty_all = (allsales.get(pid, {}).get("销量", 0) or 0) if rd else qty
+        fc = onhand + incoming.get(pid, 0.0) - outgoing.get(pid, 0.0)   # 预测库存
         row = {
             "SKU": (p.get("default_code") or "").strip(),
             "商品名称": p.get("name") or "",
@@ -302,10 +370,16 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             "已预留": st.get("已预留", 0.0),
             "可用库存": onhand - st.get("已预留", 0.0),
             "实物库存": st.get("在手库存", 0.0),   # quant 原值，与在手对照看套件
+            "在途入库": incoming.get(pid, 0.0),
+            "待出库": outgoing.get(pid, 0.0),
+            "预测库存": fc,
             "安全库存_产品字段": a,
             "安全库存_补货规则": b,
             "安全库存_取用": main,
             "缺口": (main - onhand) if (main not in (None, False) and main > onhand) else None,
+            # 预测缺口按 预测库存 算：在手够但已被订单吃掉、或有在途在路上，结论会不一样。
+            # 两列并存不是冗余——「现在缺不缺」和「按当前进出算下来会不会缺」是两个问题。
+            "预测缺口": (main - fc) if (main not in (None, False) and main > fc) else None,
             # 可撑周数按**全渠道**销量算：库存是被所有渠道一起消耗的，
             # 只用筛选后那一侧算会高估覆盖（B 端一张整箱单就能把货搬空）。
             "可撑周数": round(onhand / (qty_all / weeks), 1) if qty_all and weeks else None,
@@ -385,6 +459,10 @@ def main():
                          "例：--ref-contains VO,GW 只看天猫 C 端，剔除 S0 开头的 B 端单")
     ap.add_argument("--ref-excludes", default="",
                     help="排除 Order Reference 含这些子串的订单，逗号分隔、AND 语义")
+    ap.add_argument("--exclude-vendor", default=None,
+                    help="算在途/预测时排除这些供应商的采购单（名字子串，逗号分隔）。"
+                         "默认读 config.py 的 ODOO_EXCLUDE_VENDORS。用于剔除"
+                         "「建虚拟库存映射外部平台」那类永不收货的测试单")
     ap.add_argument("--by-warehouse", action="store_true", help="在手库存按仓拆成多列")
     ap.add_argument("--orderpoint-agg", choices=["sum", "max"], default="sum",
                     help="同一产品多条补货规则的合并方式（默认 sum）")
@@ -405,6 +483,11 @@ def main():
         weeks = a.weeks
     states = [s.strip() for s in a.states.split(",") if s.strip()]
     contains = [x.strip() for x in a.ref_contains.split(",") if x.strip()]
+    if a.exclude_vendor is None:
+        from common import localconf
+        exclude_vendors = list(localconf.get("ODOO_EXCLUDE_VENDORS", []) or [])
+    else:
+        exclude_vendors = [x.strip() for x in a.exclude_vendor.split(",") if x.strip()]
     excludes = [x.strip() for x in a.ref_excludes.split(",") if x.strip()]
     ctx = {"allowed_company_ids": [a.company_id]} if a.company_id else {}
 
@@ -416,7 +499,7 @@ def main():
                 + (f"、不含 {excludes}" if excludes else ""))
         df, safety_src = build(od, since, until, weeks, states,
                                a.by_warehouse, a.orderpoint_agg, a.external_id,
-                               contains, excludes)
+                               contains, excludes, exclude_vendors)
     except OdooError as e:
         raise SystemExit(f"✗ {e}")
 
@@ -453,7 +536,8 @@ def main():
             f"（排名与 ABC 按筛选后算；可撑周数按合计算）")
     sold = int((df["销量"] > 0).sum())
     top50 = int(df.head(50)["安全库存_取用"].notna().sum())
-    say(f"低于安全库存: {int(df['缺口'].notna().sum())} 个 SKU"
+    say(f"低于安全库存: 按在手 {int(df['缺口'].notna().sum())} 个 SKU / "
+        f"按预测 {int(df['预测缺口'].notna().sum())} 个 SKU"
         f"  |  有销量 {sold} 个，其中销量前 50 名配了安全库存的只有 {top50} 个")
     say(f"RPC 调用 {od.call_count} 次")
 
