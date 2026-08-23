@@ -5,6 +5,7 @@
 覆盖的边角（每条都是真会发生的）：
   - 有销量但 sale_ok=False（已下架仍在卖）→ 必须进报表并标 在售=否
   - 有销量但两路安全库存都没配 → 必须且只有它进「待配清单」
+  - phantom BoM 套件：quant 上是 0，在手必须取 qty_available，且标 套件=是
   - 有库存无销量 / 有销量无库存
   - 安全库存只有 A / 只有 B / 两边都有且不等 / 两边相等
   - 自定义字段挂在 product.template 上（要经 product_tmpl_id 取值）
@@ -29,7 +30,11 @@ PRODUCTS = {
     5: ("A-005", "两路安全库存不等", 105, True, True),
     6: ("A-006", "只配了补货规则", 106, True, True),
     7: ("A-007", "有销量但两路都没配", 107, True, True),
+    8: ("A-008", "组合装套件(2x A-001)", 108, True, True),
 }
+# phantom BoM 套件：quant 上恒为 0，qty_available 由组件推算（A-001 在手 250 → 250/2=125）
+KITS = {8}
+QTY_AVAILABLE = {1: 250.0, 2: 10.0, 3: 77.0, 4: 0.0, 5: 5.0, 6: 0.0, 7: 30.0, 8: 125.0}
 SALES = {1: (500, 480, 12000.0), 2: (300, 290, 7000.0), 7: (200, 195, 5000.0),
          4: (120, 118, 2400.0), 5: (60, 60, 1500.0)}
 # 渠道拆分：{product_id: C 端(VO/GW)件数}，其余算 B 端。
@@ -54,6 +59,7 @@ ORDERPOINTS = [  # (product_id, min_qty, trigger)
 
 class FakeOdoo:
     call_count = 0
+    verbose = False
     server_version = "17.0-fake"
 
     def fields_of(self, model):
@@ -74,6 +80,9 @@ class FakeOdoo:
         if required:
             raise AssertionError(f"{model} 缺字段 {cands}")
         return None
+
+    def execute_read_qty(self, ids):
+        return [{"id": i, "qty_available": QTY_AVAILABLE.get(i, 0.0)} for i in ids]
 
     def field_by_label(self, models, label):
         if label != "Safety Stock":
@@ -122,6 +131,8 @@ class FakeOdoo:
             rows = [(p, v, t) for p, v, t in ORDERPOINTS if not want or t == want[0]]
             return [{"product_id": [p, PRODUCTS[p][1]], "product_min_qty": v,
                      "warehouse_id": [1, "主仓"]} for p, v, t in rows]
+        if model == "mrp.bom":
+            return [{"product_tmpl_id": [PRODUCTS[k][2], PRODUCTS[k][1]]} for k in KITS]
         if model == "ir.model.data":
             return [{"module": "__export__", "name": f"product_product_{p}", "res_id": p}
                     for p in PRODUCTS]
@@ -129,8 +140,14 @@ class FakeOdoo:
 
     def execute(self, model, method, args=None, kwargs=None, retries=2):
         if (model, method) == ("product.product", "search"):
+            dom = args[0]
+            tmpls = [t[2] for t in dom if isinstance(t, tuple) and t[0] == "product_tmpl_id"]
+            if tmpls:      # pull_kits 按模板反查套件的 product id
+                return [p for p, v in PRODUCTS.items() if v[2] in tmpls[0]]
             return [p for p, v in PRODUCTS.items() if v[4]]
         if (model, method) == ("product.product", "read"):
+            if args[1] == ["qty_available"]:
+                return self.execute_read_qty(args[0])
             return [{"id": p, "default_code": PRODUCTS[p][0], "name": PRODUCTS[p][1],
                      "product_tmpl_id": [PRODUCTS[p][2], PRODUCTS[p][1]],
                      "active": PRODUCTS[p][3], "sale_ok": PRODUCTS[p][4],
@@ -154,7 +171,14 @@ def main():
     r = df.set_index("SKU")
     check(src == "product.template.x_studio_safety_stock", f"安全库存字段来源识别: {src}")
     check(list(df["SKU"])[:2] == ["A-001", "A-002"], "按销量降序")
-    check(len(df) == 7, f"7 个产品全部进表（并集），实际 {len(df)}")
+    check(len(df) == 8, f"8 个产品全部进表（并集），实际 {len(df)}")
+    check(r.loc["A-008", "在手库存"] == 125.0,
+          f"套件在手取 qty_available=125（quant 上是 0），实际 {r.loc['A-008', '在手库存']}")
+    check(r.loc["A-008", "实物库存"] == 0.0, "套件的实物库存(quant 原值)是 0")
+    check(r.loc["A-008", "套件"] == "是", "套件行被标出来")
+    check(r.loc["A-001", "套件"] == "", "非套件行不标")
+    check(r.loc["A-001", "在手库存"] == r.loc["A-001", "实物库存"] == 250.0,
+          "非套件的在手与实物一致")
     check(r.loc["A-004", "在售"] == "否", "已下架但有销量 → 进表且标 在售=否")
     check(r.loc["A-003", "销量"] == 0, "有库存无销量 → 销量 0")
     check(r.loc["A-001", "在手库存"] == 250, "多仓在手合计 200+50=250")

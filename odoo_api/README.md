@@ -125,29 +125,38 @@ launchctl unload ~/Library/LaunchAgents/com.ihtct.stockreport.plist
 1. **产品筛选口径**。必须 `sale_ok = True`（导出界面的 `can be sold`，实测 10266 行）。
    `VO active = true` 只有 4575 行，会漏 9 个 SKU，其中 `Pollival_13748591` 是个普通 SKU
    ——这条件不是「更宽」，是实打实漏货。2026-08-01/02 踩过两次，详见 `sales_insight/README.md`。
-2. **产品范围取并集不取 `sale_ok` 单条**。`sale_ok=True ∪ 有销量 ∪ 有库存 ∪ 有补货规则`。
+2. **在手库存必须用 `qty_available`，不能用 `stock.quant` 汇总**。组合装（`x2` / `_GW`）
+   是 **phantom BoM 套件**，没有自己的实物库存：quant 上恒为 0，只有 `qty_available`
+   会从组件推算（基础款 106 → `x2` 显示 53）。2026-08-23 实测 **560 个套件里 557 个
+   quant 为 0**，改口径后「低于安全库存」从 97 个降到 **59 个——38 个是套件造成的假警报**，
+   而且假警报恰好落在运营配了安全库存的重点 SKU 上。
+   `已预留` 与按仓拆列仍取 quant（`qty_available` 给不了这两个），故套件行这两列是 0；
+   `实物库存` 列保留 quant 原值，与在手对照即可认出套件。
+   ⚠ **在手列不可跨行求和**：套件与其基础款的在手是同一批实物。
+   非套件产品两种口径**完全等价**（实测 314 个变化全是套件，非套件零变化）。
+3. **产品范围取并集不取 `sale_ok` 单条**。`sale_ok=True ∪ 有销量 ∪ 有库存 ∪ 有补货规则`。
    只按 `sale_ok` 会把「已下架但仍有销量/仍有库存」的货静默漏掉，这类恰恰最该看见。
    报表里用 `在售` 列标出来。
-3. **`stock.warehouse.orderpoint` 混着临时建议**。Replenishment 视图会现场生成
+4. **`stock.warehouse.orderpoint` 混着临时建议**。Replenishment 视图会现场生成
    `trigger='manual'` 的记录，它们不是人工配置的安全库存，必须滤掉，只取 `trigger='auto'`。
    **`trigger` 字段在 Odoo 14 就有了**（2026-08-23 实测：5 条 orderpoint 里 4 条是 manual，
    不滤的话 B 列 80% 是垃圾）。更早的版本没有该字段，代码按 `fields_get` 判断它在不在、
    自动走对应分支，**不要改成按版本号硬编码**；探针第 4 节会把两类各有多少条数出来。
-4. **自定义字段技术名不许猜**。`Safety Stock` 的技术名（`x_studio_*` 之类）按**界面标签**
+5. **自定义字段技术名不许猜**。`Safety Stock` 的技术名（`x_studio_*` 之类）按**界面标签**
    经 `ir.model.fields` 反查。字段可能挂在 `product.template` 上，此时要经 `product_tmpl_id`
    取值而不是用 `product.product` 的 id。
-5. **分页**。`search_read` 必须 limit/offset 循环，并且 `order='id'`——翻页期间有人改数据时，
+6. **分页**。`search_read` 必须 limit/offset 循环，并且 `order='id'`——翻页期间有人改数据时，
    非稳定排序会漏行或重行。`read_group` 服务端一次返回全部分组，不分页；但按多字段分组
    必须 `lazy=False`。
-6. **`sale.report` 字段跨版本改名**。数量/行数/金额都按候选名列表认（`fields_get` 查有没有），
+7. **`sale.report` 字段跨版本改名**。数量/行数/金额都按候选名列表认（`fields_get` 查有没有），
    沿用 `packing_list` 德文列名那次的「别名元组」做法。
-7. **多币种不做二次换算**。`sale.report.price_total` 已是 Odoo 按下单时汇率折算到公司本位币
+8. **多币种不做二次换算**。`sale.report.price_total` 已是 Odoo 按下单时汇率折算到公司本位币
    的值。排名按**数量**不按金额，币种对结论没有影响；金额列只作参考。
-8. **多公司**。不传 `allowed_company_ids` 时读到的是「当前用户默认公司」，换台机器/换账号
+9. **多公司**。不传 `allowed_company_ids` 时读到的是「当前用户默认公司」，换台机器/换账号
    跑结果会变。探针会数出可见公司数并在 >1 时告警。
-9. **计量单位**。`sale.report` 的数量是 Odoo 折算到产品参考 UoM 后的值，可跨订单行相加。
+10. **计量单位**。`sale.report` 的数量是 Odoo 折算到产品参考 UoM 后的值，可跨订单行相加。
    若将来有产品按箱卖按瓶存，这里要重新核。
-10. **超时**。`xmlrpc.client.ServerProxy` 默认**没有超时**，Odoo 一卡 launchd 任务就永远挂着。
+11. **超时**。`xmlrpc.client.ServerProxy` 默认**没有超时**，Odoo 一卡 launchd 任务就永远挂着。
     客户端自带了带超时的 Transport，默认 180 秒，网络类错误退避重试 2 次。
 
 ## 渠道口径：**必须显式指定，否则排名被 B 端主导**
@@ -187,7 +196,7 @@ C 端口径算出来是 **45 个**。
 | `can be sold` | 10297 行 | 与 2026-08-02 的 10266 行一致（+31），口径没漂 |
 | `sale.report` | `product_uom_qty` / `nbr` / `price_total` 都在；**无 `currency_id`** | 单公司 EUR，金额无需换算 |
 | 近 4 周 state | done 5423 / sale 73 / draft 297 / cancel 183 | `state in ('sale','done')` 的过滤是必要的 |
-| quant vs `qty_available` | 抽样 8 个**全部一致** | 两种在手口径等价，用 `read_group` 一次查询 |
+| quant vs `qty_available` | 抽样 8 个全一致，**但抽样有偏**——按 quant 数量取前 8，套件永远抽不中 | 后来发现套件全错（见坑 2），探针的抽样已修：现在强制带上 quant=0 的套件 |
 
 产出：10305 行产品、859 个有成交、97 个低于安全库存、**727 个有销量但没配安全库存**、
 两路真冲突 1 条。全程 31 次 RPC。

@@ -166,8 +166,27 @@ def probe(od, weeks):
     grp = od.read_group_all("stock.quant", qd, ["quantity:sum"], ["product_id"])
     print(f"  涉及产品：{len(grp)} 个")
     grp = [g for g in grp if g.get("quantity")]
-    sample = sorted(grp, key=lambda g: -abs(g["quantity"]))[:8]
+    # ⚠ 抽样必须包含 quant=0 的产品。原来只取「quant 数量最大的前 8 个」——按构造
+    # 这 8 个必然都是有实物库存的基础款，**套件永远抽不中**，于是 8/8 全一致给了
+    # 虚假的信心，直到 2026-08-23 才发现 557 个套件的在手全被记成 0。
+    sample = sorted(grp, key=lambda g: -abs(g["quantity"]))[:5]
     ids = [m2o_id(g["product_id"]) for g in sample]
+    try:
+        kit_tmpl = sorted({m2o_id(b["product_tmpl_id"]) for b in od.search_read_all(
+            "mrp.bom", [("type", "=", "phantom")], ["product_tmpl_id"])})
+        kit_ids = od.execute("product.product", "search",
+                             [[("product_tmpl_id", "in", kit_tmpl), ("sale_ok", "=", True)]],
+                             {"limit": 200}) if kit_tmpl else []
+        kit_q = {m2o_id(x["product_id"]) for x in od.read_group_all(
+            "stock.quant", qd + [("product_id", "in", kit_ids)], ["quantity:sum"], ["product_id"])}
+        zero_kits = [i for i in kit_ids if i not in kit_q][:5]
+        print(f"  phantom BoM（套件）共 {len(kit_tmpl)} 个模板；"
+              f"抽 {len(zero_kits)} 个 quant 上没货的套件一并对拍")
+        ids += zero_kits
+        for g in [{"product_id": [i, ""], "quantity": 0.0} for i in zero_kits]:
+            sample.append(g)
+    except Exception as e:
+        print(f"  （读不到 mrp.bom，跳过套件抽样：{str(e).splitlines()[0][:60]}）")
     prods = {p["id"]: p for p in od.execute(
         "product.product", "read", [ids, ["default_code", "name", "qty_available"]])}
     bad = 0
@@ -179,8 +198,10 @@ def probe(od, weeks):
         bad += 0 if ok else 1
         sku = (p["default_code"] or "").strip() or f"id={pid}"
         print(f"  {sku[:28]:<28}{g['quantity']:>12g}{p['qty_available']:>15g}  {'✓' if ok else '✗'}")
-    print("  → 全 ✓ 则两种口径等价，正式报表用 read_group（一次查询，且能按仓拆）。")
-    print("    有 ✗ 通常是该产品有 transit/客户库位存货，或多公司下 qty_available 只算了默认公司。")
+    print("  → 套件行必然 ✗（quant 0 / qty_available 由组件推算），这是**预期**，"
+          "正式报表的在手用 qty_available。")
+    print("    非套件行若出现 ✗，才是真问题：通常是 transit/客户库位存货，"
+          "或多公司下 qty_available 只算了默认公司。")
 
     return return_safety
 

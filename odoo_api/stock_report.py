@@ -20,8 +20,12 @@
     而安全库存是给天猫 C 端维护的——两个口径混用会把人引向错误结论。
     `--ref-contains VO,GW` 切到 C 端口径，此时并列产出 `销量_其它渠道` / `销量_全渠道` 两列。
     **`可撑周数` 一律按全渠道算**：库存被所有渠道一起消耗，只用一侧算会高估覆盖。
-  - 在手库存取 stock.quant 在 usage='internal' 库位上的汇总，等价于产品的
-    Quantity On Hand（discover.py 第 7 节对拍过）。
+  - 在手库存取 `product.product.qty_available`——与手工导出的 `Quantity On Hand` 同源。
+    **不能用 stock.quant 汇总**：组合装是 phantom BoM 套件，没有自己的实物库存，
+    quant 上恒为 0，只有 qty_available 会从组件推算（2026-08-23 实测 557 个套件因此被记成 0）。
+    `已预留` 与按仓拆列仍取 quant（qty_available 给不了），故套件行这两列是 0。
+    `实物库存` 列保留 quant 原值，与在手对照即可看出哪些是套件推算来的。
+    ⚠ **在手列不可跨行求和**：套件与其基础款的在手是同一批实物。
   - 安全库存两路并列：A=产品主数据上的自定义字段（sales_insight 回写的那个，
     补货预判清单读的也是它），B=stock.warehouse.orderpoint.product_min_qty。
     缺口按 A 算，A 空则退回 B。
@@ -94,8 +98,51 @@ def pull_sales(od, since, until, states, extra=None, label="销量"):
     return out, {"qty": qty_f, "nbr": nbr_f, "amt": amt_f}
 
 
+def pull_kits(od):
+    """phantom BoM（虚拟套件）的产品 id 集合。
+
+    套件（`x2` = 2× 基础款、`_GW` = 1× 基础款）**没有自己的实物库存**：
+    `stock.quant` 上是 0，只有 `qty_available` 会从组件推算。不认出它们，
+    557 个组合装 SKU 的在手会全被记成 0（2026-08-23 实测）。
+    """
+    try:
+        boms = od.search_read_all("mrp.bom", [("type", "=", "phantom")], ["product_tmpl_id"])
+    except OdooError as e:
+        # 没装 mrp 模块（或无读权限）就没有套件这回事，退回纯 quant 口径并说清楚
+        say(f"  ⚠ 读不到 mrp.bom（{str(e).splitlines()[0][:60]}），"
+            "无法识别套件；若存在组合装 SKU，其在手会偏低。")
+        return set()
+    tmpls = sorted({m2o_id(b["product_tmpl_id"]) for b in boms if b.get("product_tmpl_id")})
+    if not tmpls:
+        return set()
+    ids = od.execute("product.product", "search", [[("product_tmpl_id", "in", tmpls)]])
+    say(f"  套件: {len(boms)} 条 phantom BoM，涉及 {len(ids)} 个 product")
+    return set(ids)
+
+
+def pull_qty_available(od, pids, label="在手(qty_available)"):
+    """按 id 批量读 `qty_available`。
+
+    这是与手工导出 `Quantity On Hand` **同源**的口径，也是唯一对套件正确的口径。
+    是计算字段，比 quant 的 read_group 贵，但实测 400 个 0.9s、全量约 25s，可接受。
+    """
+    out, ids = {}, sorted(pids)
+    for i in range(0, len(ids), 1000):
+        for r in od.execute("product.product", "read", [ids[i:i + 1000], ["qty_available"]]):
+            out[r["id"]] = r["qty_available"] or 0.0
+        if od.verbose:
+            print(f"  {label}: {len(out)} 个…", end="\r", flush=True)
+    if od.verbose:
+        print(f"  {label}: {len(out)} 个  ")
+    return out
+
+
 def pull_stock(od, by_warehouse):
-    """stock.quant → {product_id: dict(在手, 已预留[, 各仓])}。"""
+    """stock.quant → {product_id: dict(在手, 已预留[, 各仓])}。
+
+    ⚠ 只对有实物库存的产品成立。套件（phantom BoM）在这里一律是 0，
+    真实可售数量要用 `pull_qty_available`——见 pull_kits 的注释。
+    """
     domain = [("location_id.usage", "=", "internal")]
     have = od.fields_of("stock.quant")
     res_f = "reserved_quantity" if "reserved_quantity" in have else None
@@ -212,6 +259,7 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         say("  ⚠ 未加渠道过滤：销量含所有渠道。若 B 端整箱单与 C 端零售混在一起，"
             "排名会被前者主导——用 --ref-contains 指定渠道。")
     stock, wh_names = pull_stock(od, by_warehouse)
+    kits = pull_kits(od)
     safety_a, safety_src, safety_key = pull_safety_field(od)
     safety_b = pull_orderpoints(od, op_agg)
 
@@ -223,6 +271,8 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         say(f"  ⚠ 另有 {len(extra)} 个产品不在 sale_ok 清单里但有销量/库存/补货规则，"
             "一并纳入（列 `在售` 标 否）")
     prods = pull_products(od, pids)
+    # 在手改用 qty_available：与手工导出的 `Quantity On Hand` 同源，且是唯一对套件正确的口径
+    onhands = pull_qty_available(od, pids)
     xids = pull_external_ids(od, pids) if want_xid else {}
 
     rows = []
@@ -237,7 +287,7 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         a = safety_a.get(akey)
         b = safety_b.get(pid)
         main = a if a not in (None, False) else b
-        onhand = st.get("在手库存", 0.0)
+        onhand = onhands.get(pid, st.get("在手库存", 0.0))
         qty = s.get("销量", 0) or 0
         qty_all = (allsales.get(pid, {}).get("销量", 0) or 0) if rd else qty
         row = {
@@ -248,8 +298,10 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             "销售额": s.get("销售额"),
             "周均销量": round(qty / weeks, 2) if weeks else None,
             "在手库存": onhand,
+            # 已预留只有 stock.quant 有，套件上必然是 0（它没有自己的实物）
             "已预留": st.get("已预留", 0.0),
             "可用库存": onhand - st.get("已预留", 0.0),
+            "实物库存": st.get("在手库存", 0.0),   # quant 原值，与在手对照看套件
             "安全库存_产品字段": a,
             "安全库存_补货规则": b,
             "安全库存_取用": main,
@@ -257,6 +309,7 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             # 可撑周数按**全渠道**销量算：库存是被所有渠道一起消耗的，
             # 只用筛选后那一侧算会高估覆盖（B 端一张整箱单就能把货搬空）。
             "可撑周数": round(onhand / (qty_all / weeks), 1) if qty_all and weeks else None,
+            "套件": "是" if pid in kits else "",
             "在售": "是" if pid in sellable else "否",
             "已归档": "是" if not p.get("active") else "",
             "产品ID": pid,
