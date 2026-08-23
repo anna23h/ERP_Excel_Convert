@@ -6,6 +6,8 @@
   - 有销量但 sale_ok=False（已下架仍在卖）→ 必须进报表并标 在售=否
   - 有销量但两路安全库存都没配 → 必须且只有它进「待配清单」
   - phantom BoM 套件：quant 上是 0，在手必须取 qty_available，且标 套件=是
+  - 违规数据：vo_sku 剥店铺前缀、只算缺货类、被罚过未配安全库存的要标出来
+  - 峰值口径：同样销量下，尖峰型 SKU 的可撑峰值周数必须显著低于平稳型
   - 有库存无销量 / 有销量无库存
   - 安全库存只有 A / 只有 B / 两边都有且不等 / 两边相等
   - 自定义字段挂在 product.template 上（要经 product_tmpl_id 取值）
@@ -16,9 +18,13 @@
 import os
 import sys
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from odoo_api.stock_report import build, mismatch, unconfigured  # noqa: E402
+from odoo_api.stock_report import (build, mismatch, unconfigured,  # noqa: E402
+                                   violation_risk, read_violations,
+                                   STOCK_VIOLATION_TYPES, V_SHEET)
 
 # --- 假数据 ---------------------------------------------------------------
 # id: (sku, name, tmpl_id, active, sale_ok)
@@ -40,6 +46,9 @@ SALES = {1: (500, 480, 12000.0), 2: (300, 290, 7000.0), 7: (200, 195, 5000.0),
 # 渠道拆分：{product_id: C 端(VO/GW)件数}，其余算 B 端。
 # A-001 是典型的「全渠道看着很大、C 端其实很小」——B 端一张整箱单 480 件。
 SALES_C_END = {1: 20, 2: 300, 7: 50, 4: 120, 5: 60}
+# 周分布（4 周窗口）。A-002 平稳、A-007 尖峰型：同样卖 200 件，一周就吃掉 170。
+WEEKLY = {1: [125, 125, 125, 125], 2: [75, 75, 75, 75],
+          7: [10, 10, 10, 170], 4: [120, 0, 0, 0], 5: [15, 15, 15, 15]}
 QUANTS = [  # (product_id, warehouse_id, warehouse_name, qty, reserved)
     (1, 1, "主仓", 200.0, 20.0), (1, 2, "分仓", 50.0, 0.0),
     (2, 1, "主仓", 10.0, 0.0),
@@ -91,6 +100,14 @@ class FakeOdoo:
                  "ttype": "integer", "store": True}]
 
     def read_group_all(self, model, domain, fields, groupby, lazy=False, **kw):
+        if model == "sale.report" and "date:week" in groupby:
+            out = []
+            for p, ws in WEEKLY.items():
+                for i, q in enumerate(ws):
+                    if q:
+                        out.append({"product_id": [p, PRODUCTS[p][1]],
+                                    "date:week": f"W{20 + i} 2026", "product_uom_qty": q})
+            return out
         if model == "sale.report":
             # 假 Odoo 只认「domain 里有没有 name 的 like 条件」，够用来验渠道分支
             filtered = any(isinstance(t, tuple) and t[0] == "name" for t in domain)
@@ -186,6 +203,18 @@ def main():
     check(r.loc["A-001", "在手库存"] == r.loc["A-001", "实物库存"] == 250.0,
           "非套件的在手与实物一致")
     check(r.loc["A-001", "预测库存"] == 250.0, "无在途/待出时预测库存 = 在手")
+    check(r.loc["A-007", "峰值周销量"] == 170.0, "A-007 峰值周 170 件")
+    check(r.loc["A-002", "峰值周销量"] == 75.0, "A-002 平稳，峰值 = 周均 75")
+    check(r.loc["A-002", "峰值倍数"] == 1.0, "平稳型峰值倍数 = 1.0")
+    check(r.loc["A-007", "有销周数"] == 4, "A-007 四周都有销量")
+    check(r.loc["A-007", "可撑峰值周数"] == 0.2,
+          f"A-007 在手 30 / 峰值 170 = 0.2 周，实际 {r.loc['A-007','可撑峰值周数']}")
+    check(r.loc["A-007", "峰值缺口"] == 140.0, "A-007 峰值缺口 = 170 - 30")
+    check(pd.isna(r.loc["A-001", "峰值缺口"]),
+          "A-001 在手 250 > 峰值 125 → 峰值缺口为空")
+    # 关键对比：A-007 按周均看能撑 0.6 周，按峰值看只有 0.2 周 —— 均值口径低估 3 倍
+    check(round(r.loc["A-007", "可撑周数"] / r.loc["A-007", "可撑峰值周数"], 1) == 3.0,
+          "尖峰型 SKU：均值口径给出的覆盖是峰值口径的 3 倍（正是它会漏判的原因）")
     check(r.loc["A-002", "预测缺口"] == r.loc["A-002", "缺口"] == 40.0,
           "无在途时预测缺口与缺口一致")
     check(r.loc["A-004", "在售"] == "否", "已下架但有销量 → 进表且标 在售=否")
@@ -246,6 +275,50 @@ def main():
           "可撑周数仍按全渠道算 250/(500/4)=2.0，不因筛选而虚高")
     check(r2.loc["A-002", "可撑周数"] == 0.1, "A-002 全渠道=C端，可撑周数不变 10/(300/4)")
     check("销量_全渠道" not in df.columns, "不加筛选时不产出渠道拆分列")
+
+    # ---- 违规数据 ----
+    print("\n---- 违规数据接入 ----")
+    import tempfile, os as _os
+    vf = _os.path.join(tempfile.mkdtemp(), "viol.xlsx")
+    pd.DataFrame({
+        "vo_sku": ["D62-A-001", "D62-A-001", "F38-A-002", "D62-A-007",
+                   "D62-A-007", "D62-A-005", "D62-", "D62-A-001"],
+        "违规类型": [STOCK_VIOLATION_TYPES[0], STOCK_VIOLATION_TYPES[1],
+                     STOCK_VIOLATION_TYPES[2], STOCK_VIOLATION_TYPES[3],
+                     "晚于应发货时间-商家考核", STOCK_VIOLATION_TYPES[0],
+                     STOCK_VIOLATION_TYPES[0], "退货退款"],
+        "处罚金额(结算币)": [10.0, 20.0, 5.0, 7.0, 99.0, 3.0, 50.0, 1.0],
+        "处罚时间": pd.to_datetime(["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+                                    "2026-08-05", "2026-01-01", "2026-08-06", "2026-08-07"]),
+    }).to_excel(vf, sheet_name=V_SHEET, index=False)
+
+    v = read_violations(vf)
+    check(list(v.index) == sorted(v.index) and "A-001" in v.index,
+          "vo_sku 的 D62-/F38- 店铺前缀被剥掉")
+    check("" not in v.index and len(v) == 4, f"空 vo_sku 被跳过，剩 4 个 SKU，实际 {len(v)}")
+    check(v.loc["A-001", "缺货违规单数"] == 2,
+          "A-001 三条里只有 2 条是缺货类（退货退款不算）")
+    check(v.loc["A-001", "缺货罚款EUR"] == 30.0, "A-001 缺货罚款 10+20=30，不含退货退款那 1")
+    check(v.loc["A-001", "违规单数_全部"] == 3, "全部违规单数含非缺货类")
+    check(v.loc["A-007", "缺货违规单数"] == 1 and v.loc["A-007", "缺货罚款EUR"] == 7.0,
+          "「晚于应发货时间」不计入缺货类（那 99 EUR 不进）")
+
+    v2 = read_violations(vf, since="2026-06-01")
+    check("A-005" not in v2.index, "--violation-since 生效，2026-01 那条被排除")
+
+    df3, _ = build(od, "2026-07-26", "2026-08-23", 4, ["sale", "done"],
+                   by_warehouse=False, op_agg="sum", want_xid=False, viol=v)
+    vr = violation_risk(df3)
+    print()
+    print(vr[["优先级", "缺货罚款EUR", "缺货违规单数", "SKU", "安全库存_取用"]].to_string(index=False))
+    pr = dict(zip(vr["SKU"], vr["优先级"]))
+    check(pr.get("A-001") == "被罚过·已配安全库存", "A-001 有安全库存(100) → 标已配")
+    check(pr.get("A-007") == "被罚过·未配安全库存", "A-007 两路都没配 → 标未配，最该先做")
+    check(list(vr["优先级"])[0] == "被罚过·未配安全库存", "未配的排在前面")
+    check(set(vr["SKU"]) == {"A-001", "A-002", "A-005", "A-007"},
+          f"只有有缺货类处罚的 SKU 进表，实际 {set(vr['SKU'])}")
+    check(float(df3[df3.SKU == "A-003"]["缺货违规单数"].iloc[0]) == 0.0,
+          "没被罚过的 SKU 在周报里补 0 而不是 NaN")
 
     print("\n全部通过。")
 

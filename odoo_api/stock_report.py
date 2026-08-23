@@ -5,6 +5,7 @@
     python3 odoo_api/stock_report.py --since 2026-06-01 --until 2026-08-23
     python3 odoo_api/stock_report.py --ref-contains VO,GW   # 只看天猫 C 端，剔除 B 端整箱单
     python3 odoo_api/stock_report.py --exclude-vendor "供应商名"  # 覆盖 config 的排除表
+    python3 odoo_api/stock_report.py --violations 供应商违规数据.xlsx   # 接处罚历史
     python3 odoo_api/stock_report.py --by-warehouse     # 在手库存按仓拆列
     python3 odoo_api/stock_report.py --csv-only         # 只出 CSV（cron 用）
 
@@ -13,9 +14,15 @@
                                 另有 在途入库/待出库/预测库存（已剔除测试供应商的假在途）
     安全库存不一致.csv          两路真正冲突的行（都有但不等 / 只有补货规则）
     安全库存待配清单.csv        有销量但没配任何安全库存的 SKU，按销量降序
+    缺货违规风险清单.csv        给了 --violations 才产：因缺货被天猫罚过的 SKU，按罚款降序，
+                                标出「被罚过但至今没配安全库存」那批
 
 口径（2026-08-23 立项时与用户对齐，详见 ISSUES.md 与 sales_insight/README.md）：
-  - 销量取 sale.report，按 date 过滤自定义窗口，默认近 4 周。不用 sales_count
+  - 销量取 sale.report，按 date 过滤自定义窗口，**默认近 12 周**。
+    天猫端需求是尖峰型的（实测峰值/周均中位数 2.42×，80% 的 SKU ≥2×），
+    所以除了周均还算 `峰值周销量` / `可撑峰值周数` / `峰值缺口`——
+    **罚款发生在峰值那一周，均值口径正好在最要紧的时刻失真**。
+    窗口不能太短：4 周只有 4 个数据点，看不出尖峰。不用 sales_count
     （周期写死 12 个月不可改）。只算 state in ('sale','done')，报价单不进销量。
   - **渠道口径要显式给**。默认不筛，销量是全渠道。2026-08-23 实测：B 端（`S0` 开头的
     订单）只占 378 行订单却占 90% 的件数（整箱走货），不筛的话排名完全被它主导，
@@ -50,6 +57,18 @@ from odoo_api.odoo_client import Odoo, OdooError, m2o_id  # noqa: E402
 
 SOLD_STATES = ["sale", "done"]
 
+# 天猫处罚数据里**能确定由缺货导致**的违规类型。别往里加「晚于应发货时间」——
+# 它占 75% 的单数、59% 落在也有缺货违规的 SKU 上，但没有历史库存快照就分不清
+# 是缺货还是仓库作业慢。硬归因等于把仓库效率问题伪装成库存问题（2026-08-23 拍板）。
+STOCK_VIOLATION_TYPES = [
+    "商家毁单-商家考核",
+    "商家毁单-体验赔付",
+    "晚于考核商家缺货时间-商家考核",
+    "晚于平台判定缺货时间-体验赔付",
+]
+V_SHEET = "供应商违规数据"
+V_SKU, V_TYPE, V_FEE, V_TIME = "vo_sku", "违规类型", "处罚金额(结算币)", "处罚时间"
+
 
 def say(msg=""):
     print(msg, flush=True)
@@ -58,6 +77,42 @@ def say(msg=""):
 # --------------------------------------------------------------------------
 # 各路数据
 # --------------------------------------------------------------------------
+def read_violations(path, since=None):
+    """天猫「供应商违规数据」导出 → 每 SKU 的处罚统计。
+
+    这是**非 Odoo 数据**（天猫后台导出），性质同 sales_insight 的运营安全库存表：
+    选填、由人提供、决定优先级。
+
+    `vo_sku` 形如 `D62-Eucerin_02398780` / `F38-Vagisan_00003435`，前缀是店铺代号，
+    剥掉才是 ERP 的 `default_code`（2026-08-23 实测 8647/8647 全部可剥）。
+    金额取**结算币**（EUR，与公司本位币一致），不取人民币列。
+    """
+    d = pd.read_excel(path, sheet_name=V_SHEET)
+    miss = [c for c in (V_SKU, V_TYPE, V_FEE, V_TIME) if c not in d.columns]
+    if miss:
+        raise ValueError(f"违规数据缺列 {miss}；期望的是天猫后台导出的 `{V_SHEET}` sheet。")
+    d[V_TIME] = pd.to_datetime(d[V_TIME], errors="coerce")
+    n_all = len(d)
+    if since:
+        d = d[d[V_TIME] >= pd.Timestamp(since)]
+    d["_sku"] = (d[V_SKU].astype(str).str.replace(r"^[A-Z]\d+-", "", regex=True).str.strip())
+    bad = d["_sku"].isin(["", "nan", "None"])
+    if bad.any():
+        say(f"  ⚠ 违规数据里 {int(bad.sum())} 条没有 vo_sku，无法归到 SKU，已跳过")
+    d = d[~bad]
+    rng = f"{d[V_TIME].min():%Y-%m-%d} ~ {d[V_TIME].max():%Y-%m-%d}" if len(d) else "空"
+    stock = d[d[V_TYPE].isin(STOCK_VIOLATION_TYPES)]
+    say(f"  违规数据: {len(d)}/{n_all} 条（{rng}），涉及 {d['_sku'].nunique()} 个 SKU；"
+        f"其中缺货类 {len(stock)} 条 / {stock[V_FEE].sum():,.0f} EUR"
+        f"（{len(stock)/len(d)*100:.1f}% 的单数、{stock[V_FEE].sum()/max(d[V_FEE].sum(),1e-9)*100:.1f}% 的罚款）")
+    g = stock.groupby("_sku").agg(缺货违规单数=(V_TYPE, "count"),
+                                  缺货罚款EUR=(V_FEE, "sum"))
+    g["缺货罚款EUR"] = g["缺货罚款EUR"].round(2)
+    allg = d.groupby("_sku").size().rename("违规单数_全部")
+    return g.join(allg, how="outer").fillna({"缺货违规单数": 0, "缺货罚款EUR": 0.0,
+                                             "违规单数_全部": 0})
+
+
 def ref_domain(contains, excludes):
     """按 Order Reference（`sale.report.name`）过滤渠道。
 
@@ -201,6 +256,35 @@ def pull_in_transit(od, exclude_ids):
     return agg(inc + skip), agg(out)
 
 
+def pull_weekly_peak(od, since, until, states, extra=None):
+    """按「产品 × 周」聚合 → {pid: dict(峰值周销量, 有销周数)}。
+
+    **为什么要单独看峰值**：天猫端需求是尖峰型的——流量激增 → 订单暴涨 → 缺口 → 罚款 →
+    流量下跌。2026-08-23 实测（12 周、累计≥20 件的 171 个 SKU）：峰值/周均的**中位数是
+    2.42×**，80% 的 SKU ≥2×、30% ≥3×。按周均算的「可撑周数」在中位数上**高估 2.4 倍**，
+    而罚款恰恰发生在峰值那一周——均值口径正好在最要紧的时刻失真。
+
+    周标签形如 `W23 2026`，排序必须按 (年, 周) 而不是字符串。
+    """
+    qty_f = od.pick_field("sale.report", QTY_FIELD_CANDIDATES, what="销量")
+    domain = [("date", ">=", since), ("date", "<=", until), ("state", "in", states)]
+    domain += list(extra or [])
+    rows = od.read_group_all("sale.report", domain, [f"{qty_f}:sum"],
+                             ["product_id", "date:week"])
+    out = {}
+    for r in rows:
+        pid = m2o_id(r.get("product_id"))
+        if pid is None:
+            continue
+        q = r.get(qty_f) or 0
+        rec = out.setdefault(pid, {"峰值周销量": 0.0, "有销周数": 0})
+        if q > 0:
+            rec["有销周数"] += 1
+            rec["峰值周销量"] = max(rec["峰值周销量"], q)
+    say(f"  周维度: {len(rows)} 组 → {len(out)} 个产品有周销量分布")
+    return out
+
+
 def pull_stock(od, by_warehouse):
     """stock.quant → {product_id: dict(在手, 已预留[, 各仓])}。
 
@@ -311,7 +395,8 @@ def pull_external_ids(od, pids):
 # 合并
 # --------------------------------------------------------------------------
 def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
-          contains=None, excludes=None, exclude_vendors=None):
+          contains=None, excludes=None, exclude_vendors=None, viol=None,
+          peak_cover=1.0):
     rd = ref_domain(contains, excludes)
     if rd:
         sales, sfields = pull_sales(od, since, until, states, rd,
@@ -322,6 +407,7 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         allsales = sales
         say("  ⚠ 未加渠道过滤：销量含所有渠道。若 B 端整箱单与 C 端零售混在一起，"
             "排名会被前者主导——用 --ref-contains 指定渠道。")
+    weekly = pull_weekly_peak(od, since, until, states, rd)
     stock, wh_names = pull_stock(od, by_warehouse)
     kits = pull_kits(od)
     vend_ids = resolve_excluded_vendors(od, exclude_vendors)
@@ -358,6 +444,9 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
         qty = s.get("销量", 0) or 0
         qty_all = (allsales.get(pid, {}).get("销量", 0) or 0) if rd else qty
         fc = onhand + incoming.get(pid, 0.0) - outgoing.get(pid, 0.0)   # 预测库存
+        wk = weekly.get(pid, {})
+        peak = wk.get("峰值周销量", 0.0)
+        avg = (qty / weeks) if weeks else 0
         row = {
             "SKU": (p.get("default_code") or "").strip(),
             "商品名称": p.get("name") or "",
@@ -383,6 +472,14 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             # 可撑周数按**全渠道**销量算：库存是被所有渠道一起消耗的，
             # 只用筛选后那一侧算会高估覆盖（B 端一张整箱单就能把货搬空）。
             "可撑周数": round(onhand / (qty_all / weeks), 1) if qty_all and weeks else None,
+            "峰值周销量": peak or None,
+            # 峰值倍数 = 这个货有多"尖"。1.0 = 需求平稳；实测中位数 2.42
+            "峰值倍数": round(peak / avg, 2) if (peak and avg) else None,
+            "有销周数": wk.get("有销周数") or None,
+            # 按峰值算的覆盖：能接住几个峰值周。这才是"下一个高峰来了扛不扛得住"
+            "可撑峰值周数": round(fc / peak, 1) if peak else None,
+            "峰值缺口": (round(peak * peak_cover - fc, 1)
+                         if (peak and peak * peak_cover > fc) else None),
             "套件": "是" if pid in kits else "",
             "在售": "是" if pid in sellable else "否",
             "已归档": "是" if not p.get("active") else "",
@@ -397,7 +494,15 @@ def build(od, since, until, weeks, states, by_warehouse, op_agg, want_xid,
             row["External ID"] = xids.get(pid, "")
         rows.append(row)
 
-    df = pd.DataFrame(rows).sort_values(["销量", "在手库存"], ascending=[False, False])
+    df = pd.DataFrame(rows)
+    if viol is not None:
+        df = df.merge(viol.reset_index().rename(columns={"_sku": "SKU"}), on="SKU", how="left")
+        for c in ("缺货违规单数", "缺货罚款EUR", "违规单数_全部"):
+            df[c] = df[c].fillna(0)
+        hit = int((df["缺货违规单数"] > 0).sum())
+        say(f"  违规连上: {hit} 个 SKU 有缺货类处罚记录"
+            f"（其中 {int(((df['缺货违规单数'] > 0) & df['安全库存_取用'].isna()).sum())} 个至今没配安全库存）")
+    df = df.sort_values(["销量", "在手库存"], ascending=[False, False])
     total = df["销量"].sum()
     df.insert(0, "排名", range(1, len(df) + 1))
     df.insert(4, "累计占比", (df["销量"].cumsum() / total * 100).round(2) if total else 0)
@@ -433,6 +538,27 @@ def mismatch(df):
     return out[cols], n_only_a
 
 
+def violation_risk(df):
+    """因缺货被罚过的 SKU，按罚款降序 → 直接可以拿去做事的清单。
+
+    最该看的是 `优先级 == 被罚过·未配安全库存` 那批：2026-08-23 首测 529 个被罚 SKU 里
+    **449 个（86%）至今没配安全库存**，合计 2,294 EUR / 754 单。
+    安全库存配在哪，跟罚款实际发生在哪，是脱节的——这张表就是为了把它接上。
+    """
+    out = df[df["缺货违规单数"] > 0].copy()
+    unset = out["安全库存_取用"].isna()
+    out["优先级"] = ["被罚过·未配安全库存" if u else "被罚过·已配安全库存" for u in unset]
+    # 排序键用布尔量而不是「优先级」这个中文串——按字符串排的话「已」的码位在「未」之前，
+    # 最该先做的那批会被排到后面（2026-08-23 构造数据测试当场抓到）。
+    out["_p"] = (~unset).astype(int)
+    cols = ["优先级", "缺货罚款EUR", "缺货违规单数", "违规单数_全部", "SKU", "商品名称",
+            "销量", "周均销量", "峰值周销量", "峰值倍数", "有销周数",
+            "在手库存", "预测库存", "安全库存_取用", "缺口", "预测缺口",
+            "可撑周数", "可撑峰值周数", "峰值缺口", "套件", "在售"]
+    out = out.sort_values(["_p", "缺货罚款EUR"], ascending=[True, False])
+    return out[[c for c in cols if c in out.columns]]
+
+
 def unconfigured(df):
     """有销量但没配任何安全库存的 SKU，按销量降序。
 
@@ -441,15 +567,19 @@ def unconfigured(df):
     销量前 20 名里 0 个配了安全库存——这正是要拉这份报表的理由。
     """
     out = df[(df["销量"] > 0) & df["安全库存_取用"].isna()].copy()
-    cols = ["排名", "SKU", "商品名称", "销量", "累计占比", "周均销量",
-            "在手库存", "可用库存", "可撑周数"]
+    cols = ["排名", "SKU", "商品名称", "销量", "累计占比", "周均销量", "峰值周销量",
+            "峰值倍数", "在手库存", "预测库存", "可撑周数", "可撑峰值周数", "峰值缺口",
+            "缺货违规单数", "缺货罚款EUR"]
     return out[[c for c in cols if c in out.columns]]
 
 
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="销量/在手/安全库存三合一周报（Odoo 只读拉数）")
-    ap.add_argument("--weeks", type=int, default=4, help="销量统计窗口周数（默认 4）")
+    ap.add_argument("--weeks", type=int, default=12,
+                    help="销量统计窗口周数（默认 12 ≈ 一个季度）。"
+                         "**别为了省事调回 4**：4 周是 2026-08-01 为「用均值推算安全库存」"
+                         "定的口径，那结论仍成立；但峰值识别需要更长窗口，4 个数据点看不出尖峰")
     ap.add_argument("--since", help="窗口起（YYYY-MM-DD），给了就覆盖 --weeks")
     ap.add_argument("--until", help="窗口止（YYYY-MM-DD，默认今天）")
     ap.add_argument("--states", default=",".join(SOLD_STATES),
@@ -459,6 +589,12 @@ def main():
                          "例：--ref-contains VO,GW 只看天猫 C 端，剔除 S0 开头的 B 端单")
     ap.add_argument("--ref-excludes", default="",
                     help="排除 Order Reference 含这些子串的订单，逗号分隔、AND 语义")
+    ap.add_argument("--peak-cover", type=float, default=1.0,
+                    help="峰值缺口按几个峰值周算（默认 1.0，即至少接得住一个高峰周）")
+    ap.add_argument("--violations", help="天猫「供应商违规数据」导出（.xlsx，选填）。"
+                    "给了就把处罚历史接进报表，并多产一张 缺货违规风险清单.csv"
+                    "——按实际罚款决定先配哪些 SKU 的安全库存")
+    ap.add_argument("--violation-since", help="只算这个日期之后的处罚（YYYY-MM-DD）")
     ap.add_argument("--exclude-vendor", default=None,
                     help="算在途/预测时排除这些供应商的采购单（名字子串，逗号分隔）。"
                          "默认读 config.py 的 ODOO_EXCLUDE_VENDORS。用于剔除"
@@ -497,9 +633,14 @@ def main():
         if contains or excludes:
             say(f"渠道过滤 Order Reference: 含 {contains or '—'}"
                 + (f"、不含 {excludes}" if excludes else ""))
+        viol = None
+        if a.violations:
+            # 未显式给 --violation-since 就跟随销量窗口起点：两个口径别各说各话
+            vs = a.violation_since or since
+            viol = read_violations(a.violations, vs)
         df, safety_src = build(od, since, until, weeks, states,
                                a.by_warehouse, a.orderpoint_agg, a.external_id,
-                               contains, excludes, exclude_vendors)
+                               contains, excludes, exclude_vendors, viol, a.peak_cover)
     except OdooError as e:
         raise SystemExit(f"✗ {e}")
 
@@ -517,6 +658,15 @@ def main():
     mm.to_csv(mm_path, index=False, encoding="utf-8-sig")
     say(f"✓ {mm_path}  {len(mm)} 行"
         + ("（两路无冲突）" if mm.empty else "  ← 有冲突，先看这张"))
+
+    if viol is not None:
+        vr = violation_risk(df)
+        vr_path = os.path.join(outdir, "缺货违规风险清单.csv")
+        vr.to_csv(vr_path, index=False, encoding="utf-8-sig")
+        top = vr[vr["优先级"] == "被罚过·未配安全库存"]
+        say(f"✓ {vr_path}  {len(vr)} 行  ← **最该先看这张**")
+        say(f"    其中「被罚过·未配安全库存」{len(top)} 个 SKU，"
+            f"历史缺货罚款 {top['缺货罚款EUR'].sum():,.0f} EUR / {int(top['缺货违规单数'].sum())} 单")
 
     un = unconfigured(df)
     un_path = os.path.join(outdir, "安全库存待配清单.csv")
@@ -536,6 +686,17 @@ def main():
             f"（排名与 ABC 按筛选后算；可撑周数按合计算）")
     sold = int((df["销量"] > 0).sum())
     top50 = int(df.head(50)["安全库存_取用"].notna().sum())
+    # 峰值倍数只在**有一定量**的 SKU 上有意义：只卖过一周的长尾货，峰值倍数天然等于
+    # 窗口周数（卖 1 件也是 12×），拿它们算中位数会把结论吹大。门槛：≥3 个有销周 且 ≥20 件。
+    pk = df[df["峰值倍数"].notna() & (df["有销周数"].fillna(0) >= 3) & (df["销量"] >= 20)]
+    if len(pk):
+        say(f"需求尖峰: 样本 {len(pk)} 个 SKU（≥3 个有销周且窗口内 ≥20 件；"
+            f"长尾货的峰值倍数是噪声，不计入）")
+        say(f"  峰值/周均中位数 {pk['峰值倍数'].median():.2f}×；"
+            f"≥2× 的 {int((pk['峰值倍数']>=2).sum())} 个（{(pk['峰值倍数']>=2).mean()*100:.0f}%）、"
+            f"≥3× 的 {int((pk['峰值倍数']>=3).sum())} 个")
+        say(f"  接不住一个峰值周（峰值缺口 >0）: 全表 {int(df['峰值缺口'].notna().sum())} 个 SKU，"
+            f"其中样本内 {int(pk['峰值缺口'].notna().sum())} 个")
     say(f"低于安全库存: 按在手 {int(df['缺口'].notna().sum())} 个 SKU / "
         f"按预测 {int(df['预测缺口'].notna().sum())} 个 SKU"
         f"  |  有销量 {sold} 个，其中销量前 50 名配了安全库存的只有 {top50} 个")
