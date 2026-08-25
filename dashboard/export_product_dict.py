@@ -32,6 +32,12 @@ voyageone 模块的 `product.voyageone`（模型标签 "vo product"，7484 条�
   5. 取 `ir.model` 时**不要**带 `modules` 字段——它会触发 `ir.module.module`
      的权限检查，而拉数账号不在 Administration/Settings 组里，直接被拒。
 
+两份产出（ISSUES C-1）：
+  · `product_dict.json`      全量，本机查名用（约 1.5MB）
+  · `product_dict.min.json`  瘦身版，**粘进看板设置里的就是这份**（约 450KB）。
+    形态是 {"v":1,"at":导出时间,"d":{PZN:[德语名, 中文名]}}——看板只在「新建 / 导入」
+    那一刻用它补品名，不进发布文档、只存各人浏览器本地。
+
 跑法：
     python3 dashboard/export_product_dict.py
     python3 dashboard/export_product_dict.py --out dashboard/data/product_dict.json
@@ -233,8 +239,17 @@ def main():
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=1)
 
+    # 瘦身版：看板设置里粘的就是这份。紧凑数组去掉 key 开销，体积约为全量的 1/3。
+    slim = {"v": 1, "at": payload["exportedAt"],
+            "d": {i["pzn"]: [i["nameDe"], i["nameZh"] or ""] for i in items if i["pzn"]}}
+    slim_path = args.out.replace(".json", ".min.json")
+    with open(slim_path, "w", encoding="utf-8") as f:
+        json.dump(slim, f, ensure_ascii=False, separators=(",", ":"))
+
     size = os.path.getsize(args.out) / 1024
     print(f"\n产出 {args.out}  ({size:.0f} KB)")
+    print(f"     {slim_path}  ({os.path.getsize(slim_path)/1024:.0f} KB"
+          f"，{len(slim['d'])} 条——粘进看板「字典」设置里的是这份)")
     print(f"  产品        : {len(items)}")
     print(f"  有中文名    : {with_zh}  ({with_zh*100//max(len(items),1)}%)")
     print(f"  有别名      : {with_alias}")

@@ -149,7 +149,12 @@ python3 dashboard/export_product_dict.py --include-unsellable
   风险只是挑到已停用的那条 → 写进产出 `pznCollisions`，导入时告警交人选，**不静默取一条**。
   PZN 归一直接复用 `reorder/reorder_helper.norm_pzn`（那边的「ID 优先，PZN 回退」
   是另一场景的结论，本表因已排除变体而可用 PZN），不另写一套。
-- **产出 `dashboard/data/product_dict.json` 已 gitignore**（1.5MB，可随时重跑）。
+- **两份产出，都已 gitignore**（可随时重跑）：
+  - `dashboard/data/product_dict.json`（1.5 MB）—— 全量，本机查名与核对用。
+  - `dashboard/data/product_dict.min.json`（457 KB）—— 瘦身版，形态 `{"v":1,"at":…,"d":{PZN:[德语名,中文名]}}`。
+    **粘进看板「字典」设置里的就是这份**：它存进各人浏览器的 `localStorage`，**不进看板的发布文档**
+    ——看板每保存一次都要把整份文档重发，把字典塞进去等于每点一下多传 457 KB。
+    只有**录入的人**需要导；产品一旦被用过，品名已写进看板自身的字典，销售与仓库无需导入。
   每条：`pzn` / `nameDe` / `nameZh` / `aliases[]` / `odooId` / `defaultCode` / `voCode` /
   `saleOk` / `source`；顶层另有 `stats` 与 `pznCollisions`。
 
