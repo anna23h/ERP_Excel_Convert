@@ -35,7 +35,7 @@ def load_po_stats(path):
     返回 (stats_df[_sku + PO_COLS], 窗口描述str)。缺必需列抛 ValueError。"""
     po = pd.read_excel(path, dtype=str)
     need = ["Order Reference", "Vendor", "Order Lines/Product/Internal Reference",
-            "Order Lines/Unit Price", "Order Lines/Total Quantity", "Order Lines/Created on"]
+            "Order Lines/Unit Price", "Order Lines/Total Quantity", "Order Lines/Order Date"]
     missing = [c for c in need if c not in po.columns]
     if missing:
         raise ValueError("采购单导出缺列: " + ", ".join(missing))
@@ -48,7 +48,7 @@ def load_po_stats(path):
     po["_sku"] = po["Order Lines/Product/Internal Reference"].map(_po_base_sku)
     po["_price"] = pd.to_numeric(po["Order Lines/Unit Price"], errors="coerce")
     po["_qty"] = pd.to_numeric(po["Order Lines/Total Quantity"], errors="coerce")
-    po["_dt"] = pd.to_datetime(po["Order Lines/Created on"], errors="coerce")
+    po["_dt"] = pd.to_datetime(po["Order Lines/Order Date"], errors="coerce")
     rows = []
     for sku, g in po.groupby("_sku"):
         vc = g.groupby("Vendor")["Order Reference"].nunique().sort_values(ascending=False)

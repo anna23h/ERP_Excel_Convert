@@ -192,7 +192,7 @@ class App:
         t = ttk.Frame(nb, padding=14); nb.add(t, text="  FS 回写  ")
         self._file_row(t, "采购单导出:", self.fw_po)
         self._hint(t, "ERP 的 purchase.order 行明细。必须含 Order Lines/Total Quantity 与 "
-                      "Created on 两列，缺了会直接报错——导出时记得勾。")
+                      "Order Lines/Order Date 两列，缺了会直接报错——导出时记得勾。")
         self._num_row(t, "试水行数:", self.fw_sample, "0 = 全量；首次导入建议填 24")
         self._hint(t, "填 N 则按覆盖面挑 N 行（每行 FS 值互不相同，铺开各种形态与新增/覆盖），"
                       "不是切前 N 行。导完回 ERP 抽查几行确认无误，再改回 0 跑全量。")
