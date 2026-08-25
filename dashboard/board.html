@@ -1,0 +1,1086 @@
+<title>询价直通看板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style id="app-style">
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+:root{
+  --ground:#EFF3F2; --surface:#FFFFFF; --surface-2:#F6F9F8; --surface-3:#E8EEEC;
+  --ink:#131A19; --muted:#576663; --faint:#87938F;
+  --line:#DAE2E0; --line-strong:#BFCBC8;
+  --accent:#0C5A61; --accent-soft:#D8EAEA; --accent-line:#8FC0C2;
+  --warn:#8A5100; --warn-soft:#F8E7C9; --warn-line:#DCB878;
+  --danger:#9B2A20; --danger-soft:#F7DCD8; --danger-line:#DFA49C;
+  --ok:#28633D; --ok-soft:#D7E9DD; --ok-line:#8FBDA1;
+  --shadow-1:0 1px 2px rgba(19,26,25,.07);
+  --shadow-2:0 2px 4px rgba(19,26,25,.06),0 12px 28px rgba(19,26,25,.10);
+  --r:10px;
+  --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --disp:"Archivo","Noto Sans SC",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0D1312; --surface:#151D1C; --surface-2:#1B2423; --surface-3:#222D2B;
+    --ink:#E5ECEA; --muted:#94A29E; --faint:#71807C;
+    --line:#26312F; --line-strong:#35423F;
+    --accent:#54BFC0; --accent-soft:#123234; --accent-line:#2A5F62;
+    --warn:#DFA55C; --warn-soft:#2E2415; --warn-line:#5C4726;
+    --danger:#E08276; --danger-soft:#301A17; --danger-line:#5E3129;
+    --ok:#74C08A; --ok-soft:#152A1D; --ok-line:#2C5138;
+    --shadow-1:0 1px 2px rgba(0,0,0,.4);
+    --shadow-2:0 2px 4px rgba(0,0,0,.3),0 12px 28px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1312; --surface:#151D1C; --surface-2:#1B2423; --surface-3:#222D2B;
+  --ink:#E5ECEA; --muted:#94A29E; --faint:#71807C;
+  --line:#26312F; --line-strong:#35423F;
+  --accent:#54BFC0; --accent-soft:#123234; --accent-line:#2A5F62;
+  --warn:#DFA55C; --warn-soft:#2E2415; --warn-line:#5C4726;
+  --danger:#E08276; --danger-soft:#301A17; --danger-line:#5E3129;
+  --ok:#74C08A; --ok-soft:#152A1D; --ok-line:#2C5138;
+  --shadow-1:0 1px 2px rgba(0,0,0,.4);
+  --shadow-2:0 2px 4px rgba(0,0,0,.3),0 12px 28px rgba(0,0,0,.45);
+}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:var(--sans); font-size:14px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.lbl{font-family:var(--disp);font-size:10.5px;font-weight:600;letter-spacing:.11em;text-transform:uppercase;color:var(--faint)}
+
+/* ---------- shell ---------- */
+#root{display:flex;flex-direction:column;min-height:100vh}
+.topbar{position:sticky;top:0;z-index:30;background:var(--surface);border-bottom:1px solid var(--line)}
+.topbar-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 20px 10px}
+.brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
+.brand h1{font-family:var(--disp);font-size:17px;font-weight:700;letter-spacing:-.01em;margin:0}
+.brand .sub{font-size:12px;color:var(--faint)}
+.who{display:flex;align-items:center;gap:6px}
+.who input{width:104px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12.5px}
+.langs{display:flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:2px}
+.langs button{border:0;background:transparent;border-radius:5px;padding:3px 9px;font-size:11.5px;font-family:var(--disp);font-weight:600;letter-spacing:.04em;color:var(--muted);cursor:pointer}
+.langs button[aria-pressed="true"]{background:var(--accent);color:var(--surface)}
+.btn{border:1px solid var(--line-strong);background:var(--surface);border-radius:7px;padding:6px 12px;font-size:13px;cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s}
+.btn:hover{background:var(--surface-2);border-color:var(--faint)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.sm{padding:3px 9px;font-size:12px;border-radius:6px}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.ghost:hover{background:var(--surface-2)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+
+.stats{display:flex;gap:0;flex-wrap:wrap;padding:0 20px 12px}
+.stat{display:flex;flex-direction:column;gap:1px;padding:6px 20px 6px 0;margin-right:20px;border-right:1px solid var(--line)}
+.stat:last-child{border-right:0}
+.stat .v{font-family:var(--mono);font-size:19px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}
+.stat .k{font-size:11.5px;color:var(--muted)}
+.stat.warn .v{color:var(--warn)} .stat.danger .v{color:var(--danger)} .stat.ok .v{color:var(--ok)}
+
+.tabs{display:flex;gap:2px;padding:0 20px}
+.tab{border:0;background:transparent;padding:7px 12px;font-size:13px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+main{flex:1;min-height:0;display:flex;flex-direction:column}
+::placeholder{color:var(--faint);opacity:1}
+.notice{margin:0 20px 10px;background:var(--warn-soft);border:1px solid var(--warn-line);color:var(--warn);border-radius:8px;padding:7px 12px;font-size:12.5px}
+
+/* ---------- board ---------- */
+.lanes{display:flex;gap:12px;padding:14px 20px 28px;overflow-x:auto;align-items:flex-start;flex:1}
+.lane{flex:1 1 262px;min-width:250px;max-width:440px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);display:flex;flex-direction:column;max-height:calc(100vh - 210px)}
+.lane-head{padding:10px 12px 8px;border-bottom:1px solid var(--line)}
+.lane-head .t{display:flex;align-items:center;gap:7px}
+.lane-head h2{font-size:13px;font-weight:600;margin:0}
+.lane-head .c{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--surface-3);border-radius:9px;padding:0 6px}
+.lane-head .h{font-size:11px;color:var(--faint);margin-top:2px;line-height:1.4}
+.lane-body{padding:8px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+.lane-empty{font-size:12px;color:var(--faint);text-align:center;padding:18px 8px;border:1px dashed var(--line-strong);border-radius:8px}
+
+.card{width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--line-strong);border-radius:9px;padding:10px;cursor:pointer;display:flex;flex-direction:column;gap:7px;box-shadow:var(--shadow-1);transition:box-shadow .12s,transform .12s}
+.card:hover{box-shadow:var(--shadow-2);transform:translateY(-1px)}
+.card.sev-warn{border-left-color:var(--warn-line)}
+.card.sev-danger{border-left-color:var(--danger-line)}
+.card.sev-ok{border-left-color:var(--ok-line)}
+.card-top{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.card-name{font-size:13.5px;font-weight:600;line-height:1.35;flex:1 1 100%}
+.card-alt{font-size:11px;color:var(--faint);line-height:1.35;flex:1 1 100%;word-break:break-word}
+.card-pzn{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.tag{font-size:10px;border-radius:4px;padding:0 5px;border:1px solid}
+.tag.demo{color:var(--faint);border-color:var(--line-strong)}
+.tag.pref{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+
+.prog{display:flex;flex-direction:column;gap:3px}
+.prog-row{display:flex;align-items:baseline;gap:6px;font-size:11.5px;color:var(--muted)}
+.prog-row .big{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink)}
+.prog-row .gap{color:var(--warn);font-weight:500;margin-left:auto}
+.prog-row .done{color:var(--ok);font-weight:500;margin-left:auto}
+.bar{position:relative;height:6px;border-radius:3px;background:var(--surface-3);overflow:hidden}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+.bar i.alloc{background:var(--accent-line)}
+.bar i.recv{background:var(--accent)}
+
+.card-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.card-foot{border-top:1px dashed var(--line);padding-top:6px;font-size:11px;color:var(--muted)}
+.aging.hot{color:var(--danger);font-weight:500}
+.aging.warm{color:var(--warn)}
+
+/* ---------- table ---------- */
+.tablewrap{padding:14px 20px 28px;flex:1}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.tscroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+table{border-collapse:collapse;width:100%;min-width:940px}
+th{position:sticky;top:0;text-align:left;font-family:var(--disp);font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap;background:var(--surface-2)}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:12.5px}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+tbody tr.hot td{background:var(--danger-soft)}
+tbody tr.hot:hover td{filter:brightness(.98)}
+td .p1{font-weight:500}
+td .p2{font-size:11px;color:var(--faint);margin-top:1px}
+.empty{padding:26px;text-align:center;color:var(--faint);font-size:13px}
+
+.chip{display:inline-block;font-size:11px;border-radius:5px;padding:1px 7px;border:1px solid;white-space:nowrap}
+.chip.todo{color:var(--muted);border-color:var(--line-strong);background:var(--surface-2)}
+.chip.sourcing{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.chip.quoted{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.chip.ordered{color:var(--ok);border-color:var(--ok-line);background:var(--ok-soft)}
+.chip.closed{color:var(--faint);border-color:var(--line);background:var(--surface-2)}
+.chip.asked{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.chip.chosen{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.chip.received{color:var(--ok);border-color:var(--ok-line);background:var(--ok-soft)}
+.chip.declined,.chip.oos{color:var(--faint);border-color:var(--line);background:var(--surface-2)}
+
+/* ---------- drawer ---------- */
+.scrim{position:fixed;inset:0;background:rgba(10,16,15,.42);z-index:40;backdrop-filter:blur(1.5px)}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(620px,100%);background:var(--surface);border-left:1px solid var(--line);z-index:50;display:flex;flex-direction:column;box-shadow:var(--shadow-2)}
+.drawer-head{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.drawer-head h3{margin:0;font-size:15px;font-weight:600;line-height:1.35}
+.drawer-head .sub{font-size:11.5px;color:var(--faint);margin-top:2px}
+.drawer-head .x{margin-left:auto}
+.drawer-body{padding:14px 16px 30px;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:12.5px}
+.kv dt{color:var(--faint)}
+.kv dd{margin:0}
+.section-lbl{font-family:var(--disp);font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+
+.supchips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sup{border:1px dashed var(--line-strong);background:var(--surface);border-radius:20px;padding:3px 11px;font-size:12px;cursor:pointer;color:var(--muted)}
+.sup:hover{border-style:solid;background:var(--surface-2)}
+.sup.on{border-style:solid;border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.supform{display:flex;gap:5px}
+.supform input{width:130px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px}
+
+.alloc{border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:9px 10px;display:flex;flex-direction:column;gap:7px}
+.alloc.hot{border-color:var(--danger-line);background:var(--danger-soft)}
+.alloc-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.alloc-head .sup-name{font-weight:600;font-size:13px}
+.alloc-head .when{font-size:11px;color:var(--muted);margin-left:auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:7px}
+.field{display:flex;flex-direction:column;gap:2px}
+.field.full{grid-column:1/-1}
+.field label{font-size:10.5px;color:var(--faint)}
+.field input,.field select,.field textarea{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:12.5px;width:100%}
+.field textarea{min-height:52px;resize:vertical}
+.rowbtns{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}
+.hint{font-size:11px;color:var(--faint);line-height:1.45}
+.err{font-size:11.5px;color:var(--danger)}
+details.adv summary{font-size:12px;color:var(--muted);cursor:pointer;padding:2px 0}
+.danger-text{color:var(--danger)}
+
+.saving{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:60;background:var(--ink);color:var(--ground);font-size:12.5px;padding:6px 14px;border-radius:20px;box-shadow:var(--shadow-2)}
+.saving.err{background:var(--danger);color:#fff}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+@media (max-width:640px){
+  .topbar-row{padding:10px 14px 8px} .stats{padding:0 14px 10px} .tabs{padding:0 14px}
+  .lanes{padding:12px 14px 24px} .lane{flex-basis:88vw;max-height:none}
+  .tablewrap{padding:12px 14px 24px}
+}
+</style>
+<div id="root"></div>
+<script type="application/json" id="board-state">{"schema":2,"seq":9,"products":{"04100371":{"pzn":"04100371","nameDe":"Skinoren 15% Gel 30g","nameZh":"杜鹃花酸凝胶 15% 30g","aliases":["壬二酸凝胶"]},"16233255":{"pzn":"16233255","nameDe":"Hylo Night Augensalbe 5g","nameZh":"海露晚安修护眼膏 5g","aliases":["海露晚安"]},"01578675":{"pzn":"01578675","nameDe":"Bepanthen Wund- und Heilsalbe 50g","nameZh":"拜耳多效修复软膏 50g","aliases":["万用膏"]}},"suppliers":["AEP","Bären Apotheke","Carna Pharma","Gehe","Phoenix"],"tasks":[{"id":"T-0825-01","demo":true,"pzn":"04100371","qty":2200,"unit":"支","needBy":"2026-09-05","mhdMin":"2027-06","preferredSupplier":"","refPrice":"","refPriceSource":"manual","requesters":["Daniel"],"orderDate":"2026-08-25","createdAt":"2026-08-25T06:20:00.000Z","stageManual":null,"note":"客户催过三次，缺口部分可以分批到","allocs":[{"id":"A-1","supplier":"Carna Pharma","state":"chosen","askedAt":"2026-08-25T06:40:00.000Z","repliedAt":"2026-08-25T09:10:00.000Z","qty":140,"price":"12.90","eta":"2026-08-28","mhd":"2027-11","receivedQty":null,"note":"","by":"Anna","updatedAt":"2026-08-25T09:12:00.000Z"},{"id":"A-2","supplier":"Phoenix","state":"asked","askedAt":"2026-08-25T06:41:00.000Z","repliedAt":null,"qty":1000,"price":"","eta":"","mhd":"","receivedQty":null,"note":"","by":"Anna","updatedAt":"2026-08-25T06:41:00.000Z"},{"id":"A-3","supplier":"AEP","state":"asked","askedAt":"2026-08-24T07:00:00.000Z","repliedAt":null,"qty":1000,"price":"","eta":"","mhd":"","receivedQty":null,"note":"","by":"Anna","updatedAt":"2026-08-24T07:00:00.000Z"}]},{"id":"T-0825-02","demo":true,"pzn":"16233255","qty":2000,"unit":"支","needBy":"2026-09-12","mhdMin":"2028-01","preferredSupplier":"Phoenix","refPrice":"5.91","refPriceSource":"manual","requesters":["Lisa","Daniel"],"orderDate":"2026-08-25","createdAt":"2026-08-24T04:10:00.000Z","stageManual":null,"note":"销售指定先问 Phoenix","allocs":[{"id":"A-4","supplier":"Phoenix","state":"ordered","askedAt":"2026-08-24T05:00:00.000Z","repliedAt":"2026-08-24T08:30:00.000Z","qty":200,"price":"5.49","eta":"2026-08-26","mhd":"2028-03","receivedQty":null,"note":"首批","by":"Anna","updatedAt":"2026-08-24T08:35:00.000Z"},{"id":"A-5","supplier":"Phoenix","state":"quoted","askedAt":"2026-08-24T05:00:00.000Z","repliedAt":"2026-08-24T08:30:00.000Z","qty":800,"price":"5.49","eta":"","mhd":"2028-03","receivedQty":null,"note":"第二批效期同上，到货日未定","by":"Anna","updatedAt":"2026-08-24T08:35:00.000Z"},{"id":"A-6","supplier":"Bären Apotheke","state":"quoted","askedAt":"2026-08-24T05:05:00.000Z","repliedAt":"2026-08-25T07:00:00.000Z","qty":500,"price":"5.07","eta":"","mhd":"","receivedQty":null,"note":"量只能给大约 500","by":"Anna","updatedAt":"2026-08-25T07:02:00.000Z"}]},{"id":"T-0825-03","demo":true,"pzn":"01578675","qty":300,"unit":"盒","needBy":"2026-09-02","mhdMin":"","preferredSupplier":"","refPrice":"","refPriceSource":"manual","requesters":["见见"],"orderDate":"2026-08-25","createdAt":"2026-08-25T03:00:00.000Z","stageManual":null,"note":"","allocs":[]}]}</script>
+<script id="app">
+(function(){
+"use strict";
+
+/* =======================================================================
+   询价直通看板 · schema 2
+   两层模型：采购任务 task → 分配条目 allocation。产品字典 products 旁挂引用。
+   分区：① 常量与文案  ② 纯计算（派生量/推导，不碰 DOM）
+        ③ 渲染（纯函数，只读 state）  ④ 事件与持久化
+   数据结构与渲染分离——将来整体迁移时 ②③ 可原样搬走。
+   ======================================================================= */
+
+var TITLE = "询价直通看板";
+var FONT_URL = "https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap";
+
+var STALE_ASK_H = 24;   // 询价发出超过这么多小时仍未回 → 标红
+var STALE_NEW_H = 4;    // 任务已建但一条询价都没发出超过这么多小时 → 标黄
+
+/* ---------- ① 文案：一个 key 三档并排，缺档一眼可见 ---------- */
+var LANGS = ["zh","en","de"];
+var T = {
+  tagline:      {zh:"销售提需求 · 采购拆单询价 · 不进 ERP", en:"Sales requests, purchasing splits and sources. Not in ERP.", de:"Vertrieb meldet Bedarf, Einkauf splittet und fragt an. Nicht im ERP."},
+  me:           {zh:"我是", en:"I am", de:"Ich bin"},
+  mePh:         {zh:"填个名字", en:"your name", de:"Dein Name"},
+  newTask:      {zh:"+ 新建采购任务", en:"+ New task", de:"+ Neue Aufgabe"},
+  viewBoard:    {zh:"看板", en:"Board", de:"Board"},
+  viewList:     {zh:"任务清单", en:"Task list", de:"Aufgabenliste"},
+  readonly:     {zh:"你是只读访客，可以看但改不了。要能改，请让管理员在分享设置里给你编辑权限。", en:"You are a read-only viewer. Ask the owner for edit access in the sharing settings.", de:"Du hast nur Leserechte. Bitte den Eigentümer um Bearbeitungsrechte in den Freigabe-Einstellungen."},
+
+  statTodo:     {zh:"还没发出任何询价", en:"No enquiry sent yet", de:"Noch keine Anfrage raus"},
+  statPending:  {zh:"已发出未回的询价", en:"Enquiries awaiting reply", de:"Anfragen ohne Antwort"},
+  statHot:      {zh:"超 24 小时未回", en:"No reply for over 24h", de:"Über 24 h ohne Antwort"},
+  statGap:      {zh:"量还没配齐的任务", en:"Tasks short of quantity", de:"Aufgaben mit Fehlmenge"},
+
+  stTodo:       {zh:"待询价", en:"To enquire", de:"Anzufragen"},
+  stSourcing:   {zh:"询价中", en:"Enquiring", de:"In Anfrage"},
+  stQuoted:     {zh:"已报价 · 待销售确认", en:"Quoted, awaiting sales", de:"Angebot da, wartet auf Vertrieb"},
+  stOrdered:    {zh:"已下单", en:"Ordered", de:"Bestellt"},
+  stClosed:     {zh:"已关闭", en:"Closed", de:"Abgeschlossen"},
+  stTodoH:      {zh:"任务已建，还没问过任何一家", en:"Created, no supplier asked yet", de:"Angelegt, noch niemand angefragt"},
+  stSourcingH:  {zh:"已向经销商发出询价，等回复", en:"Enquiries sent, waiting for replies", de:"Anfragen raus, warten auf Antwort"},
+  stQuotedH:    {zh:"报价已到，等销售拍板", en:"Quotes in, waiting for the sales call", de:"Angebote da, Vertrieb entscheidet"},
+  stOrderedH:   {zh:"已转真实采购单，进 ERP", en:"Turned into real POs, now in ERP", de:"In echte Bestellungen überführt, im ERP"},
+  stClosedH:    {zh:"完成、取消或客户放弃", en:"Done, cancelled or dropped", de:"Erledigt, storniert oder verworfen"},
+
+  asAsked:      {zh:"已问未回", en:"Asked, no reply", de:"Angefragt"},
+  asQuoted:     {zh:"已报价", en:"Quoted", de:"Angeboten"},
+  asChosen:     {zh:"已选定", en:"Chosen", de:"Ausgewählt"},
+  asOrdered:    {zh:"已下单", en:"Ordered", de:"Bestellt"},
+  asReceived:   {zh:"已到货", en:"Received", de:"Erhalten"},
+  asDeclined:   {zh:"未选用", en:"Not chosen", de:"Nicht gewählt"},
+  asOos:        {zh:"无货", en:"Out of stock", de:"Nicht lieferbar"},
+
+  need:         {zh:"需求", en:"Needed", de:"Bedarf"},
+  allocated:    {zh:"已配", en:"Allocated", de:"Zugeteilt"},
+  received:     {zh:"已到", en:"Received", de:"Erhalten"},
+  gap:          {zh:"缺口", en:"short", de:"Fehlmenge"},
+  full:         {zh:"已配齐", en:"fully allocated", de:"vollständig zugeteilt"},
+  needBy:       {zh:"要货日", en:"Needed by", de:"Bedarfstermin"},
+  mhdMin:       {zh:"期望效期下限", en:"Min. expiry (MHD)", de:"Mindest-MHD"},
+  preferred:    {zh:"指定采购方", en:"Preferred supplier", de:"Wunschlieferant"},
+  refPrice:     {zh:"参考价 AEP/HAP", en:"Reference price AEP/HAP", de:"Referenzpreis AEP/HAP"},
+  requesters:   {zh:"谁要的", en:"Requested by", de:"Angefordert von"},
+  createdAt:    {zh:"建立时间", en:"Created", de:"Angelegt"},
+  orderDate:    {zh:"本轮起始日", en:"Round started", de:"Runde gestartet"},
+  note:         {zh:"备注", en:"Note", de:"Notiz"},
+  product:      {zh:"产品", en:"Product", de:"Produkt"},
+  qty:          {zh:"数量", en:"Qty", de:"Menge"},
+  unit:         {zh:"单位", en:"Unit", de:"Einheit"},
+  price:        {zh:"采购价 €", en:"Unit price €", de:"EK-Preis €"},
+  eta:          {zh:"预计到货", en:"ETA", de:"Liefertermin"},
+  etaPending:   {zh:"待回", en:"awaiting", de:"offen"},
+  mhd:          {zh:"效期 MHD", en:"Expiry MHD", de:"MHD"},
+  stage:        {zh:"阶段", en:"Stage", de:"Phase"},
+  supplier:     {zh:"供应商", en:"Supplier", de:"Lieferant"},
+  notSet:       {zh:"未填", en:"not set", de:"offen"},
+  none:         {zh:"—", en:"—", de:"—"},
+
+  askSection:   {zh:"发询价（点一下＝刚发出）", en:"Send enquiry (one click = just sent)", de:"Anfrage senden (ein Klick = raus)"},
+  askOther:     {zh:"+ 其他经销商", en:"+ other supplier", de:"+ anderer Lieferant"},
+  send:         {zh:"发出", en:"Send", de:"Senden"},
+  allocSection: {zh:"分配条目（一个产品可以拆给多家，同一家也可以给多批）", en:"Allocations (one product can be split across suppliers; the same supplier can give several batches)", de:"Zuteilungen (ein Produkt kann auf mehrere Lieferanten aufgeteilt werden; auch mehrere Chargen pro Lieferant)"},
+  noAllocs:     {zh:"还没有分配条目。上面点一家经销商就能发出询价。", en:"No allocations yet. Click a supplier above to send an enquiry.", de:"Noch keine Zuteilungen. Oben einen Lieferanten anklicken, um anzufragen."},
+  markReplied:  {zh:"标记已回", en:"Mark replied", de:"Antwort da"},
+  choose:       {zh:"选定", en:"Choose", de:"Auswählen"},
+  markOrdered:  {zh:"标记已下单", en:"Mark ordered", de:"Als bestellt"},
+  markOos:      {zh:"无货", en:"Out of stock", de:"Nicht lieferbar"},
+  decline:      {zh:"未选用", en:"Not chosen", de:"Nicht gewählt"},
+  save:         {zh:"保存", en:"Save", de:"Speichern"},
+  del:          {zh:"删除", en:"Delete", de:"Löschen"},
+  delTask:      {zh:"删除整个任务", en:"Delete this task", de:"Aufgabe löschen"},
+  delConfirm:   {zh:"再点一次，确认删除", en:"Click again to confirm", de:"Nochmal klicken zum Bestätigen"},
+  advanceTo:    {zh:"推进到", en:"Move to", de:"Weiter zu"},
+  close:        {zh:"关闭", en:"Close", de:"Schließen"},
+  open:         {zh:"打开", en:"Open", de:"Öffnen"},
+  auto:         {zh:"自动", en:"Auto", de:"Automatisch"},
+
+  fAll:         {zh:"全部", en:"All", de:"Alle"},
+  fTodo:        {zh:"待询价", en:"To enquire", de:"Anzufragen"},
+  fAsking:      {zh:"有未回询价", en:"Awaiting replies", de:"Wartet auf Antwort"},
+  fHot:         {zh:"超 24h 未回", en:"Over 24h", de:"Über 24 h"},
+  fGap:         {zh:"量没配齐", en:"Short", de:"Fehlmenge"},
+  fOrdered:     {zh:"已下单", en:"Ordered", de:"Bestellt"},
+
+  newTitle:     {zh:"新建采购任务", en:"New purchasing task", de:"Neue Einkaufsaufgabe"},
+  newSub:       {zh:"一个产品一轮采购。同一产品下一轮请另起一个任务。", en:"One product, one purchasing round. Start a new task for the next round.", de:"Ein Produkt, eine Einkaufsrunde. Für die nächste Runde eine neue Aufgabe anlegen."},
+  pznLabel:     {zh:"PZN（8 位）", en:"PZN (8 digits)", de:"PZN (8-stellig)"},
+  nameDe:       {zh:"德语品名", en:"German name", de:"Bezeichnung (DE)"},
+  nameZh:       {zh:"中文品名", en:"Chinese name", de:"Bezeichnung (CN)"},
+  aliases:      {zh:"中文简称（逗号分隔，供搜索）", en:"Chinese short names (comma separated, for search)", de:"Chinesische Kurznamen (kommagetrennt, für die Suche)"},
+  known:        {zh:"字典里已有这个 PZN，品名已带出。", en:"This PZN is already in the dictionary; names filled in.", de:"PZN bereits im Verzeichnis, Namen übernommen."},
+  createBtn:    {zh:"建立任务", en:"Create task", de:"Aufgabe anlegen"},
+  dupWarn:      {zh:"这个 PZN 已经有进行中的任务。并入那一轮，还是另起一轮？", en:"This PZN already has a task in progress. Add to that round, or start a new one?", de:"Für diese PZN läuft bereits eine Aufgabe. Dieser Runde hinzufügen oder neue Runde starten?"},
+  openExisting: {zh:"打开那一轮", en:"Open that round", de:"Diese Runde öffnen"},
+  startNew:     {zh:"仍然另起一轮", en:"Start a new round anyway", de:"Trotzdem neue Runde"},
+  errPzn:       {zh:"PZN 必须是 7~8 位数字。", en:"PZN must be 7 or 8 digits.", de:"PZN muss 7 oder 8 Ziffern haben."},
+  errQty:       {zh:"数量必须大于 0。", en:"Quantity must be greater than 0.", de:"Menge muss größer als 0 sein."},
+  errName:      {zh:"至少要填一个品名（德语或中文）。", en:"Enter at least one product name (German or Chinese).", de:"Mindestens einen Produktnamen angeben (DE oder CN)."},
+  search:       {zh:"搜产品名 / 简称 / PZN", en:"Search name, short name or PZN", de:"Name, Kurzname oder PZN suchen"},
+  emptyFilter:  {zh:"这个筛选下没有任务。", en:"No tasks under this filter.", de:"Keine Aufgaben in diesem Filter."},
+  laneEmpty:    {zh:"这一列是空的", en:"Nothing here", de:"Nichts hier"},
+
+  agingNoAsk:   {zh:"建了 %s 还没发出任何询价", en:"Created %s ago, no enquiry sent", de:"Vor %s angelegt, noch keine Anfrage"},
+  agingOldest:  {zh:"最久一条询价已发出 %s", en:"Oldest enquiry out for %s", de:"Älteste Anfrage seit %s"},
+  agingWait:    {zh:"等销售确认 %s", en:"Waiting on sales for %s", de:"Wartet seit %s auf den Vertrieb"},
+  updatedBy:    {zh:"%s 于 %s 前更新", en:"updated by %s, %s ago", de:"von %s aktualisiert, vor %s"},
+  justNow:      {zh:"刚刚", en:"just now", de:"gerade eben"},
+  minutes:      {zh:"%s 分钟", en:"%s min", de:"%s Min."},
+  hours:        {zh:"%s 小时", en:"%s h", de:"%s Std."},
+  days:         {zh:"%s 天", en:"%s d", de:"%s T."},
+  today:        {zh:"（今天）", en:" (today)", de:" (heute)"},
+  inDays:       {zh:"（还有 %s 天）", en:" (in %s d)", de:" (in %s T.)"},
+  agoDays:      {zh:"（已过 %s 天）", en:" (%s d ago)", de:" (vor %s T.)"},
+
+  suppliersBtn: {zh:"供应商", en:"Suppliers", de:"Lieferanten"},
+  suppliersTitle:{zh:"供应商名单", en:"Supplier list", de:"Lieferantenliste"},
+  suppliersSub: {zh:"这份名单决定每个任务里默认显示哪几个询价按钮。", en:"This list decides which enquiry buttons appear on every task.", de:"Diese Liste bestimmt, welche Anfrage-Schaltflächen bei jeder Aufgabe erscheinen."},
+  suppliersHint:{zh:"移除只是把它从默认按钮里拿掉，已经建好的分配条目不受影响，那家仍会显示在用到它的任务上。", en:"Removing only takes it out of the default buttons. Existing allocations are untouched and still show that supplier on the tasks using it.", de:"Entfernen nimmt den Lieferanten nur aus den Standard-Schaltflächen. Bestehende Zuteilungen bleiben unberührt und zeigen ihn weiterhin bei den betroffenen Aufgaben."},
+  inUse:        {zh:"%s 条分配在用", en:"used by %s allocation(s)", de:"in %s Zuteilung(en) genutzt"},
+  unused:       {zh:"暂未用到", en:"not used yet", de:"noch nicht genutzt"},
+  addSupplier:  {zh:"新供应商名字", en:"New supplier name", de:"Name des Lieferanten"},
+  add:          {zh:"加上", en:"Add", de:"Hinzufügen"},
+  remove:       {zh:"移除", en:"Remove", de:"Entfernen"},
+  dupSupplier:  {zh:"这家已经在名单里了。", en:"That supplier is already on the list.", de:"Dieser Lieferant steht bereits auf der Liste."},
+  saving:       {zh:"正在保存…", en:"Saving…", de:"Speichern…"},
+  savedLocal:   {zh:"未连上共享存储，这次改动只在这个窗口里。", en:"Not connected to shared storage. This change stays in this window.", de:"Keine Verbindung zum geteilten Speicher. Diese Änderung bleibt in diesem Fenster."},
+  savedConflict:{zh:"有人先保存了，正在载入最新版本…", en:"Someone saved first. Loading the latest version…", de:"Jemand war schneller. Lade die neueste Version…"},
+  savedBusy:    {zh:"保存太频繁，等几秒再操作。", en:"Saving too often. Wait a few seconds.", de:"Zu häufig gespeichert. Ein paar Sekunden warten."},
+  savedFail:    {zh:"保存失败（%s），改动只在本窗口。", en:"Save failed (%s). The change stays in this window.", de:"Speichern fehlgeschlagen (%s). Änderung bleibt in diesem Fenster."}
+};
+
+/* ---------- 供应商归一：同一家在 Excel / 口头里写法不一 ---------- */
+var SUPPLIER_ALIASES = {
+  "baren":"Bären Apotheke", "bären":"Bären Apotheke", "baeren":"Bären Apotheke",
+  "bären apotheke":"Bären Apotheke", "baeren apotheke":"Bären Apotheke",
+  "carna":"Carna Pharma", "carna pharma":"Carna Pharma",
+  "phoenix":"Phoenix", "aep":"AEP", "gehe":"Gehe"
+};
+function normSupplier(v){
+  var s = String(v == null ? "" : v).replace(/[​‌‍﻿]/g, "").trim();
+  if(!s) return "";
+  var hit = SUPPLIER_ALIASES[s.toLowerCase()];
+  return hit || s;
+}
+
+/* ---------- state / 每人本地偏好 ---------- */
+var state = JSON.parse(document.getElementById("board-state").textContent);
+var readOnly = false;
+var ui = {view:"board", filter:"all", q:"", openId:null, openNew:false, openSuppliers:false, confirmDel:null, dupPzn:null, formErr:""};
+var lang = "zh", me = "";
+try{
+  var qs = new URLSearchParams(location.search);
+  var fromUrl = qs.get("lang");
+  lang = (fromUrl && LANGS.indexOf(fromUrl) >= 0) ? fromUrl
+       : (localStorage.getItem("sb-lang") || "zh");
+  if(LANGS.indexOf(lang) < 0) lang = "zh";
+  me = localStorage.getItem("sb-me") || "";
+}catch(e){}
+try{
+  var saved = JSON.parse(sessionStorage.getItem("sb-ui") || "null");
+  if(saved){ ui.view = saved.view || "board"; ui.filter = saved.filter || "all"; ui.openId = saved.openId || null; ui.q = saved.q || ""; }
+}catch(e){}
+
+function t(key){
+  var row = T[key];
+  if(!row) return key;
+  var s = row[lang] || row.zh;
+  for(var i = 1; i < arguments.length; i++) s = s.replace("%s", arguments[i]);
+  return s;
+}
+
+/* =======================================================================
+   ② 纯计算：派生量与阶段推导。不碰 DOM，不改 state。
+   ======================================================================= */
+function esc(v){
+  return String(v == null ? "" : v).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function now(){ return new Date().toISOString(); }
+function hoursSince(iso){ return iso ? (Date.now() - new Date(iso).getTime()) / 36e5 : 0; }
+function ago(iso){
+  if(!iso) return t("none");
+  var h = hoursSince(iso);
+  if(h < 0.017) return t("justNow");
+  if(h < 1) return t("minutes", Math.round(h * 60));
+  if(h < 48) return t("hours", h < 10 ? h.toFixed(1) : Math.round(h));
+  return t("days", Math.round(h / 24));
+}
+function dayLabel(d){
+  if(!d) return t("none");
+  var dt = new Date(d + "T00:00:00");
+  if(isNaN(dt)) return d;
+  var diff = Math.round((dt - new Date(new Date().toDateString())) / 864e5);
+  if(diff === 0) return d + t("today");
+  return d + (diff > 0 ? t("inDays", diff) : t("agoDays", -diff));
+}
+/** PZN 归一：7~8 位数字 → 补零 8 位。其它一律 null（强校验，不静默接受脏值）。 */
+function normPzn(v){
+  var s = String(v == null ? "" : v).replace(/[^\d]/g, "");
+  return /^\d{7,8}$/.test(s) ? s.padStart(8, "0") : null;
+}
+function product(pzn){
+  return state.products[pzn] || {pzn:pzn, nameDe:"", nameZh:"", aliases:[]};
+}
+/** 产品名按语言主副换位；PZN 两端都常驻，它是唯一无歧义的锚。 */
+function nameMain(p){
+  if(lang === "zh") return p.nameZh || p.nameDe || p.pzn;
+  return p.nameDe || p.nameZh || p.pzn;
+}
+function nameAlt(p){
+  if(lang === "zh") return p.nameZh ? p.nameDe : "";
+  return p.nameDe ? p.nameZh : "";
+}
+
+var LIVE = {asked:1, quoted:1, chosen:1, ordered:1, received:1};   // 还算数的条目
+var COUNTED = {chosen:1, ordered:1, received:1};                   // 计入「已配」的条目
+
+function sumQty(t_, states){
+  var n = 0;
+  (t_.allocs || []).forEach(function(a){ if(states[a.state]) n += Number(a.qty) || 0; });
+  return n;
+}
+function allocated(t_){ return sumQty(t_, COUNTED); }
+function receivedQty(t_){
+  var n = 0;
+  (t_.allocs || []).forEach(function(a){ n += Number(a.receivedQty) || 0; });
+  return n;
+}
+function gapOf(t_){ return Math.max(0, (Number(t_.qty) || 0) - allocated(t_)); }
+function pendingAsks(t_){ return (t_.allocs || []).filter(function(a){ return a.state === "asked"; }); }
+function oldestPendingH(t_){
+  var p = pendingAsks(t_);
+  return p.length ? Math.max.apply(null, p.map(function(a){ return hoursSince(a.askedAt); })) : 0;
+}
+function allocIsHot(a){ return a.state === "asked" && hoursSince(a.askedAt) >= STALE_ASK_H; }
+function taskIsHot(t_){ return (t_.allocs || []).some(allocIsHot); }
+
+/** 阶段推导：跨分配条目聚合。手动推进（ordered/closed）优先。 */
+function deriveStage(t_){
+  if(t_.stageManual) return t_.stageManual;
+  var live = (t_.allocs || []).filter(function(a){ return LIVE[a.state]; });
+  if(!live.length) return "todo";
+  if(live.some(function(a){ return a.state === "ordered" || a.state === "received"; })) return "ordered";
+  if(live.some(function(a){ return a.state === "chosen" || a.state === "quoted"; })) return "quoted";
+  return "sourcing";
+}
+function lastTouch(t_){
+  var x = t_.createdAt;
+  (t_.allocs || []).forEach(function(a){ if(a.updatedAt && a.updatedAt > x) x = a.updatedAt; });
+  return x;
+}
+function severity(t_){
+  var st = deriveStage(t_);
+  if(st === "closed") return "";
+  if(taskIsHot(t_)) return "danger";
+  if(st === "todo" && hoursSince(t_.createdAt) >= STALE_NEW_H) return "warn";
+  if(st === "ordered") return "ok";
+  if(st === "quoted") return "ok";
+  if(pendingAsks(t_).length) return "warn";
+  return "";
+}
+function findTask(id){
+  for(var i = 0; i < state.tasks.length; i++) if(state.tasks[i].id === id) return state.tasks[i];
+  return null;
+}
+function findAlloc(tid, aid){
+  var t_ = findTask(tid); if(!t_) return null;
+  for(var i = 0; i < (t_.allocs || []).length; i++) if(t_.allocs[i].id === aid) return t_.allocs[i];
+  return null;
+}
+function nextId(prefix){ state.seq = (state.seq || 0) + 1; return prefix + state.seq; }
+function newTaskId(){
+  var d = new Date();
+  var base = "T-" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + "-";
+  var n = 1;
+  while(state.tasks.some(function(x){ return x.id === base + String(n).padStart(2, "0"); })) n++;
+  return base + String(n).padStart(2, "0");
+}
+/** 同一 PZN 是否已有进行中的一轮（未关闭）。用于「并入还是另起一轮」的提示。 */
+function openRoundFor(pzn){
+  for(var i = 0; i < state.tasks.length; i++){
+    var x = state.tasks[i];
+    if(x.pzn === pzn && deriveStage(x) !== "closed") return x;
+  }
+  return null;
+}
+function matchesQuery(t_, q){
+  if(!q) return true;
+  q = q.toLowerCase();
+  var p = product(t_.pzn);
+  var hay = [p.pzn, p.nameDe, p.nameZh].concat(p.aliases || []).concat(t_.requesters || []);
+  return hay.some(function(v){ return String(v || "").toLowerCase().indexOf(q) >= 0; });
+}
+
+var STAGES = [
+  {key:"todo",     label:"stTodo",     hint:"stTodoH"},
+  {key:"sourcing", label:"stSourcing", hint:"stSourcingH"},
+  {key:"quoted",   label:"stQuoted",   hint:"stQuotedH"},
+  {key:"ordered",  label:"stOrdered",  hint:"stOrderedH"},
+  {key:"closed",   label:"stClosed",   hint:"stClosedH"}
+];
+var ALLOC_STATES = [
+  {key:"asked",    label:"asAsked"},
+  {key:"quoted",   label:"asQuoted"},
+  {key:"chosen",   label:"asChosen"},
+  {key:"ordered",  label:"asOrdered"},
+  {key:"received", label:"asReceived"},
+  {key:"declined", label:"asDeclined"},
+  {key:"oos",      label:"asOos"}
+];
+function stageLabel(k){
+  for(var i = 0; i < STAGES.length; i++) if(STAGES[i].key === k) return t(STAGES[i].label);
+  return k;
+}
+function allocLabel(k){
+  for(var i = 0; i < ALLOC_STATES.length; i++) if(ALLOC_STATES[i].key === k) return t(ALLOC_STATES[i].label);
+  return k;
+}
+/** ETA 可能是日期，也可能是「待回」这类非日期值——Excel 里后者比前者还多。 */
+function etaText(v){
+  if(!v) return t("etaPending");
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : v;
+}
+
+/* =======================================================================
+   ③ 渲染：纯函数，只读 state
+   ======================================================================= */
+function statsHTML(){
+  var noAsk = 0, pend = 0, hot = 0, gap = 0;
+  state.tasks.forEach(function(x){
+    var st = deriveStage(x);
+    if(st === "closed") return;
+    if(st === "todo") noAsk++;
+    pend += pendingAsks(x).length;
+    (x.allocs || []).forEach(function(a){ if(allocIsHot(a)) hot++; });
+    if(st !== "todo" && gapOf(x) > 0) gap++;
+  });
+  function cell(v, k, cls){
+    return '<div class="stat' + (v && cls ? " " + cls : "") + '"><span class="v num">' + v + '</span><span class="k">' + t(k) + '</span></div>';
+  }
+  return '<div class="stats">' + cell(noAsk, "statTodo", "warn") + cell(pend, "statPending", "")
+       + cell(hot, "statHot", "danger") + cell(gap, "statGap", "warn") + '</div>';
+}
+function topHTML(){
+  return '<div class="topbar"><div class="topbar-row">' +
+    '<div class="brand"><h1>' + esc(TITLE) + '</h1><span class="sub">' + esc(t("tagline")) + '</span></div>' +
+    '<div class="langs">' + LANGS.map(function(l){
+      return '<button data-lang="' + l + '" aria-pressed="' + (lang === l) + '">' + l.toUpperCase() + '</button>';
+    }).join("") + '</div>' +
+    '<div class="who"><span class="lbl">' + esc(t("me")) + '</span><input id="me-input" placeholder="' + esc(t("mePh")) + '" value="' + esc(me) + '"></div>' +
+    '<button class="btn" id="btn-suppliers">' + esc(t("suppliersBtn")) + '</button>' +
+    '<button class="btn primary" id="btn-new"' + (readOnly ? " disabled" : "") + '>' + esc(t("newTask")) + '</button>' +
+    '</div>' + statsHTML() +
+    '<div class="tabs" role="tablist">' +
+      '<button class="tab" role="tab" data-view="board" aria-selected="' + (ui.view === "board") + '">' + esc(t("viewBoard")) + '</button>' +
+      '<button class="tab" role="tab" data-view="list" aria-selected="' + (ui.view === "list") + '">' + esc(t("viewList")) + '</button>' +
+    '</div>' +
+    (readOnly ? '<div class="notice">' + esc(t("readonly")) + '</div>' : "") +
+    '</div>';
+}
+function progressHTML(t_){
+  var need = Number(t_.qty) || 0, alloc = allocated(t_), recv = receivedQty(t_), gap = gapOf(t_);
+  var pa = need ? Math.min(100, alloc / need * 100) : 0;
+  var pr = need ? Math.min(100, recv / need * 100) : 0;
+  var right = gap > 0
+    ? '<span class="gap">' + esc(t("gap")) + ' <span class="num">' + gap + '</span></span>'
+    : '<span class="done">' + esc(t("full")) + '</span>';
+  return '<div class="prog">' +
+    '<div class="prog-row"><span>' + esc(t("allocated")) + '</span><span class="big num">' + alloc + '</span>' +
+      '<span>/ ' + esc(t("need")) + ' <span class="num">' + need + '</span> ' + esc(t_.unit || "") + '</span>' + right + '</div>' +
+    '<div class="bar"><i class="alloc" style="width:' + pa.toFixed(1) + '%"></i><i class="recv" style="width:' + pr.toFixed(1) + '%"></i></div>' +
+    (recv > 0 ? '<div class="prog-row"><span>' + esc(t("received")) + ' <span class="num">' + recv + '</span></span></div>' : "") +
+    '</div>';
+}
+function agingHTML(t_){
+  var st = deriveStage(t_), txt = "", cls = "";
+  if(st === "todo"){
+    var h = hoursSince(t_.createdAt);
+    txt = t("agingNoAsk", ago(t_.createdAt)); cls = h >= STALE_NEW_H ? "hot" : "";
+  }else if(st === "sourcing"){
+    var hs = oldestPendingH(t_);
+    if(hs > 0){
+      var oldest = pendingAsks(t_).map(function(a){ return a.askedAt; }).sort()[0];
+      txt = t("agingOldest", ago(oldest)); cls = hs >= STALE_ASK_H ? "hot" : "warm";
+    }
+  }else if(st === "quoted"){
+    txt = t("agingWait", ago(lastTouch(t_)));
+  }
+  return txt ? '<div class="card-foot"><span class="aging ' + cls + '">' + esc(txt) + '</span></div>' : "";
+}
+function cardHTML(t_){
+  var p = product(t_.pzn), alt = nameAlt(p), sev = severity(t_);
+  return '<button class="card' + (sev ? " sev-" + sev : "") + '" data-task="' + esc(t_.id) + '">' +
+    '<div class="card-top">' +
+      '<span class="card-name">' + esc(nameMain(p)) + '</span>' +
+      (alt ? '<span class="card-alt">' + esc(alt) + '</span>' : "") +
+      '<span class="card-pzn">PZN ' + esc(p.pzn) + '</span>' +
+      (t_.preferredSupplier ? '<span class="tag pref">' + esc(t_.preferredSupplier) + '</span>' : "") +
+      (t_.demo ? '<span class="tag demo">demo</span>' : "") +
+    '</div>' +
+    progressHTML(t_) +
+    '<div class="card-meta">' +
+      '<span>' + esc(t("needBy")) + ' ' + esc(t_.needBy || t("notSet")) + '</span>' +
+      ((t_.requesters || []).length ? '<span>' + esc(t("requesters")) + ' ' + esc(t_.requesters.join(" / ")) + '</span>' : "") +
+    '</div>' + agingHTML(t_) + '</button>';
+}
+function boardHTML(){
+  var q = ui.q;
+  return '<div class="lanes">' + STAGES.map(function(s){
+    var rows = state.tasks.filter(function(x){ return deriveStage(x) === s.key && matchesQuery(x, q); });
+    rows.sort(function(a, b){ return (a.needBy || "9999") < (b.needBy || "9999") ? -1 : 1; });
+    return '<section class="lane"><div class="lane-head"><div class="t"><h2>' + esc(t(s.label)) + '</h2>' +
+      '<span class="c">' + rows.length + '</span></div><div class="h">' + esc(t(s.hint)) + '</div></div>' +
+      '<div class="lane-body">' + (rows.length ? rows.map(cardHTML).join("") : '<div class="lane-empty">' + esc(t("laneEmpty")) + '</div>') +
+      '</div></section>';
+  }).join("") + '</div>';
+}
+var FILTERS = [
+  {key:"all", label:"fAll"}, {key:"todo", label:"fTodo"}, {key:"asking", label:"fAsking"},
+  {key:"hot", label:"fHot"}, {key:"gap", label:"fGap"}, {key:"ordered", label:"fOrdered"}
+];
+function passFilter(t_){
+  var st = deriveStage(t_);
+  switch(ui.filter){
+    case "all":     return st !== "closed";
+    case "todo":    return st === "todo";
+    case "asking":  return pendingAsks(t_).length > 0;
+    case "hot":     return taskIsHot(t_);
+    case "gap":     return st !== "closed" && st !== "todo" && gapOf(t_) > 0;
+    case "ordered": return st === "ordered";
+    default:        return true;
+  }
+}
+function allocSummary(t_){
+  if(!(t_.allocs || []).length) return '<span style="color:var(--faint)">' + esc(t("none")) + '</span>';
+  return t_.allocs.map(function(a){
+    var col = a.state === "asked" ? (allocIsHot(a) ? "var(--danger)" : "var(--warn)")
+            : (a.state === "declined" || a.state === "oos") ? "var(--faint)" : "var(--ok)";
+    var tail = a.state === "asked" ? " " + ago(a.askedAt) : (a.qty ? " " + a.qty : "");
+    return '<div>' + esc(a.supplier) + ' · <span style="color:' + col + '">' + esc(allocLabel(a.state)) + esc(tail) + '</span></div>';
+  }).join("");
+}
+function tableHTML(){
+  var rows = state.tasks.filter(function(x){ return passFilter(x) && matchesQuery(x, ui.q); });
+  rows.sort(function(a, b){
+    var ha = taskIsHot(a) ? 0 : 1, hb = taskIsHot(b) ? 0 : 1;
+    if(ha !== hb) return ha - hb;
+    return (a.needBy || "9999") < (b.needBy || "9999") ? -1 : 1;
+  });
+  var body = rows.length ? rows.map(function(x){
+    var p = product(x.pzn), alt = nameAlt(p), st = deriveStage(x), gap = gapOf(x);
+    return '<tr class="' + (taskIsHot(x) ? "hot" : "") + '" data-task="' + esc(x.id) + '">' +
+      '<td><span class="num">' + esc(x.id) + '</span><div class="p2">' + esc((x.requesters || []).join(" / ")) + '</div></td>' +
+      '<td><span class="p1">' + esc(nameMain(p)) + '</span><div class="p2">PZN ' + esc(p.pzn) + (alt ? " · " + esc(alt) : "") + '</div></td>' +
+      '<td class="num">' + esc(allocated(x)) + ' / ' + esc(x.qty) + ' ' + esc(x.unit || "") +
+        (gap > 0 ? '<div class="p2" style="color:var(--warn)">' + esc(t("gap")) + ' ' + gap + '</div>' : "") + '</td>' +
+      '<td><span class="chip ' + st + '">' + esc(stageLabel(st)) + '</span></td>' +
+      '<td style="font-size:11.5px">' + allocSummary(x) + '</td>' +
+      '<td class="num">' + esc(x.needBy || t("none")) + '</td>' +
+      '<td><button class="btn sm" data-task="' + esc(x.id) + '">' + esc(t("open")) + '</button></td>' +
+    '</tr>';
+  }).join("") : '<tr><td colspan="7"><div class="empty">' + esc(t("emptyFilter")) + '</div></td></tr>';
+  return '<div class="tablewrap"><div class="filters">' +
+    FILTERS.map(function(f){
+      return '<button class="btn sm" data-filter="' + f.key + '" aria-pressed="' + (ui.filter === f.key) + '">' + esc(t(f.label)) + '</button>';
+    }).join("") +
+    '<input id="q-input" class="btn sm" style="min-width:190px;cursor:text" placeholder="' + esc(t("search")) + '" value="' + esc(ui.q) + '">' +
+    '</div><div class="tscroll"><table><thead><tr>' +
+      '<th>ID</th><th>' + esc(t("product")) + '</th><th>' + esc(t("qty")) + '</th><th>' + esc(t("stage")) + '</th>' +
+      '<th>' + esc(t("supplier")) + '</th><th>' + esc(t("needBy")) + '</th><th></th>' +
+    '</tr></thead><tbody>' + body + '</tbody></table></div></div>';
+}
+function supplierChipsHTML(t_){
+  var known = state.suppliers.slice();
+  (t_.allocs || []).forEach(function(a){ if(known.indexOf(a.supplier) < 0) known.push(a.supplier); });
+  return known.map(function(sup){
+    var on = (t_.allocs || []).some(function(a){ return a.supplier === sup && LIVE[a.state]; });
+    return '<button class="sup' + (on ? " on" : "") + '" data-ask="' + esc(t_.id) + '|' + esc(sup) + '"' + (readOnly ? " disabled" : "") + '>' + esc(sup) + '</button>';
+  }).join("");
+}
+function allocHTML(t_, a){
+  var key = esc(t_.id) + '|' + esc(a.id);
+  var btn = function(act, label, cls){
+    return '<button type="button" class="btn sm ' + (cls || "") + '" data-act="' + act + '|' + key + '"' + (readOnly ? " disabled" : "") + '>' + esc(t(label)) + '</button>';
+  };
+  return '<form class="alloc' + (allocIsHot(a) ? " hot" : "") + '" data-alloc="' + key + '">' +
+    '<div class="alloc-head">' +
+      '<span class="sup-name">' + esc(a.supplier) + '</span>' +
+      '<span class="chip ' + a.state + '">' + esc(allocLabel(a.state)) + '</span>' +
+      (a.state === "asked" ? '<span class="when">' + esc(ago(a.askedAt)) + '</span>' : '<span class="when">' + esc(t("updatedBy", a.by || "—", ago(a.updatedAt))) + '</span>') +
+    '</div>' +
+    '<div class="grid">' +
+      '<div class="field"><label>' + esc(t("qty")) + '</label><input name="qty" type="number" min="0" value="' + esc(a.qty == null ? "" : a.qty) + '"></div>' +
+      '<div class="field"><label>' + esc(t("price")) + '</label><input name="price" value="' + esc(a.price || "") + '" placeholder="5.49"></div>' +
+      '<div class="field"><label>' + esc(t("eta")) + '</label><input name="eta" value="' + esc(a.eta || "") + '" placeholder="2026-08-28 / ' + esc(t("etaPending")) + '"></div>' +
+      '<div class="field"><label>' + esc(t("mhd")) + '</label><input name="mhd" value="' + esc(a.mhd || "") + '" placeholder="2028-03"></div>' +
+      '<div class="field full"><label>' + esc(t("note")) + '</label><input name="note" value="' + esc(a.note || "") + '"></div>' +
+    '</div>' +
+    '<div class="rowbtns">' +
+      '<button type="submit" class="btn sm primary"' + (readOnly ? " disabled" : "") + '>' + esc(t("save")) + '</button>' +
+      (a.state === "asked" ? btn("replied", "markReplied") : "") +
+      (a.state === "quoted" ? btn("choose", "choose") : "") +
+      (a.state === "chosen" ? btn("ordered", "markOrdered") : "") +
+      btn("oos", "markOos") + btn("decline", "decline") +
+      '<button type="button" class="btn sm ghost danger-text" data-act="delalloc|' + key + '"' + (readOnly ? " disabled" : "") + '>' + esc(t("del")) + '</button>' +
+    '</div></form>';
+}
+/** 某供应商被多少条分配条目在用——移除前让人看见代价，而不是删完才发现。 */
+function supplierUsage(name){
+  var n = 0;
+  state.tasks.forEach(function(t_){
+    (t_.allocs || []).forEach(function(a){ if(a.supplier === name) n++; });
+  });
+  return n;
+}
+function suppliersHTML(){
+  var rows = state.suppliers.map(function(sup){
+    var n = supplierUsage(sup);
+    return '<div class="alloc" style="flex-direction:row;align-items:center;gap:10px">' +
+      '<span style="font-weight:600;font-size:13px">' + esc(sup) + '</span>' +
+      '<span style="font-size:11.5px;color:var(--faint)">' + esc(n ? t("inUse", n) : t("unused")) + '</span>' +
+      '<button type="button" class="btn sm ghost danger-text" style="margin-left:auto" data-delsup="' + esc(sup) + '"' +
+        (readOnly ? " disabled" : "") + '>' + esc(t("remove")) + '</button></div>';
+  }).join("");
+  return '<div class="scrim" data-close="1"></div><aside class="drawer">' +
+    '<div class="drawer-head"><div><h3>' + esc(t("suppliersTitle")) + '</h3>' +
+    '<div class="sub">' + esc(t("suppliersSub")) + '</div></div>' +
+    '<button class="btn sm ghost x" data-close="1">' + esc(t("close")) + '</button></div>' +
+    '<div class="drawer-body">' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' + rows + '</div>' +
+      '<form class="supform" id="add-supplier" style="gap:6px">' +
+        '<input name="sup" style="width:180px" placeholder="' + esc(t("addSupplier")) + '" required' + (readOnly ? " disabled" : "") + '>' +
+        '<button class="btn sm primary" type="submit"' + (readOnly ? " disabled" : "") + '>' + esc(t("add")) + '</button>' +
+      '</form>' +
+      (ui.formErr ? '<div class="err">' + esc(ui.formErr) + '</div>' : "") +
+      '<div class="hint">' + esc(t("suppliersHint")) + '</div>' +
+    '</div></aside>';
+}
+function drawerHTML(){
+  if(ui.openSuppliers) return suppliersHTML();
+  if(ui.openNew) return newTaskHTML();
+  if(!ui.openId) return "";
+  var t_ = findTask(ui.openId);
+  if(!t_) return "";
+  var p = product(t_.pzn), alt = nameAlt(p), st = deriveStage(t_);
+  var allocs = (t_.allocs || []).length
+    ? t_.allocs.map(function(a){ return allocHTML(t_, a); }).join("")
+    : '<div class="hint">' + esc(t("noAllocs")) + '</div>';
+  return '<div class="scrim" data-close="1"></div><aside class="drawer">' +
+    '<div class="drawer-head"><div><h3>' + esc(nameMain(p)) + '</h3>' +
+      '<div class="sub"><span class="num">PZN ' + esc(p.pzn) + '</span> · ' + esc(t_.id) + ' · ' + esc(stageLabel(st)) +
+      (alt ? ' · ' + esc(alt) : "") + '</div></div>' +
+      '<button class="btn sm ghost x" data-close="1">' + esc(t("close")) + '</button></div>' +
+    '<div class="drawer-body">' +
+      progressHTML(t_) +
+      '<dl class="kv">' +
+        '<dt>' + esc(t("needBy")) + '</dt><dd>' + esc(dayLabel(t_.needBy)) + '</dd>' +
+        '<dt>' + esc(t("mhdMin")) + '</dt><dd>' + esc(t_.mhdMin || t("notSet")) + '</dd>' +
+        '<dt>' + esc(t("preferred")) + '</dt><dd>' + esc(t_.preferredSupplier || t("notSet")) + '</dd>' +
+        '<dt>' + esc(t("refPrice")) + '</dt><dd>' + esc(t_.refPrice || t("notSet")) + '</dd>' +
+        '<dt>' + esc(t("requesters")) + '</dt><dd>' + esc((t_.requesters || []).join(" / ") || t("notSet")) + '</dd>' +
+        '<dt>' + esc(t("orderDate")) + '</dt><dd>' + esc(t_.orderDate || t("none")) + '</dd>' +
+        '<dt>' + esc(t("createdAt")) + '</dt><dd>' + esc(ago(t_.createdAt)) + '</dd>' +
+        (t_.note ? '<dt>' + esc(t("note")) + '</dt><dd>' + esc(t_.note) + '</dd>' : "") +
+      '</dl>' +
+      '<div><div class="section-lbl">' + esc(t("askSection")) + '</div><div class="supchips">' + supplierChipsHTML(t_) +
+        '<form class="supform" data-addsup="' + esc(t_.id) + '"><input name="sup" placeholder="' + esc(t("askOther")) + '" required' + (readOnly ? " disabled" : "") + '>' +
+        '<button class="btn sm" type="submit"' + (readOnly ? " disabled" : "") + '>' + esc(t("send")) + '</button></form></div></div>' +
+      '<div><div class="section-lbl">' + esc(t("allocSection")) + '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + allocs + '</div></div>' +
+      '<div class="rowbtns" style="border-top:1px solid var(--line);padding-top:12px">' +
+        '<span class="lbl" style="margin-right:4px">' + esc(t("advanceTo")) + '</span>' +
+        '<button class="btn sm" data-stage="' + esc(t_.id) + '|" ' + (!t_.stageManual || readOnly ? "disabled" : "") + '>' + esc(t("auto")) + '</button>' +
+        ['ordered','closed'].map(function(k){
+          return '<button class="btn sm" data-stage="' + esc(t_.id) + '|' + k + '"' + (t_.stageManual === k || readOnly ? " disabled" : "") + '>' + esc(stageLabel(k)) + '</button>';
+        }).join("") +
+      '</div>' +
+      '<div class="rowbtns"><button class="btn sm ghost danger-text" data-del="' + esc(t_.id) + '"' + (readOnly ? " disabled" : "") + '>' +
+        esc(ui.confirmDel === t_.id ? t("delConfirm") : t("delTask")) + '</button></div>' +
+    '</div></aside>';
+}
+function newTaskHTML(){
+  var dup = ui.dupPzn ? openRoundFor(ui.dupPzn) : null;
+  return '<div class="scrim" data-close="1"></div><aside class="drawer">' +
+    '<div class="drawer-head"><div><h3>' + esc(t("newTitle")) + '</h3><div class="sub">' + esc(t("newSub")) + '</div></div>' +
+    '<button class="btn sm ghost x" data-close="1">' + esc(t("close")) + '</button></div>' +
+    '<div class="drawer-body"><form class="form" id="new-task">' +
+      '<div class="field"><label>' + esc(t("pznLabel")) + '</label><input name="pzn" id="pzn-input" required placeholder="04100371"></div>' +
+      '<div class="hint full" id="pzn-hint"></div>' +
+      '<div class="field"><label>' + esc(t("qty")) + '</label><input name="qty" type="number" min="1" required placeholder="2200"></div>' +
+      '<div class="field"><label>' + esc(t("unit")) + '</label><input name="unit" placeholder="' + (lang === "zh" ? "支" : "pcs") + '"></div>' +
+      '<div class="field"><label>' + esc(t("needBy")) + '</label><input name="needBy" type="date"></div>' +
+      '<div class="field full"><label>' + esc(t("nameDe")) + '</label><input name="nameDe" id="nameDe-input" placeholder="Skinoren 15% Gel 30g"></div>' +
+      '<div class="field full"><label>' + esc(t("nameZh")) + '</label><input name="nameZh" id="nameZh-input" placeholder="杜鹃花酸凝胶 15% 30g"></div>' +
+      '<div class="field full"><label>' + esc(t("aliases")) + '</label><input name="aliases" id="aliases-input" placeholder="壬二酸凝胶, 杜鹃花酸"></div>' +
+      '<div class="field"><label>' + esc(t("mhdMin")) + '</label><input name="mhdMin" placeholder="2027-06"></div>' +
+      '<div class="field"><label>' + esc(t("preferred")) + '</label><input name="preferredSupplier" list="sup-list"></div>' +
+      '<div class="field"><label>' + esc(t("refPrice")) + '</label><input name="refPrice" placeholder="5.91"></div>' +
+      '<div class="field"><label>' + esc(t("requesters")) + '</label><input name="requesters" value="' + esc(me) + '" placeholder="Daniel, Lisa"></div>' +
+      '<div class="field full"><label>' + esc(t("note")) + '</label><textarea name="note"></textarea></div>' +
+      (ui.formErr ? '<div class="err full">' + esc(ui.formErr) + '</div>' : "") +
+      (dup ? '<div class="field full"><div class="err">' + esc(t("dupWarn")) + '</div>' +
+        '<div class="rowbtns" style="margin-top:6px">' +
+          '<button type="button" class="btn sm" data-task="' + esc(dup.id) + '">' + esc(t("openExisting")) + '</button>' +
+          '<button type="submit" name="force" value="1" class="btn sm primary">' + esc(t("startNew")) + '</button>' +
+        '</div></div>' : "") +
+      '<div class="rowbtns full"><button class="btn primary" type="submit"' + (readOnly ? " disabled" : "") + '>' + esc(t("createBtn")) + '</button></div>' +
+    '</form></div></aside>';
+}
+function datalistHTML(){
+  return '<datalist id="sup-list">' + state.suppliers.map(function(s){ return '<option value="' + esc(s) + '">'; }).join("") + '</datalist>';
+}
+function render(){
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : (lang === "de" ? "de" : "en");
+  document.getElementById("root").innerHTML =
+    topHTML() + '<main>' + (ui.view === "board" ? boardHTML() : tableHTML()) + '</main>' + drawerHTML() + datalistHTML();
+}
+
+/* =======================================================================
+   ④ 事件与持久化
+   ======================================================================= */
+function buildDoc(st){
+  var css = document.getElementById("app-style").textContent;
+  var js  = document.getElementById("app").textContent;
+  var json = JSON.stringify(st).replace(/</g, "\\u003c");
+  return '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+    '<title>' + TITLE + '</title>\n' +
+    '<link rel="preconnect" href="https://fonts.googleapis.com">\n' +
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n' +
+    '<link rel="stylesheet" href="' + FONT_URL.replace(/&/g, "&amp;") + '">\n' +
+    '<style id="app-style">' + css + '</style>\n</head>\n<body>\n' +
+    '<div id="root"></div>\n' +
+    '<script type="application/json" id="board-state">' + json + '<\/script>\n' +
+    '<script id="app">' + js + '<\/script>\n</body>\n</html>';
+}
+var api = null, apiTried = false;
+function getApi(){
+  if(apiTried) return Promise.resolve(api);
+  apiTried = true;
+  if(!window.claude || typeof window.claude.use !== "function") return Promise.resolve(null);
+  return window.claude.use("artifact").then(function(a){ api = a; return a; }).catch(function(){ return null; });
+}
+function toast(text, isErr){
+  var el = document.getElementById("saving-toast");
+  if(!el){ el = document.createElement("div"); el.id = "saving-toast"; document.body.appendChild(el); }
+  el.className = "saving" + (isErr ? " err" : "");
+  el.textContent = text;
+  if(isErr) setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 6000);
+}
+function clearToast(){
+  var el = document.getElementById("saving-toast");
+  if(el && el.parentNode) el.parentNode.removeChild(el);
+}
+function saveUI(){
+  try{ sessionStorage.setItem("sb-ui", JSON.stringify({view:ui.view, filter:ui.filter, openId:ui.openId, q:ui.q})); }catch(e){}
+}
+function commit(){
+  render(); saveUI();
+  if(readOnly) return;
+  toast(t("saving"));
+  getApi().then(function(a){
+    if(!a){ toast(t("savedLocal"), true); return; }
+    return a.publish(buildDoc(state)).catch(function(err){
+      var code = err && err.code;
+      if(code === "conflict"){ toast(t("savedConflict")); return; }
+      if(code === "not_writer" || code === "not_granted" || code === "consent_required" || code === "not_declared"){
+        readOnly = true; clearToast(); render(); return;
+      }
+      if(code === "rate_limited"){ toast(t("savedBusy"), true); return; }
+      toast(t("savedFail", code || "?"), true);
+    });
+  });
+}
+function touch(a){ a.updatedAt = now(); a.by = me || a.by || ""; }
+
+document.addEventListener("click", function(ev){
+  var el = ev.target.closest ? ev.target.closest("[data-lang],[data-view],[data-filter],[data-task],[data-close],[data-ask],[data-act],[data-stage],[data-del],[data-delsup],#btn-new,#btn-suppliers") : null;
+  if(!el) return;
+
+  if(el.hasAttribute("data-lang")){
+    lang = el.getAttribute("data-lang");
+    try{ localStorage.setItem("sb-lang", lang); }catch(e){}
+    render(); return;
+  }
+  if(el.id === "btn-new"){ ui.openNew = true; ui.openId = null; ui.openSuppliers = false; ui.dupPzn = null; ui.formErr = ""; render(); return; }
+  if(el.id === "btn-suppliers"){ ui.openSuppliers = true; ui.openNew = false; ui.openId = null; ui.formErr = ""; render(); return; }
+  if(el.hasAttribute("data-delsup")){
+    if(readOnly) return;
+    var gone = el.getAttribute("data-delsup");
+    state.suppliers = state.suppliers.filter(function(x){ return x !== gone; });
+    ui.formErr = ""; commit(); return;
+  }
+  if(el.hasAttribute("data-close")){ ui.openNew = false; ui.openId = null; ui.openSuppliers = false; ui.dupPzn = null; ui.formErr = ""; saveUI(); render(); return; }
+  if(el.hasAttribute("data-view")){ ui.view = el.getAttribute("data-view"); saveUI(); render(); return; }
+  if(el.hasAttribute("data-filter")){ ui.filter = el.getAttribute("data-filter"); saveUI(); render(); return; }
+
+  if(el.hasAttribute("data-ask")){
+    var pa = el.getAttribute("data-ask").split("|");
+    var task = findTask(pa[0]); if(!task || readOnly) return;
+    task.allocs = task.allocs || [];
+    task.allocs.push({id:nextId("A-"), supplier:normSupplier(pa[1]), state:"asked", askedAt:now(),
+                      repliedAt:null, qty:null, price:"", eta:"", mhd:"", receivedQty:null, note:"", by:me, updatedAt:now()});
+    commit(); return;
+  }
+  if(el.hasAttribute("data-act")){
+    var parts = el.getAttribute("data-act").split("|");
+    var act = parts[0], task2 = findTask(parts[1]), a = findAlloc(parts[1], parts[2]);
+    if(!task2 || readOnly) return;
+    if(act === "delalloc"){
+      task2.allocs = task2.allocs.filter(function(x){ return x.id !== parts[2]; });
+      commit(); return;
+    }
+    if(!a) return;
+    if(act === "replied"){ a.state = "quoted"; a.repliedAt = now(); }
+    else if(act === "choose"){ a.state = "chosen"; if(!a.repliedAt) a.repliedAt = now(); }
+    else if(act === "ordered"){ a.state = "ordered"; }
+    else if(act === "oos"){ a.state = "oos"; if(!a.repliedAt) a.repliedAt = now(); }
+    else if(act === "decline"){ a.state = "declined"; if(!a.repliedAt) a.repliedAt = now(); }
+    touch(a); commit(); return;
+  }
+  if(el.hasAttribute("data-stage")){
+    var ps = el.getAttribute("data-stage").split("|");
+    var task3 = findTask(ps[0]); if(!task3 || readOnly) return;
+    task3.stageManual = ps[1] || null;
+    commit(); return;
+  }
+  if(el.hasAttribute("data-del")){
+    var id = el.getAttribute("data-del");
+    if(readOnly) return;
+    if(ui.confirmDel !== id){ ui.confirmDel = id; render(); return; }
+    state.tasks = state.tasks.filter(function(x){ return x.id !== id; });
+    ui.confirmDel = null; ui.openId = null; commit(); return;
+  }
+  if(el.hasAttribute("data-task")){
+    ui.openId = el.getAttribute("data-task"); ui.openNew = false; ui.openSuppliers = false; ui.dupPzn = null;
+    saveUI(); render(); return;
+  }
+});
+
+document.addEventListener("submit", function(ev){
+  var f = ev.target;
+  ev.preventDefault();
+  if(readOnly) return;
+
+  if(f.id === "add-supplier"){
+    var name = normSupplier(f.sup.value);
+    if(!name) return;
+    if(state.suppliers.indexOf(name) >= 0){ ui.formErr = t("dupSupplier"); render(); return; }
+    state.suppliers.push(name);
+    state.suppliers.sort();
+    ui.formErr = ""; commit(); return;
+  }
+  if(f.hasAttribute("data-addsup")){
+    var task = findTask(f.getAttribute("data-addsup"));
+    var sup = normSupplier(f.sup.value);
+    if(!task || !sup) return;
+    if(state.suppliers.indexOf(sup) < 0) state.suppliers.push(sup);
+    task.allocs = task.allocs || [];
+    task.allocs.push({id:nextId("A-"), supplier:sup, state:"asked", askedAt:now(), repliedAt:null,
+                      qty:null, price:"", eta:"", mhd:"", receivedQty:null, note:"", by:me, updatedAt:now()});
+    commit(); return;
+  }
+  if(f.hasAttribute("data-alloc")){
+    var pr = f.getAttribute("data-alloc").split("|");
+    var a = findAlloc(pr[0], pr[1]); if(!a) return;
+    a.qty = f.qty.value === "" ? null : Number(f.qty.value);
+    a.price = f.price.value.trim();
+    a.eta = f.eta.value.trim();
+    a.mhd = f.mhd.value.trim();
+    a.note = f.note.value.trim();
+    if(a.state === "asked" && (a.price || a.qty)){ a.state = "quoted"; a.repliedAt = a.repliedAt || now(); }
+    touch(a); commit(); return;
+  }
+  if(f.id === "new-task"){
+    var pzn = normPzn(f.pzn.value);
+    var qty = Number(f.qty.value);
+    var nameDe = f.nameDe.value.trim(), nameZh = f.nameZh.value.trim();
+    ui.formErr = "";
+    if(!pzn){ ui.formErr = t("errPzn"); render(); return; }
+    if(!(qty > 0)){ ui.formErr = t("errQty"); render(); return; }
+    var known = state.products[pzn];
+    if(!known && !nameDe && !nameZh){ ui.formErr = t("errName"); render(); return; }
+    var forced = ev.submitter && ev.submitter.name === "force";
+    if(!forced && openRoundFor(pzn)){ ui.dupPzn = pzn; render(); return; }
+
+    if(known){
+      if(nameDe) known.nameDe = nameDe;
+      if(nameZh) known.nameZh = nameZh;
+    }else{
+      state.products[pzn] = {pzn:pzn, nameDe:nameDe, nameZh:nameZh, aliases:[]};
+    }
+    var extra = f.aliases.value.split(/[,，]/).map(function(s){ return s.trim(); }).filter(Boolean);
+    extra.forEach(function(s){
+      var arr = state.products[pzn].aliases;
+      if(arr.indexOf(s) < 0) arr.push(s);
+    });
+    var today = new Date().toISOString().slice(0, 10);
+    state.tasks.unshift({
+      id:newTaskId(), pzn:pzn, qty:qty, unit:f.unit.value.trim(),
+      needBy:f.needBy.value || "", mhdMin:f.mhdMin.value.trim(),
+      preferredSupplier:normSupplier(f.preferredSupplier.value),
+      refPrice:f.refPrice.value.trim(), refPriceSource:"manual",
+      requesters:f.requesters.value.split(/[,，]/).map(function(s){ return s.trim(); }).filter(Boolean),
+      orderDate:today, createdAt:now(), stageManual:null, note:f.note.value.trim(), allocs:[]
+    });
+    ui.openNew = false; ui.dupPzn = null; ui.formErr = "";
+    commit(); return;
+  }
+});
+
+document.addEventListener("input", function(ev){
+  if(ev.target.id === "me-input"){
+    me = ev.target.value.trim();
+    try{ localStorage.setItem("sb-me", me); }catch(e){}
+    return;
+  }
+  if(ev.target.id === "q-input"){
+    ui.q = ev.target.value;
+    var pos = ev.target.selectionStart;
+    saveUI(); render();
+    var again = document.getElementById("q-input");
+    if(again){ again.focus(); again.setSelectionRange(pos, pos); }
+    return;
+  }
+  // 新建表单里输入 PZN，命中字典就把品名带出来——同一产品只需认一次
+  if(ev.target.id === "pzn-input"){
+    var p = normPzn(ev.target.value);
+    var hit = p && state.products[p];
+    var hint = document.getElementById("pzn-hint");
+    if(hit){
+      var de = document.getElementById("nameDe-input"), zh = document.getElementById("nameZh-input");
+      if(de && !de.value) de.value = hit.nameDe || "";
+      if(zh && !zh.value) zh.value = hit.nameZh || "";
+      if(hint) hint.textContent = t("known");
+    }else if(hint){
+      hint.textContent = "";
+    }
+  }
+});
+
+document.addEventListener("keydown", function(ev){
+  if(ev.key === "Escape" && (ui.openId || ui.openNew || ui.openSuppliers)){
+    ui.openId = null; ui.openNew = false; ui.openSuppliers = false; ui.dupPzn = null; saveUI(); render();
+  }
+});
+
+render();
+
+/* 计时类文案（「最久一条询价已发出 X」「建了 X 还没发出询价」）每分钟自己走字，
+   不用刷新页面。避开三种会打断人的时机：正在保存、正在输入、抽屉开着。 */
+setInterval(function(){
+  var ae = document.activeElement;
+  var typing = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT");
+  if(!typing && !ui.openId && !ui.openNew && !ui.openSuppliers) render();
+}, 60000);
+})();
+</script>

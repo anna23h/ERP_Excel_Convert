@@ -18,6 +18,7 @@
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
+| `dashboard/` | **询价直通看板**（销售 ↔ 采购，询价阶段不进 ERP）：看板页面源码 `board.html` + 从 Odoo **只读**离线导出的产品查找表 | 看板跑在 claude.ai artifact；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#询价直通看板销售--采购) + 脚本 docstring | 建设中 |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
@@ -92,6 +93,66 @@ C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会
 | VO 账单/出库 | `0610VO开发票.xlsx` / `VO出库198单.xlsx` | 步骤2 导出 |
 | 昨日发货表 | `1006发货表.xlsx` | 步骤6 去重 |
 | 成品参考 | `…面单+拣货单.xlsx` | 步骤7/8 目标格式 |
+
+## 询价直通看板（销售 ↔ 采购）
+
+询价阶段的东西不构成真实订单、不进 ERP，单独用这个看板承载。它**跑在 claude.ai artifact 上**，
+本仓放两样东西：页面源码 `dashboard/board.html`，和从 Odoo 离线导出的**产品查找表**。
+
+### ⚠ 两个「记录」分开，改动前必读
+
+- `dashboard/board.html` 是**代码之记录**。
+- 线上 artifact 是**数据之记录**。
+
+看板会**自我发布**——有人在页面里改一条分配，它就把自己整份重新发布一遍，state 内嵌在
+发布出去的 HTML 里。所以两者必然会漂。**改代码前必须先把线上版本拉下来、把 state 抠出来、
+注入新代码再发布**，不能拿本地文件直接覆盖，否则抹掉的是真实业务数据。
+
+### 数据模型（schema 2，两层）
+
+```
+采购任务 task   一个产品一轮采购（主键 = PZN + 这一轮）
+  └ 分配条目 allocation   同一产品可拆给多家，同一家也可以给多批
+产品字典 products         旁挂引用：pzn / nameDe / nameZh / aliases[]
+```
+
+**只做药房产品，且只做单件**——多品装与带店铺后缀的产品只存在于天猫 C 端。
+
+### 产品字典导出
+
+**与「页面接入 ERP API」无关**：artifact 的 CSP 封死一切外部主机，`network` 能力也不可用，
+页面永远不能自己调 ERP。本脚本跑在本机、产出一个 JSON，供粘贴导入时在本地查名。
+（因此查找表**不塞进看板**——1.5MB，而看板每次保存都要把自己整份重发一遍。）
+
+```bash
+python3 dashboard/export_product_dict.py                    # → dashboard/data/product_dict.json
+python3 dashboard/export_product_dict.py --include-unsellable
+```
+
+- **范围只做药房产品**（`pzn` 非空）**且只做单件**。日化品没有 PZN，看板不覆盖；
+  多品装与带店铺后缀的产品（`_VO`=VoyageOne 天猫 / `_GW` / `x2` / `[N Packs]`）
+  **只存在于天猫 C 端，绝不进询价看板**，故默认排除（`--keep-variants` 可保留）。
+  实测可售药房品 6163 → 排除变体后 **5692** 个。
+- **中文名不在 `product.product` 上**——实测 10298 个可售产品里 `zh_CN` 的 name 只有 6 条真含中文。
+  真正来源是 voyageone 模块的 **`product.voyageone`**（7484 条，`product_id → product.product`
+  关联率 100%）。导出后**有中文名 2915 个（51%）**。
+- **中文名要剥状态前缀**：`不可售` / `不采货` / `(Delisted)` / `(Außer Handel)`。
+  不剥的话 4799 条「含中文」里有 **535 条其实只是被前缀污染的德语名**。
+- **别名来自 `sale.order.line.vo.title`**（销售写在订单上的实际叫法，91% 含中文，
+  如 `双心儿童鱼油60粒` / `Remifemin 莉芙敏片 经典版 60粒`），按 `sku ↔ vo.code` 关联，
+  命中药房产品 59 个。**`sku` 里实测有零宽空格**，必须先归一再匹配。
+- **⚠ 排除变体是 PZN 可用的前提**：不排除的话实测 **352 个 PZN 撞号**——
+  `[2 Packs]ANTIHYDRAL Salbe 70g` 与 `ANTIHYDRAL Salbe 70g` 同为 PZN `00052729`，
+  量价不同，混进来会把采购量算错。**排除后 352 → 11**。
+  剩余 11 个是**同一单件产品的重复建档**（一条旧内部码、一条 PZN 码，如
+  `Betaisodona_00721478` vs `Betaisodona_01931491`），挑哪条都是同一件实物，
+  风险只是挑到已停用的那条 → 写进产出 `pznCollisions`，导入时告警交人选，**不静默取一条**。
+  PZN 归一直接复用 `reorder/reorder_helper.norm_pzn`（那边的「ID 优先，PZN 回退」
+  是另一场景的结论，本表因已排除变体而可用 PZN），不另写一套。
+- **产出 `dashboard/data/product_dict.json` 已 gitignore**（1.5MB，可随时重跑）。
+  每条：`pzn` / `nameDe` / `nameZh` / `aliases[]` / `odooId` / `defaultCode` / `voCode` /
+  `saleOk` / `source`；顶层另有 `stats` 与 `pznCollisions`。
+
 
 ## 产出文件
 
