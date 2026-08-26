@@ -18,7 +18,7 @@
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
-| `dashboard/` | **询价直通看板**（销售 ↔ 采购，询价阶段不进 ERP）：看板页面源码 `board.html` + 从 Odoo **只读**离线导出的产品查找表 | 看板跑在 claude.ai artifact；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#询价直通看板销售--采购) + 脚本 docstring | 建设中 |
+| `dashboard/` | **询价直通看板**（销售 ↔ 采购，询价阶段不进 ERP）：Excel Online 共享表生成器 + 从 Odoo **只读**离线导出的产品查找表（另有已挂起的 artifact 版页面源码 `board.html`） | `python3 dashboard/make_board_xlsx.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#询价直通看板销售--采购) + 脚本 docstring | 建设中 |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
@@ -96,10 +96,49 @@ C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会
 
 ## 询价直通看板（销售 ↔ 采购）
 
-询价阶段的东西不构成真实订单、不进 ERP，单独用这个看板承载。它**跑在 claude.ai artifact 上**，
-本仓放两样东西：页面源码 `dashboard/board.html`，和从 Odoo 离线导出的**产品查找表**。
+询价阶段的东西不构成真实订单、不进 ERP，单独用这个看板承载。
 
-### ⚠ 两个「记录」分开，改动前必读
+### 载体：Excel Online 共享表（当前主线，2026-08-26 起）
+
+原先跑在 claude.ai artifact 上，**已挂起**——实测把同事加成协作者后依然不实时同步，
+一方改完必须重新分享链接对方才看得到；而 artifact 无 `db`/`room` 能力，state 只能内嵌
+文档整份重发布，多人协作的物理上限就是「后到者改动直接丢弃」。自建服务（SQLite + 认证 +
+公网 + 备份）评估后判为成本收益倒挂：要自建的那一件事恰是共享文档的看家本领。
+故改走 **Excel Online 共享表**——零开发、零部署、零运维，国内同事可访问。
+（决策全过程与「什么时候才回来自建」的触发条件见 `ISSUES.md` 的 J 条。）
+
+```bash
+python3 dashboard/make_board_xlsx.py                        # → results/询价看板.xlsx
+python3 dashboard/make_board_xlsx.py --no-sample            # 不带样例数据，出一张空表
+python3 dashboard/make_board_xlsx.py --out /path/to/x.xlsx
+```
+
+四个 sheet：**看板**（五列泳道，只读，卡片自动归位）/ **采购任务**（行式，人只填这里）/
+**产品字典**（5692 条，供 VLOOKUP）/ **供应商**（下拉名单，可自行增删）。
+
+- **⚠ 必须转 90 度**：Jürgen 现用的 `260825 Order template.xlsx` 是**转置的**（字段在 A 列，
+  每个产品占一整列，供应商纵向堆三块）。Excel 的筛选/排序/透视/条件格式/动态数组**全部假设
+  「一行一条记录」**——转置布局下做不出任何看板视图。字段一个不改，只是躺下来。
+- **阶段不用人填**：照搬 `board.html` 的 `deriveStage()` 规则写成公式。人只填供应商/量/价/
+  ETA/实收，阶段（待询价 → 询价中 → 已报价·待销售确认 → 已下单 → 已关闭）自己走，
+  看板卡片跟着换列。
+- **泳道用经典 `INDEX`+`MATCH`+`COUNTIF` 辅助键，不用 `FILTER`**：`FILTER` 经 openpyxl
+  写出要带 `_xlfn._xlws.` 前缀，且桌面版 Excel 2019 及更早不支持。兼容性优先于写法优雅。
+- **`ETA` 列不设日期格式**：真实数据里 `requested` / `??` 这类非日期值比日期还多。
+- **品名 VLOOKUP 尾部必须接 `&""`**：字典里 `nameZh` 为空时 VLOOKUP 返回空单元格，
+  Excel 会显示成 `0`，并一路污染到看板卡片（2026-08-26 在 Excel 里实跑发现）。
+- **PZN 校验只警告不阻断**：字典是药房产品快照，新品不该被挡住。
+- **⚠ 真实供应商名与进货价不进公开库**：脚本内只有占位符（`供应商 A~E` + 取整假价）。
+  要出一张能直接给采购看的表，放一份 `dashboard/data/board_seed.json`（该目录已 gitignore）：
+  `{"suppliers": [...], "sample": [[pzn, 需求量, 参考价, 下单日, 要货日, 提出人, 备注, [[供应商, 数量, 单价, ETA, 实收], ...]], ...]}`。
+  没有它照样能生成，只是名单和样例是假的。
+- 产出落 `results/`（已 gitignore）。
+
+### 已挂起：artifact 版（`dashboard/board.html`）
+
+代码保留，不再是主线。下述「两个记录分开」的注意事项**只在回头动 artifact 时才适用**。
+
+#### ⚠ 两个「记录」分开，改动前必读
 
 - `dashboard/board.html` 是**代码之记录**。
 - 线上 artifact 是**数据之记录**。
@@ -109,6 +148,8 @@ C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会
 注入新代码再发布**，不能拿本地文件直接覆盖，否则抹掉的是真实业务数据。
 
 ### 数据模型（schema 2，两层）
+
+> 两层模型本身不随载体变化，Excel 版沿用同一套（分配条目在 Excel 里横向摊成 5 组供应商列）。
 
 ```
 采购任务 task   一个产品一轮采购（主键 = PZN + 这一轮）
