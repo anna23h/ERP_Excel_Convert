@@ -130,14 +130,30 @@ def _write_head(ws, made_on, so_no):
     ws.row_dimensions[1].height = 20.25
     ws.row_dimensions[2].height = 35.25
 
-    ws["J5"] = so_no       # Invoice 左边一格：本箱单对应的 SO 号
+    # SO 号：左上角 A4:C5 一个大格（3 列宽 × 2 行高）。
+    # 原先放在 J5（Invoice 左边一格），单格装不下多张 SO 的拼接串（S02881+2882+2886），
+    # 会被右邻的 Invoice 挡住显示不全；且这张表是打印给仓库的，SO 号要一眼看见。
+    # 描边必须在 merge 之前：合并后除左上角外都是 MergedCell，赋 border 会被静默忽略，
+    # 打出来只有左边半个框。先给 6 个真实单元格描边，再合并（openpyxl 合并时会把
+    # 左上角的边框铺到整个区域外沿）。
+    for row in ws["A4:C5"]:
+        for cell in row:
+            cell.border = BORDER
+    ws.merge_cells("A4:C5")
+    ws["A4"] = so_no
+    ws["A4"].font = Font(name="Arial", size=16, bold=True)
+    ws["A4"].alignment = Alignment(horizontal="center", vertical="center",
+                                   wrap_text=True)
+    ws["A4"].number_format = "@"
+
     ws["K5"] = "Invoice："  # 发票号人工填
     ws["M5"] = f"Date: {made_on:%d.%m.%Y}"
-    for coord in ("J5", "K5", "M5"):
+    for coord in ("K5", "M5"):
         ws[coord].font = Font(name="Arial", size=11, bold=True)
         ws[coord].border = BORDER
         ws[coord].number_format = "@"
-    ws.row_dimensions[5].height = 15
+    ws.row_dimensions[4].height = 22
+    ws.row_dimensions[5].height = 22   # 两行合计 44pt，装得下 16 号字
 
     for col, text in enumerate(HEADERS, start=1):
         cell = ws.cell(HEADER_ROW, col, text)
