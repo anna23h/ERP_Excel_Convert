@@ -326,7 +326,7 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 
 **分工原则：机器知道的填好，现场才知道的留空。** 品名 / SKU / 条码 / HS 编码 / 原产国由脚本填；
 托盘号 / 批次号 / 箱号 / 箱规 / 箱数 / 保质期 / 毛重 / 尺寸 / 体积重留空给仓库手填；
-`Quantity total` 写成公式 `=箱规×箱数`，仓库填完自动出数。每个 SKU 底下预留空行（默认 2）供拆批次。
+`Quantity total`（L 列）预填 SO 订购量；P 列 `核对 箱规×箱数` 是 `=SUMPRODUCT` 公式，仓库填完箱规/箱数后与 L 列对拍，实发≠订购一眼可见（P 列在成品箱单的 15 列之外，是辅助列）。表头 `J5`（Invoice 左边一格）写 SO 单号。每个 SKU 底下预留空行（默认 2）供拆批次。
 要几张 SO 合并成一张箱单，就在 ERP 里一次性导到同一份文件里，脚本按 `Order Reference` 自动分单。
 输出同名自动加序号，不覆盖。
 
@@ -458,7 +458,7 @@ Python + pandas + openpyxl。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 白名单入库**刷新自动恢复**（红色「清空」键彻底清空白名单+存档，作载错清单的换清单逃生口）+ 30 天自动清理，导出**单个 zip**（内含 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`，规避 Chrome 多文件拦截，解压后投）；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
 - [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位；连接键 Product ID 优先（数字/External ID 归一互通）+ 逐行回退 PZN，绕开官方 PZN 空白/脏值。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
 - [x] **重构：按流水线拆目录**（`vo_orders/` / `reorder/` / `packing_list/`）+ 抽最小 `common/`（`xlsx` 排版 / `vendor` 供应商简称 / `po` 采购画像 / `remark` Supply Remark 分段）。
-- [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 用公式；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
+- [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 预填 SO 订购量 + P 列 `=箱规×箱数` 对拍、J5 写 SO 号（2026-08-29）；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
 - [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。回写的 `Safety Stock` 被阶段一「补货预判清单」读走——两条流水线在此接上。
 - [x] **FS 回写**（`vo_orders/fs_writeback.py`）：采购画像 → 供应商**代号**写回产品主数据 `FS`；`--sample N` 按覆盖面挑试水样本；人写的采购判断整行跳过；滤掉测试单与费用类 SKU；**只写 FS，不碰 `Supply Remark`**（那字段属于运营）。
 - [x] **ERP 回写 GUI**（`erp_writeback_gui.py`）：销售分析 / FS 回写两页，个人月频维护用。**与 VOTool 刻意分开**——同事界面里没有任何 ERP 回写入口就不会误触（2026-07-08 决定，2026-08-01 复核维持）；只在 Mac 跑源码，不打包 exe。

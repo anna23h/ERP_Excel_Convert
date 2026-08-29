@@ -32,9 +32,10 @@ HEADERS = [
     "批次号", "箱号", "箱规", "箱数", "保质期", "Origin\n原产国",
     "Quantity total", "Gross Weight (kg)\n毛重",
     "Paket Measurements\n(L)*(W)*(D)cm\n包裹尺寸", " Size weight/体积重",
+    "核对\n箱规×箱数",   # P 列：不在成品箱单的 15 列里，是对拍用的辅助列
 ]
 COL_WIDTHS = {"B": 36.375, "C": 22.625, "D": 18.875, "F": 18.625,
-              "G": 9.0, "J": 9.0, "N": 23.625}
+              "G": 9.0, "J": 9.0, "N": 23.625, "P": 11.0}
 ORIGIN = "DE"
 DEFAULT_HS = "30049000"  # ERP 主数据常缺；成品箱单里全是这个
 HEADER_ROW = 6
@@ -44,6 +45,7 @@ FIRST_DATA_ROW = 7
 COL_ITEM, COL_NAME, COL_SKU, COL_BARCODE, COL_HS = 1, 2, 3, 4, 5
 COL_BOXSPEC, COL_BOXCOUNT = 8, 9
 COL_ORIGIN, COL_QTY = 11, 12
+COL_CHECK = 16  # P 列：=SUMPRODUCT(箱规×箱数)，与 L 列的 SO 订购量对拍
 
 # ERP 导出的列名。Odoo 导出会跟界面语言走：英文一套、德文一套（用户机器语言不定，
 # 德文导出会给 Auftragsreferenz/... 这类列名）。每个字段列出「英文名, 德文名」别名，
@@ -114,11 +116,12 @@ def read_orders(path):
     return [o for o in orders if o["lines"]]
 
 
-def _write_head(ws, made_on):
+def _write_head(ws, made_on, so_no):
     ws["A1"] = COMPANY
     ws["A2"] = TITLE
-    ws.merge_cells("A1:O1")
-    ws.merge_cells("A2:O2")
+    # 合并到 P（表宽随对拍列扩了一列），否则标题会偏左半格
+    ws.merge_cells("A1:P1")
+    ws.merge_cells("A2:P2")
     ws["A1"].font = Font(name="Arial", size=16, bold=True)
     ws["A2"].font = Font(name="Arial", size=28, bold=True)
     for coord in ("A1", "A2"):
@@ -127,9 +130,10 @@ def _write_head(ws, made_on):
     ws.row_dimensions[1].height = 20.25
     ws.row_dimensions[2].height = 35.25
 
+    ws["J5"] = so_no       # Invoice 左边一格：本箱单对应的 SO 号
     ws["K5"] = "Invoice："  # 发票号人工填
     ws["M5"] = f"Date: {made_on:%d.%m.%Y}"
-    for coord in ("K5", "M5"):
+    for coord in ("J5", "K5", "M5"):
         ws[coord].font = Font(name="Arial", size=11, bold=True)
         ws[coord].border = BORDER
         ws[coord].number_format = "@"
@@ -154,13 +158,16 @@ def _write_line(ws, row, line, spare):
     ws.cell(row, COL_SKU, line["sku"])
     ws.cell(row, COL_BARCODE, line["barcode"])
     ws.cell(row, COL_HS, line["hs"])
-    # 仓库填完箱规×箱数后自动出总数；不预填 SO 订购量，避免与实发不符
+    # L 列预填 SO 订购量（2026-08-29 用户拍板）。原先这里是 =SUMPRODUCT(箱规×箱数)、
+    # 刻意不预填以免与实发不符；现改为订购量打底，实发不符靠 P 列对拍列人工发现。
+    ws.cell(row, COL_QTY, line["qty"])
+    # P 列：仓库填完箱规/箱数后自动出数，与左边的订购量对照
     spec = get_column_letter(COL_BOXSPEC)
     count = get_column_letter(COL_BOXCOUNT)
-    ws.cell(row, COL_QTY,
+    ws.cell(row, COL_CHECK,
             f"=SUMPRODUCT({spec}{row}:{spec}{last},{count}{row}:{count}{last})")
 
-    for col in (COL_NAME, COL_SKU, COL_BARCODE, COL_HS, COL_QTY):
+    for col in (COL_NAME, COL_SKU, COL_BARCODE, COL_HS, COL_QTY, COL_CHECK):
         if spare:
             ws.merge_cells(start_row=row, start_column=col,
                            end_row=last, end_column=col)
@@ -182,11 +189,18 @@ def _write_line(ws, row, line, spare):
     return last + 1
 
 
+def so_label(orders):
+    """S02881+2882+2886 —— 首个 SO 写全，其余省略共同前缀。
+    文件名与表头 J5 的 SO 号共用这一口径，两处必须一致。"""
+    nums = [o["order"] for o in orders]
+    return "+".join([nums[0]] + [re.sub(r"^S0*", "", n) for n in nums[1:]])
+
+
 def build(orders, spare, made_on):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet2"
-    _write_head(ws, made_on)
+    _write_head(ws, made_on, so_label(orders))
 
     row = FIRST_DATA_ROW
     for order in orders:
@@ -220,11 +234,7 @@ def run(export, outdir="output", spare=2):
     made_on = dt.date.today()
     wb = build(orders, spare, made_on)
 
-    # S02881+2882+2886 —— 首个 SO 写全，其余省略共同前缀
-    nums = [o["order"] for o in orders]
-    head = nums[0]
-    tail = [re.sub(r"^S0*", "", n) for n in nums[1:]]
-    name = f"{'+'.join([head] + tail)}箱单{made_on:%d.%m}.xlsx"
+    name = f"{so_label(orders)}箱单{made_on:%d.%m}.xlsx"
 
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -237,7 +247,7 @@ def run(export, outdir="output", spare=2):
     all_lines = [l for o in orders for l in o["lines"].values()]
     blanks = sum(1 for l in all_lines if not l["barcode"])
     hs_defaulted = sum(1 for l in all_lines if l["hs_defaulted"])
-    # 订购量不进箱单（L 列由仓库的箱规×箱数算），这里报出来供人工对 SO 单
+    # L 列已预填订购量，这里再报一次总数供人工对 SO 单
     lines = []
     for o in orders:
         qty = sum(l["qty"] for l in o["lines"].values())

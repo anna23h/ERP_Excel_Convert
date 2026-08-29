@@ -10,9 +10,10 @@ from datetime import date
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 让 common/ 可导入
-from common.xlsx import (YELLOW, BORDER, CENTER, LEFT_BOTTOM, LEFT_CENTER,  # noqa: E402
+from common.xlsx import (PRINT_HL, BORDER, CENTER, LEFT_BOTTOM, LEFT_CENTER,  # noqa: E402
                          FONT, SMALL_FONT, HEAD_FONT, ROW_H,
                          style_sheet, write_df, unique_path, write_simple, apply_print)
 from common.vendor import short_vendor, vendor_map  # noqa: E402
@@ -166,18 +167,26 @@ def is_multipack(v):
     return bool(re.search(r"x\d+$", str(v), re.I))
 
 
+def _mark(cell):
+    """标记一个单元格：填充 PRINT_HL + 字体加粗（保留原字号，面单各列字号不一）。
+    加粗是给黑白打印再加一道保险——只靠底色的话，碳粉深浅一变就又看不清了。
+    必须在 style_sheet 之后调用，否则字体会被 style_sheet 覆盖回去。"""
+    cell.fill = PRINT_HL
+    cell.font = Font(name=cell.font.name, size=cell.font.size, bold=True)
+
+
 def highlight_facesheet(ws, df):
-    """三条规则，标黄触发的单元格（让仓库知道原因）。
+    """三条规则，标记触发的单元格（让仓库知道原因）。
     Delivery Type 目标值按店区分：VO 的包裹标记是 CC，GW 的是 SYB。"""
     col = {name: i + 1 for i, name in enumerate(df.columns)}
     for ridx, (_, row) in enumerate(df.iterrows(), start=2):
         if is_multipack(row["Internal Reference"]):
-            ws.cell(ridx, col["Internal Reference"]).fill = YELLOW
+            _mark(ws.cell(ridx, col["Internal Reference"]))
         if pd.notna(row["Quantity"]) and float(row["Quantity"]) > 1:
-            ws.cell(ridx, col["Quantity"]).fill = YELLOW
+            _mark(ws.cell(ridx, col["Quantity"]))
         ch = str(row["Order Reference"]).split("_", 1)[0]
         if str(row["VO Delivery Type"]) == ("SYB" if ch == "GW" else "CC"):
-            ws.cell(ridx, col["VO Delivery Type"]).fill = YELLOW
+            _mark(ws.cell(ridx, col["VO Delivery Type"]))
 
 
 def merge_multiproduct(ws, df, extra_cols=()):
