@@ -319,13 +319,26 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     return path, len(pick_df), int(face_df["Order Reference"].nunique())
 
 
+def _ch_suffix(ch_series):
+    """文件名的店铺后缀：单店返回店名(如 "VO")，跨店返回空串(文件名不带店)。
+
+    新订单获单清单 / 回传ERP销售上传表这两张表的去处与店无关（前者复制单号去天猫批量
+    获单，后者整张按 External ID 丢给 ERP），两店同批时拆成两份等于同一动作做两遍
+    → 合并一份。单店批次仍带店名，免得两种批次的产出在同一目录里分不出来。
+    （拣货表+面单、扫码清单不走这条：仓库是分店打印/打包的，必须按店分。）"""
+    chans = sorted(set(ch_series))
+    return chans[0] if len(chans) == 1 else ""
+
+
 def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
-    输入单店 ERP（天猫两店混合，经 ∩ERP 收敛到单店）+ 一份完整天猫导出，产出全部按店带后缀：
+    输入 ERP 导出（天猫两店混合，经 ∩ERP 收敛）+ 一份完整天猫导出：
     - 新订单获单清单：履约单状态=新订单 ∩ ERP 的系统履约单号(去天猫批量获单)。
-    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)。
+    - 拣货表+面单：只含「发货」订单(已剔除无运单/取消)，**恒按店各一份**(仓库分店打印)。
     - 回传ERP销售上传表：取消/无运单/已补运单三类 Terms 写回**合并一张**(External ID 匹配键)。
+    获单清单与上传表的去处与店无关 → **两店同批时合并成一份、文件名不带店**；
+    单店批次仍带店名(见 `_ch_suffix`)。
     完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
     负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
@@ -366,7 +379,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             sp, nscan = _write_scanlist(sub, ch, outdir)
             log.append(f"扫码清单[{ch}] 已生成: {sp}  ({nscan} 单)")
 
-    # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单；按店各一份) ----
+    # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单) ----
     d = date.today()
     if len(status_map):
         new_keys = set(status_map[status_map == s4.NEW_ORDER_STATUS].index)
@@ -374,17 +387,18 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         no = no[no["_key"].isin(new_keys)].copy()
         if not no.empty:
             no["_ch"] = no[s4.ERP_ORDER_REF].astype(str).str.split("_", n=1).str[0]
-            for ch in sorted(no["_ch"].unique()):
-                keys = no[no["_ch"] == ch]["_key"].tolist()
-                p, n = write_simple(pd.DataFrame({"系统履约单号": keys}),
-                                     outdir, f"新订单获单清单{ch}.xlsx", n_cols=1)
-                log.append(f"新订单获单清单{ch} 已生成: {p}  ({n} 单)")
+            no = no.sort_values("_ch", kind="stable")   # 合并时按店分段，店内保持原顺序
+            suffix = _ch_suffix(no["_ch"])
+            keys = no["_key"].tolist()
+            p, n = write_simple(pd.DataFrame({"系统履约单号": keys}),
+                                 outdir, f"新订单获单清单{suffix}.xlsx", n_cols=1)
+            log.append(f"新订单获单清单{suffix} 已生成: {p}  ({n} 单)")
         else:
             log.append("新订单获单清单: 0 单")
     else:
         log.append("新订单获单清单: 跳过 (未传完整天猫导出，无法识别新订单)")
 
-    # ---- 回传ERP销售上传表 (取消/无运单/已补运单 三类 Terms 写回一张，按店各一份) ----
+    # ---- 回传ERP销售上传表 (取消/无运单/已补运单 三类 Terms 写回一张) ----
     tag = f"{d.year}年{d.month:02d}月{d.day:02d}日平台订单取消"
     cats = {
         "取消":     (ann[ann["_cat"] == "取消"],     tag),
@@ -397,10 +411,11 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                  for k, (df, terms) in cats.items() if not df.empty]
         allup = pd.concat(parts, ignore_index=True)
         allup["_ch"] = allup["Order Reference"].astype(str).str.split("_", n=1).str[0]
-        for ch in sorted(allup["_ch"].unique()):
-            sub = allup[allup["_ch"] == ch].drop(columns="_ch")
-            p, n = write_simple(sub, outdir, f"回传ERP销售上传表{ch}.xlsx")
-            log.append(f"回传ERP销售上传表{ch} 已生成: {p}  ({n} 单)")
+        suffix = _ch_suffix(allup["_ch"])
+        allup = allup.sort_values("_ch", kind="stable")  # 合并时按店分段，店内保持原顺序
+        p, n = write_simple(allup.drop(columns="_ch"), outdir,
+                            f"回传ERP销售上传表{suffix}.xlsx")
+        log.append(f"回传ERP销售上传表{suffix} 已生成: {p}  ({n} 单)")
         log.append("  └ 含 " + " / ".join(
             f"{k} {df['_key'].nunique()}" for k, df in present.items()))
     elif present:
