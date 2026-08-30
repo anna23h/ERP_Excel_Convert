@@ -51,6 +51,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 from common import localconf
 from common.vendor import short_vendor
@@ -317,24 +318,37 @@ def read_previous(path):
                     vals.pop("备注")
                 if vals:
                     quotes[(d["产品代码"], vendor)] = vals
+        elif name == "询价录入":
+            # 长表：一行一个「产品 × 供应商」。**人自己加的行也照收**——这就是新供应商
+            # 唯一的进表路径，不能因为它没有采购历史就丢掉。
+            for d in _row_dicts(ws):
+                vendor = d.get("供应商")
+                vals = {k: d.get(k) for k in QUOTE_FIELDS if d.get(k) not in BLANKS}
+                if vendor and vals:
+                    quotes[(d["产品代码"], str(vendor).strip())] = vals
         elif name == "报价比较":
-            # 2026-08-30 起这里是手填的**唯一录入口**（原先只读）。列名形如「P 报价」，
-            # 供应商简称可能含空格（PHARMA LUPUS），故按最后一个空格切，后缀才是字段名。
+            # 2026-08-30 之前这张表是宽矩阵、且当过一阵录入口（列名形如「P 报价」，
+            # 供应商简称可能含空格，故按最后一个空格切）。现已改成只读派生视图，
+            # 这条分支**只为读旧版产出**——改版不能丢用户填过的东西。
             fill = dict(zip(VENDOR_FILL, QUOTE_FIELDS))
             for d in _row_dicts(ws):
                 v = {k: d.get(k) for k in ("选定供应商", "选定数量")
                      if d.get(k) not in BLANKS}
                 if v:
-                    chosen[d["产品代码"]] = v
+                    chosen.setdefault(d["产品代码"], v)
                 for h, val in d.items():
                     vendor, _, suf = str(h).rpartition(" ")
                     if not vendor or suf not in fill or val in BLANKS:
                         continue
-                    quotes.setdefault((d["产品代码"], vendor), {})[fill[suf]] = val
+                    quotes.setdefault((d["产品代码"], vendor), {}).setdefault(fill[suf], val)
         elif name == "汇总对账":
             for d in _row_dicts(ws):
                 if d.get("已下单量(手填)") not in BLANKS:
                     ordered[d["产品代码"]] = d["已下单量(手填)"]
+                v = {k.replace("(手填)", ""): d.get(k)
+                     for k in ("选定供应商(手填)", "选定数量(手填)") if d.get(k) not in BLANKS}
+                if v:
+                    chosen[d["产品代码"]] = v
         elif name.startswith("备货-"):
             so = name[3:]
             for d in _row_dicts(ws):
@@ -364,6 +378,7 @@ def find_previous(outdir, orders):
 EN = {
     # sheet 名
     "汇总对账": "Summary", "报价比较": "Quote Comparison", "缺口明细": "Gap Detail",
+    "询价录入": "RFQ Entry",
     # 列名
     "产品代码": "Product Code", "产品名称": "Product Name", "总缺口": "Total Gap",
     "已下单量(手填)": "Ordered Qty", "剩余": "Remaining", "候选供应商": "Candidate Suppliers",
@@ -378,10 +393,11 @@ EN = {
     "报价单价": "Quoted Price", "可供数量": "Available Qty", "保质期": "Shelf Life / MHD",
     "交期": "Lead Time", "备注": "Notes",
     "选定供应商": "Chosen Supplier", "选定数量": "Chosen Qty",
+    "选定供应商(手填)": "Chosen Supplier", "选定数量(手填)": "Chosen Qty",
+    "供应商": "Supplier", "采购次数": "Purchases", "最近日期": "Last Date",
+    "最近单价": "Last Price", "最近数量": "Last Qty", "新": "new",
     # 动态列的后缀
     "需求": "Demand", "报价": "Price", "可供": "Avail.",
-    "采购次数": "Purchases", "最近日期": "Last Date", "最近单价": "Last Price",
-    "最近数量": "Last Qty",
     # 表内文案
     "历史": "historic",
     "无采购记录": "no purchase history",
@@ -464,17 +480,24 @@ def sheet_summary(wb, rows, prev, t):
     撑到 140 宽）。生成日期在文件名里，口径在 README 与本文件 docstring 里。"""
     ws = wb.create_sheet(t("汇总对账"), 0)
     top = 1
-    cols = ["产品代码", "产品名称", "总缺口", "已下单量(手填)", "剩余", "候选供应商"]
+    # 「选定供应商/选定数量」2026-08-30 从报价比较移来：都是每产品一个值，而汇总对账
+    # 本就是手填的真相源；报价比较改成只读派生视图后，那边一格手填都不该留。
+    cols = ["产品代码", "产品名称", "总缺口", "选定供应商(手填)", "选定数量(手填)",
+            "已下单量(手填)", "剩余", "候选供应商"]
     for j, c in enumerate(cols, start=1):
         ws.cell(top, j, t(c))
     for i, r in enumerate(rows, start=top + 1):
+        ch = prev["chosen"].get(r["产品代码"], {})
         ws.cell(i, 1, r["产品代码"])
         ws.cell(i, 2, r["产品名称"])
         ws.cell(i, 3, r["缺口"])
-        ws.cell(i, 4, prev["ordered"].get(r["产品代码"]))
-        ws.cell(i, 5, f"=C{i}-N(D{i})")
-        ws.cell(i, 6, _candidates(r, t))
+        ws.cell(i, 4, ch.get("选定供应商"))
+        ws.cell(i, 5, ch.get("选定数量"))
+        ws.cell(i, 6, prev["ordered"].get(r["产品代码"]))
+        ws.cell(i, 7, f"=C{i}-N(F{i})")
+        ws.cell(i, 8, _candidates(r, t))
     _finish(ws, cols, t, {"产品名称": 46, "候选供应商": 26},
+            left=("产品名称", "选定供应商(手填)", "候选供应商"),
             small=("产品名称", "候选供应商"), header_row=top)   # top 恒为 1
     return ws
 
@@ -507,18 +530,89 @@ def sheet_stock_up(wb, rows, so, prev, t):
     return ws
 
 
-def sheet_compare(wb, rows, vendors_all, prev, t):
-    """报价比较——产品 × 供应商横向摊开，**唯一录入口**（2026-08-30 用户选定）。
+def _vendors_of(r):
+    """产品行 → {简称: 采购历史}。同一简称可能对应多个 ERP 全名，取最近一次采购的那条。"""
+    mine = {}
+    for v in r["_vendors"]:
+        cur = mine.get(v["short"])
+        if cur is None or v["date"] > cur["date"]:
+            mine[v["short"]] = v
+    return mine
 
-    原先是「只读汇总」，报价填在各家的「询价-x」底稿上。那 6 张底稿已删掉：按供应商看
-    本来就是这张表上筛一次的事，多 6 张 sheet 只增加理解成本（用户裁定）。
-    每家 9 列，**参考在左、待填在右**——最近单价紧挨报价单价，谈价时一眼对得上。
+
+def quote_rows(rows, prev):
+    """→ [(产品行, 供应商简称, 采购历史 或 None)]，即长表的行集。
+
+    行 = **真实发生过的「产品 × 供应商」组合**，不是产品 × 全部供应商的笛卡尔积。
+    实测 17 产品 × 6 家 = 102 格里只有 33 格有历史（32%），铺满等于 68% 是空格。
+
+    末尾追加**人自己加的行**：上一版里填了报价、但查不到采购历史的组合。
+    没有这条，「问一家从没买过的新供应商」就没有落脚处——旧版供应商列是从有采购历史的家
+    推出来的，新供应商压根没地方填（2026-08-30 补上）。
+    """
+    out, seen = [], set()
+    for r in rows:
+        if r["缺口"] <= 0:
+            continue
+        mine = _vendors_of(r)
+        for name in sorted(mine, key=lambda n: (-mine[n]["n"], n)):
+            out.append((r, name, mine[name]))
+            seen.add((r["产品代码"], name))
+    by_code = {r["产品代码"]: r for r in rows if r["缺口"] > 0}
+    for (code, name) in sorted(prev["quotes"]):
+        if (code, name) in seen or code not in by_code:
+            continue
+        out.append((by_code[code], name, None))
+    return out
+
+
+def sheet_quotes(wb, qrows, prev, t):
+    """询价录入——一行 = 一个「产品 × 供应商」。**唯一录入口**（2026-08-30 用户选定）。
+
+    为什么从「产品 × 供应商」矩阵改成长表：矩阵的宽度由**供应商家数**决定，信息量却由
+    **实际发生过的组合数**决定，实测两者差 3 倍（59 列 vs 33 个组合）。17 个产品里 8 个
+    只有唯一一家，「横着比几家」这个动作对一半产品根本不存在。
+    改长表后「按供应商看」= Excel 自带筛选（正是 E 条删掉 6 张询价 sheet 的同一个理由），
+    「供应商」也从列名变成一列的**值**——列集不再随数据漂，回收手填才稳。
+    """
+    ws = wb.create_sheet(t("询价录入"))
+    cols = ["产品代码", "产品名称", "缺口", "供应商"] + VENDOR_HIST + QUOTE_FIELDS
+    for j, c in enumerate(cols, start=1):
+        ws.cell(1, j, t(c))
+    for i, (r, name, v) in enumerate(qrows, start=2):
+        ws.cell(i, 1, r["产品代码"])
+        ws.cell(i, 2, r["产品名称"])
+        ws.cell(i, 3, r["缺口"])
+        ws.cell(i, 4, name)
+        if v is None:
+            ws.cell(i, 5, t("新"))          # 人自己加的家，还没在这买过
+        else:
+            ws.cell(i, 5, v["n"] if v["in_window"] else t("历史"))
+            ws.cell(i, 6, v["date"])
+            ws.cell(i, 7, round(v["price"], 4) or None)
+            ws.cell(i, 8, v["qty"])
+        q = prev["quotes"].get((r["产品代码"], name), {})
+        for k, f in enumerate(QUOTE_FIELDS):
+            ws.cell(i, 9 + k, q.get(f))
+    ws.freeze_panes = "E2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(2, len(qrows) + 1)}"
+    _finish(ws, cols, t, {"产品名称": 46, "备注": 30},
+            left=("产品名称", "供应商", "备注"),
+            small=("产品名称", "备注"))
+    return ws
+
+
+def sheet_compare(wb, rows, vendors_all, t):
+    """报价比较——产品 × 供应商，每家只有一格报价。**只读派生视图，一格手填都没有。**
+
+    值走 `SUMIFS/COUNTIFS` 从「询价录入」实时取：在长表填完报价，这张表当场就变，
+    **不必重跑脚本**。这也是「询价结果反映到别处」的通用做法，将来汇总对账要联动同理。
+    `COUNTIFS(…, 报价列, "<>")` 是为了区分「没问过」与「问了报 0」——直接 SUMIFS
+    两种情况都得 0。
     """
     ws = wb.create_sheet(t("报价比较"))
-    cols = ["产品代码", "产品名称", "缺口"]
-    for v in vendors_all:
-        cols += [f"{v} {suf}" for suf in VENDOR_HIST + VENDOR_FILL]
-    cols += ["选定供应商", "选定数量"]
+    src = f"'{t('询价录入')}'"
+    cols = ["产品代码", "产品名称", "缺口"] + list(vendors_all)
     for j, c in enumerate(cols, start=1):
         ws.cell(1, j, t(c))
     i = 1
@@ -529,35 +623,12 @@ def sheet_compare(wb, rows, vendors_all, prev, t):
         ws.cell(i, 1, r["产品代码"])
         ws.cell(i, 2, r["产品名称"])
         ws.cell(i, 3, r["缺口"])
-        # 同一简称可能对应多个 ERP 供应商全名，取最近一次采购的那条
-        mine = {}
-        for v in r["_vendors"]:
-            cur = mine.get(v["short"])
-            if cur is None or v["date"] > cur["date"]:
-                mine[v["short"]] = v
         for k, name in enumerate(vendors_all):
-            base = 4 + k * len(VENDOR_HIST + VENDOR_FILL)
-            v = mine.get(name)
-            q = prev["quotes"].get((r["产品代码"], name), {})
-            if v is None and not q:
-                # 这家没供过这个产品，与「问了没回价」区分开
-                ws.cell(i, base, "—")
-                continue
-            if v is not None:
-                ws.cell(i, base, v["n"] if v["in_window"] else t("历史"))
-                ws.cell(i, base + 1, v["date"])
-                ws.cell(i, base + 2, round(v["price"], 4) or None)
-                ws.cell(i, base + 3, v["qty"])
-            for off, f in enumerate(QUOTE_FIELDS):
-                ws.cell(i, base + len(VENDOR_HIST) + off, q.get(f))
-        ch = prev["chosen"].get(r["产品代码"], {})
-        ws.cell(i, len(cols) - 1, ch.get("选定供应商"))
-        ws.cell(i, len(cols), ch.get("选定数量"))
-    # 60+ 列不冻结没法录入：锁住产品代码/名称两列与表头
-    ws.freeze_panes = "C2"
-    _finish(ws, cols, t, {"产品名称": 46},
-            # 「选定供应商」「x 备注」必然是文字，但录入前整列是空的，自动判定看不出来
-            left=("产品名称", "选定供应商") + tuple(f"{v} 备注" for v in vendors_all))
+            cond = f'{src}!$A:$A,$A{i},{src}!$D:$D,"{name}"'
+            ws.cell(i, 4 + k,
+                    f'=IF(COUNTIFS({cond},{src}!$I:$I,"<>")=0,"",SUMIFS({src}!$I:$I,{cond}))')
+    ws.freeze_panes = "D2"
+    _finish(ws, cols, t, {"产品名称": 46})
     return ws
 
 
@@ -592,9 +663,14 @@ def build_workbook(rows, so_names, prev, lang="zh"):
     vendors_all = sorted({short_vendor(v) for v in by_vendor},
                          key=lambda s: -sum(len(i) for v, i in by_vendor.items()
                                             if short_vendor(v) == s))
-    sheet_compare(wb, rows, vendors_all, prev, t)
+    qrows = quote_rows(rows, prev)
+    # 人自己加的新供应商也要在比价表上有一列，否则填了看不见
+    vendors_all = list(vendors_all) + sorted({n for _, n, v in qrows
+                                              if v is None and n not in vendors_all})
+    sheet_quotes(wb, qrows, prev, t)
+    sheet_compare(wb, rows, vendors_all, t)
     sheet_gap(wb, rows, so_names, t)
-    return wb, len(vendors_all)
+    return wb, len(vendors_all), len(qrows)
 
 
 # --------------------------------------------------------------------------
@@ -644,7 +720,7 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
             ("en", f"Procurement-Gap-{'+'.join(names)}-{stamp}.xlsx")):
         if lang == "en" and not with_en:
             continue
-        wb, n_vendors = build_workbook(rows, names, prev, lang)
+        wb, n_vendors, n_qrows = build_workbook(rows, names, prev, lang)
         path = unique_path(os.path.join(outdir, fname))
         wb.save(path)
         outs.append(path)
@@ -652,9 +728,11 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
     say(f"\n✓ 已写出 {outs[0]}")
     if len(outs) > 1:
         say(f"  英文版（只读快照，手填只认中文版）：{os.path.basename(outs[1])}")
-    say(f"  产品 {len(rows)} 个 / 有缺口 {n_gap} 个 / 报价比较覆盖供应商 {n_vendors} 家")
+    say(f"  产品 {len(rows)} 个 / 有缺口 {n_gap} 个 / 询价录入 {n_qrows} 行 "
+        f"（产品×供应商组合）/ 覆盖供应商 {n_vendors} 家")
     if n_nov:
-        say(f"  ⚠ {n_nov} 个有缺口的产品查不到采购记录，报价比较里没有可问的家，需人工找供应商")
+        say(f"  ⚠ {n_nov} 个有缺口的产品查不到采购记录，询价录入里没有它的行，"
+            "需人工找供应商（找到后可自己加一行，重跑保留）")
     if odd:
         say(f"  ⚠ {len(odd)} 个产品的待出库 move 找不到对应的确认单行（picking 与 SO 脱钩），"
             "这几个的占用数不可信，别按它下单："
