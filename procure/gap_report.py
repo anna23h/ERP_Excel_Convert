@@ -52,6 +52,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from common import localconf
 from common.vendor import short_vendor
@@ -394,6 +395,7 @@ EN = {
     "交期": "Lead Time", "备注": "Notes",
     "选定供应商": "Chosen Supplier", "选定数量": "Chosen Qty",
     "选定供应商(手填)": "Chosen Supplier", "选定数量(手填)": "Chosen Qty",
+    "已报价家数": "Quotes Received", "最低报价": "Lowest Quote", "未下单": "Not Yet Ordered",
     "供应商": "Supplier", "采购次数": "Purchases", "最近日期": "Last Date",
     "最近单价": "Last Price", "最近数量": "Last Qty", "新": "new",
     # 动态列的后缀
@@ -473,33 +475,69 @@ def _finish(ws, cols, t, widths=None, left=("产品名称",), small=("产品名�
                 header_row=header_row, auto_align=True)
 
 
-def sheet_summary(wb, rows, prev, t):
-    """汇总对账——**唯一真相源**。已下单量手填，剩余用公式实时算。
+def sheet_summary(wb, rows, qrows, prev, t):
+    """汇总对账——**唯一真相源**。三列手填（选定供应商/选定数量/已下单量），其余是公式。
 
-    2026-08-30 起表上方**不再写标题/口径/时间戳**（用户裁定：不需要，且长文案会把 A 列
-    撑到 140 宽）。生成日期在文件名里，口径在 README 与本文件 docstring 里。"""
+    2026-08-30 起表上方不再写标题/口径/时间戳（用户裁定：不需要，且长文案会把 A 列
+    撑到 140 宽）。生成日期在文件名里，口径在 README 与本文件 docstring 里。
+
+    同日补上「询价结果联动」（H 条）：`已报价家数` / `最低报价` 直接从「询价录入」长表取，
+    **填完报价这两列当场就变、不必重跑**。原先这张真相源对询价进度一无所知，
+    「问了几家、最低多少」只能靠翻长表。
+    `未下单 = 选定数量 − 已下单量`：两列语义不同——前者是「打算给这家多少」，
+    后者是「实际下出去多少」，自动令后者等于前者会抹掉这个区别，而
+    `剩余 = 总缺口 − 已下单量` 这条防重复下单的线正是靠「实际」才有意义（用户裁定保持独立）。
+    """
     ws = wb.create_sheet(t("汇总对账"), 0)
+    src = f"'{t('询价录入')}'"
     top = 1
-    # 「选定供应商/选定数量」2026-08-30 从报价比较移来：都是每产品一个值，而汇总对账
-    # 本就是手填的真相源；报价比较改成只读派生视图后，那边一格手填都不该留。
-    cols = ["产品代码", "产品名称", "总缺口", "选定供应商(手填)", "选定数量(手填)",
-            "已下单量(手填)", "剩余", "候选供应商"]
+    cols = ["产品代码", "产品名称", "总缺口", "已报价家数", "最低报价",
+            "选定供应商(手填)", "选定数量(手填)", "已下单量(手填)", "未下单", "剩余",
+            "候选供应商"]
     for j, c in enumerate(cols, start=1):
         ws.cell(top, j, t(c))
+    # 下拉名单按产品取自长表里真有的家（含人自己加的新供应商）
+    cands = defaultdict(list)
+    for r, name, _v in qrows:
+        cands[r["产品代码"]].append(name)
     for i, r in enumerate(rows, start=top + 1):
         ch = prev["chosen"].get(r["产品代码"], {})
         ws.cell(i, 1, r["产品代码"])
         ws.cell(i, 2, r["产品名称"])
         ws.cell(i, 3, r["缺口"])
-        ws.cell(i, 4, ch.get("选定供应商"))
-        ws.cell(i, 5, ch.get("选定数量"))
-        ws.cell(i, 6, prev["ordered"].get(r["产品代码"]))
-        ws.cell(i, 7, f"=C{i}-N(F{i})")
-        ws.cell(i, 8, _candidates(r, t))
+        ws.cell(i, 4, f'=COUNTIFS({src}!$A:$A,$A{i},{src}!$I:$I,"<>")')
+        ws.cell(i, 5, f'=IF(D{i}=0,"",MINIFS({src}!$I:$I,{src}!$A:$A,$A{i},{src}!$I:$I,"<>"))')
+        ws.cell(i, 6, ch.get("选定供应商"))
+        ws.cell(i, 7, ch.get("选定数量"))
+        ws.cell(i, 8, prev["ordered"].get(r["产品代码"]))
+        ws.cell(i, 9, f"=MAX(0,N(G{i})-N(H{i}))")
+        ws.cell(i, 10, f"=C{i}-N(H{i})")
+        ws.cell(i, 11, _candidates(r, t))
+        _validate_vendor(ws, f"F{i}", cands.get(r["产品代码"], []))
     _finish(ws, cols, t, {"产品名称": 46, "候选供应商": 26},
             left=("产品名称", "选定供应商(手填)", "候选供应商"),
             small=("产品名称", "候选供应商"), header_row=top)   # top 恒为 1
     return ws
+
+
+def _validate_vendor(ws, ref, names):
+    """给「选定供应商」单元格挂下拉，名单 = 该产品在长表里真有的几家。
+
+    不挂的话打错一个字，按供应商取值的公式**静默返回空、不报错**——这是最容易埋的雷。
+    刻意用 `showErrorMessage=False`（只给下拉、不拦输入）：新供应商可能是人刚在长表加的，
+    拦死了反而挡路（2026-08-30 用户选定「限定候选」，此处按可选而非强制实现，
+    因为 Excel 的内联名单本就无法随长表新增而自动扩张）。
+    内联名单有 255 字符上限，且名字里含逗号会把一家拆成两家——命中就跳过，不挂坏名单。
+    """
+    if not names:
+        return
+    joined = ",".join(names)
+    if any("," in n for n in names) or len(joined) > 250:
+        return
+    dv = DataValidation(type="list", formula1=f'"{joined}"', allow_blank=True,
+                        showErrorMessage=False)
+    ws.add_data_validation(dv)
+    dv.add(ref)
 
 
 def sheet_stock_up(wb, rows, so, prev, t):
@@ -650,7 +688,8 @@ def build_workbook(rows, so_names, prev, lang="zh"):
     t = translator(lang)
     wb = Workbook()
     wb.remove(wb.active)
-    sheet_summary(wb, rows, prev, t)
+    qrows = quote_rows(rows, prev)
+    sheet_summary(wb, rows, qrows, prev, t)
     for so in so_names:
         sheet_stock_up(wb, rows, so, prev, t)
 
@@ -663,7 +702,6 @@ def build_workbook(rows, so_names, prev, lang="zh"):
     vendors_all = sorted({short_vendor(v) for v in by_vendor},
                          key=lambda s: -sum(len(i) for v, i in by_vendor.items()
                                             if short_vendor(v) == s))
-    qrows = quote_rows(rows, prev)
     # 人自己加的新供应商也要在比价表上有一列，否则填了看不见
     vendors_all = list(vendors_all) + sorted({n for _, n, v in qrows
                                               if v is None and n not in vendors_all})
