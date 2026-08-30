@@ -92,7 +92,7 @@ def pull_demand(od, so_names):
     lines = od.search_read_all(
         "sale.order.line", [("order_id", "in", oids)],
         ["order_id", "product_id", "product_uom_qty", "qty_delivered",
-         "display_type", "product_uom"])
+         "display_type", "product_uom", "price_unit"])
 
     pids = sorted({m2o_id(l["product_id"]) for l in lines
                    if not l.get("display_type") and l.get("product_id")})
@@ -101,6 +101,10 @@ def pull_demand(od, so_names):
         [pids, ["default_code", "name", "type", "uom_id", "qty_available"]])}
 
     demand, skipped = defaultdict(lambda: defaultdict(float)), []
+    #: {pid: {单号: 售价}}。`price_unit` 是**未税、未扣行折扣**的单价——与采购报价同口径，
+    #: 两者才能相减算毛利。实测本库这两单 discount 全为 0、货币都是 EUR；
+    #: 若将来出现行折扣或多币种，这一列会**静默失真**，届时要在这里改口径。
+    prices = defaultdict(dict)
     for l in lines:
         if l.get("display_type") or not l.get("product_id"):
             continue
@@ -108,16 +112,21 @@ def pull_demand(od, so_names):
         if prods[pid]["type"] != "product":
             skipped.append(prods[pid]["default_code"] or prods[pid]["name"])
             continue
+        so = m2o_name(l["order_id"])
         qty = (l["product_uom_qty"] or 0) - (l["qty_delivered"] or 0)
         if qty > 0:
-            demand[pid][m2o_name(l["order_id"])] += qty
+            demand[pid][so] += qty
+            # 同一张单里同一产品拆成多行、且单价不同时取**最低**：毛利参考宁可保守。
+            p_new = l.get("price_unit") or 0.0
+            cur = prices[pid].get(so)
+            prices[pid][so] = p_new if cur is None else min(cur, p_new)
     if skipped:
         say(f"  跳过非库存行 {len(skipped)} 条（服务/运费等）：{'、'.join(skipped[:5])}")
     say(f"  目标单 {len(orders)} 张 / 明细 {len(lines)} 行 / 需采购产品 {len(demand)} 个")
     for o in orders:
         say(f"    {o['name']}  {o['date_order'][:10]}  state={o['state']}  "
             f"{m2o_name(o['partner_id'])}")
-    return demand, prods, orders, oids
+    return demand, prods, orders, oids, prices
 
 
 def occupancy_a(od, pids, exclude_oids):
@@ -399,7 +408,8 @@ EN = {
     "供应商": "Supplier", "采购次数": "Purchases", "最近日期": "Last Date",
     "最近单价": "Last Price", "最近数量": "Last Qty", "新": "new",
     # 动态列的后缀
-    "需求": "Demand", "报价": "Price", "可供": "Avail.",
+    "需求": "Demand", "报价": "Price", "可供": "Avail.", "售价": "Sales Price",
+    "毛利额": "Margin", "毛利率": "Margin %",
     # 表内文案
     "历史": "historic",
     "无采购记录": "no purchase history",
@@ -415,7 +425,7 @@ def translator(lang):
         if s in EN:
             return EN[s]
         # 「S04018 需求」「P 报价」「PHARMA LUPUS 最近单价」
-        for suffix in ("需求", "采购次数", "最近日期", "最近单价", "最近数量",
+        for suffix in ("需求", "售价", "采购次数", "最近日期", "最近单价", "最近数量",
                        "报价", "可供", "保质期", "交期", "备注"):
             if s.endswith(" " + suffix):
                 return f"{s[:-len(suffix) - 1]} {EN.get(suffix, suffix)}"
@@ -428,7 +438,7 @@ def translator(lang):
 # --------------------------------------------------------------------------
 # 组表
 # --------------------------------------------------------------------------
-def build_rows(demand, prods, so_names, qty_avail, occ_a, in_transit, draft, po_hist):
+def build_rows(demand, prods, so_names, qty_avail, occ_a, in_transit, draft, po_hist, prices):
     """→ [dict]，每个产品一行。键即规范列名（中文），英文只在写盘时翻。"""
     rows = []
     for pid, per_so in demand.items():
@@ -441,6 +451,8 @@ def build_rows(demand, prods, so_names, qty_avail, occ_a, in_transit, draft, po_
         row = {"产品代码": p["default_code"] or "", "产品名称": p["name"]}
         for n in so_names:
             row[f"{n} 需求"] = per_so.get(n, 0) or None
+        for n in so_names:
+            row[f"{n} 售价"] = prices.get(pid, {}).get(n)
         row.update({
             "需求合计": need,
             "在手": on_hand,
@@ -475,7 +487,7 @@ def _finish(ws, cols, t, widths=None, left=("产品名称",), small=("产品名�
                 header_row=header_row, auto_align=True)
 
 
-def sheet_summary(wb, rows, qrows, prev, t):
+def sheet_summary(wb, rows, so_names, qrows, prev, t):
     """汇总对账——**唯一真相源**。三列手填（选定供应商/选定数量/已下单量），其余是公式。
 
     2026-08-30 起表上方不再写标题/口径/时间戳（用户裁定：不需要，且长文案会把 A 列
@@ -487,13 +499,23 @@ def sheet_summary(wb, rows, qrows, prev, t):
     `未下单 = 选定数量 − 已下单量`：两列语义不同——前者是「打算给这家多少」，
     后者是「实际下出去多少」，自动令后者等于前者会抹掉这个区别，而
     `剩余 = 总缺口 − 已下单量` 这条防重复下单的线正是靠「实际」才有意义（用户裁定保持独立）。
+
+    再同日补上**售价与毛利**（I 条）：卖多少钱原先一个字没有，于是「这家报 5.04 能不能接」
+    在表内无从判断。**一张 SO 一列售价**（与缺口明细的 `S04018 需求` 同风格）——
+    永远是数字、可排序可入公式，多单不同价天然分开；实测两单都有的产品 4 个里就有 1 个不同价。
+    毛利按**最低售价**算（`MIN` 那几列），口径保守：几张单卖价不一时，能接受的进价按最差的算。
     """
     ws = wb.create_sheet(t("汇总对账"), 0)
     src = f"'{t('询价录入')}'"
     top = 1
-    cols = ["产品代码", "产品名称", "总缺口", "已报价家数", "最低报价",
-            "选定供应商(手填)", "选定数量(手填)", "已下单量(手填)", "未下单", "剩余",
-            "候选供应商"]
+    price_cols = [f"{n} 售价" for n in so_names]
+    cols = (["产品代码", "产品名称", "总缺口"] + price_cols +
+            ["已报价家数", "最低报价", "毛利额", "毛利率",
+             "选定供应商(手填)", "选定数量(手填)", "已下单量(手填)", "未下单", "剩余",
+             "候选供应商"])
+    # 列位随目标单张数浮动，一律按列名反查，别写死字母
+    X = {c: get_column_letter(j) for j, c in enumerate(cols, start=1)}
+    p_span = f"{X[price_cols[0]]}{{i}}:{X[price_cols[-1]]}{{i}}"
     for j, c in enumerate(cols, start=1):
         ws.cell(top, j, t(c))
     # 下拉名单按产品取自长表里真有的家（含人自己加的新供应商）
@@ -502,21 +524,30 @@ def sheet_summary(wb, rows, qrows, prev, t):
         cands[r["产品代码"]].append(name)
     for i, r in enumerate(rows, start=top + 1):
         ch = prev["chosen"].get(r["产品代码"], {})
+        span = p_span.format(i=i)
+        lo_q, gm = f"{X['最低报价']}{i}", f"{X['毛利额']}{i}"
         ws.cell(i, 1, r["产品代码"])
         ws.cell(i, 2, r["产品名称"])
         ws.cell(i, 3, r["缺口"])
-        ws.cell(i, 4, f'=COUNTIFS({src}!$A:$A,$A{i},{src}!$I:$I,"<>")')
-        ws.cell(i, 5, f'=IF(D{i}=0,"",MINIFS({src}!$I:$I,{src}!$A:$A,$A{i},{src}!$I:$I,"<>"))')
-        ws.cell(i, 6, ch.get("选定供应商"))
-        ws.cell(i, 7, ch.get("选定数量"))
-        ws.cell(i, 8, prev["ordered"].get(r["产品代码"]))
-        ws.cell(i, 9, f"=MAX(0,N(G{i})-N(H{i}))")
-        ws.cell(i, 10, f"=C{i}-N(H{i})")
-        ws.cell(i, 11, _candidates(r, t))
-        _validate_vendor(ws, f"F{i}", cands.get(r["产品代码"], []))
+        for c in price_cols:
+            ws.cell(i, cols.index(c) + 1, r.get(c))
+        ws[f"{X['已报价家数']}{i}"] = f'=COUNTIFS({src}!$A:$A,$A{i},{src}!$I:$I,"<>")'
+        ws[lo_q] = (f'=IF({X["已报价家数"]}{i}=0,"",'
+                    f'MINIFS({src}!$I:$I,{src}!$A:$A,$A{i},{src}!$I:$I,"<>"))')
+        ws[gm] = f'=IF(OR(COUNT({span})=0,{lo_q}=""),"",MIN({span})-{lo_q})'
+        ws[f"{X['毛利率']}{i}"] = f'=IF({gm}="","",{gm}/MIN({span}))'
+        ws[f"{X['毛利率']}{i}"].number_format = "0%"
+        ws[f"{X['选定供应商(手填)']}{i}"] = ch.get("选定供应商")
+        ws[f"{X['选定数量(手填)']}{i}"] = ch.get("选定数量")
+        ws[f"{X['已下单量(手填)']}{i}"] = prev["ordered"].get(r["产品代码"])
+        ws[f"{X['未下单']}{i}"] = (f'=MAX(0,N({X["选定数量(手填)"]}{i})'
+                                 f'-N({X["已下单量(手填)"]}{i}))')
+        ws[f"{X['剩余']}{i}"] = f'=C{i}-N({X["已下单量(手填)"]}{i})'
+        ws[f"{X['候选供应商']}{i}"] = _candidates(r, t)
+        _validate_vendor(ws, f"{X['选定供应商(手填)']}{i}", cands.get(r["产品代码"], []))
     _finish(ws, cols, t, {"产品名称": 46, "候选供应商": 26},
             left=("产品名称", "选定供应商(手填)", "候选供应商"),
-            small=("产品名称", "候选供应商"), header_row=top)   # top 恒为 1
+            small=("产品名称", "候选供应商"), header_row=top)
     return ws
 
 
@@ -689,7 +720,7 @@ def build_workbook(rows, so_names, prev, lang="zh"):
     wb = Workbook()
     wb.remove(wb.active)
     qrows = quote_rows(rows, prev)
-    sheet_summary(wb, rows, qrows, prev, t)
+    sheet_summary(wb, rows, so_names, qrows, prev, t)
     for so in so_names:
         sheet_stock_up(wb, rows, so, prev, t)
 
@@ -721,7 +752,7 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
 
     od = Odoo.connect()
     say("· 目标销售单")
-    demand, prods, orders, oids = pull_demand(od, so_names)
+    demand, prods, orders, oids, prices = pull_demand(od, so_names)
     if not demand:
         raise OdooError("目标单里没有需要采购的库存产品（可能都已发货）。")
     pids = sorted(demand)
@@ -742,7 +773,8 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
     po_hist = pull_po_history(od, pids, months)
     draft = pull_draft_rfq(od, pids, months)
 
-    rows = build_rows(demand, prods, names, qty_avail, occ_a, in_transit, draft, po_hist)
+    rows = build_rows(demand, prods, names, qty_avail, occ_a, in_transit, draft, po_hist,
+                      prices)
     n_gap = sum(1 for r in rows if r["缺口"] > 0)
     n_nov = sum(1 for r in rows if r["缺口"] > 0 and not r["_vendors"])
     # 表上方不再写标题/口径/时间戳（2026-08-30 用户裁定）：口径只说给跑脚本的人听，
