@@ -1,12 +1,16 @@
-"""销售单驱动的采购缺口 + 按供应商透视的询价底稿。
+"""销售单驱动的采购缺口 + 产品 × 供应商的报价比较。
 
 用法：
     python3 -m procure.gap_report S04018 S04029
     python3 -m procure.gap_report S04018 --months 6 -o /tmp/x
 
 做什么：给定若干销售单，把「每个产品还缺多少、曾经在哪几家买过、上次什么价」摊平成
-一张 xlsx，再按供应商分发成可直接拿去发的询价底稿。**选谁下单仍留给人**——供应商会
-缺货、会涨价，这张表不做决定。
+一张 xlsx，在「报价比较」上按产品 × 供应商横向摊开、就地问价。**选谁下单仍留给人**——
+供应商会缺货、会涨价，这张表不做决定。
+
+2026-08-30 起**一家一张「询价-x」底稿已删掉**：按供应商看是这张表上筛一次的事，
+多 6 张 sheet 只增加理解成本（用户裁定）。报价比较随之从只读汇总升为**唯一录入口**，
+每家 9 列 = 4 列 ERP 采购历史（刷新）+ 5 列人填（保留）。
 
 缺口公式（四个中间量各占一列，否则没法复核）：
     需求     = Σ(product_uom_qty − qty_delivered)，目标单合并同产品
@@ -17,7 +21,7 @@
 两个会让表安静地骗人的坑，代码里都显式处理了：
   1. **双重扣减**：目标单自己也在全局占用里。`_occupancy_a/b` 都按 order_id 剥离目标单。
   2. **跨表重复下单**：同一产品会出现在多家供应商的底稿上，缺口都写**总缺口**。
-     底稿里有「另见」列点名其他几家，汇总对账 sheet 留「已下单量/剩余」给人回填。
+     报价比较里同一行横着就能看到还有哪几家，汇总对账 sheet 留「已下单量/剩余」给人回填。
 
 他单占用为什么只用一条路（口径演化见 docs/journal/2026-08-27.md）：
     封版时定的是 A（待出库 move 聚合）与 B（已确认单未交付量）两路对拍。实测 B 在本库
@@ -28,7 +32,7 @@
 
 「随订货阶段自动维护」是怎么做到的：
     重跑时读回上一版 xlsx，把人填的六类内容（报价/可供/保质期/交期、分给本单、已下单量）
-    按 `产品代码 (+ 供应商简称)` 搬进新表。**ERP 那侧每跑一次刷新一次，人填的原样保留。**
+    按 `产品代码 (+ 供应商简称)` 搬进新表。旧版的「询价-x」sheet 仍会被读（改版不丢手填）。**ERP 那侧每跑一次刷新一次，人填的原样保留。**
     刻意没走「从 Odoo 采购单自动回填已下单量」：本库 PO 是收到账单、到货之后才建的
     （2026-08-27 实测近 90 天 707 张 PO，95% 已 done、86% 的行全额收货），拿它当下单
     进度会滞后整整一个采购周期，比手填更差。
@@ -251,8 +255,14 @@ def pull_draft_rfq(od, pids, months):
 # --------------------------------------------------------------------------
 # 上一版手填内容的回收（「随阶段自动维护」就是靠这个）
 # --------------------------------------------------------------------------
-#: 询价底稿上由人填的列（询价时一家一家问，填在自己那张底稿上）
+#: 报价比较上由人填的五列（规范键；表里带供应商前缀，见 VENDOR_FILL）
 QUOTE_FIELDS = ["报价单价", "可供数量", "保质期", "交期", "备注"]
+
+#: 报价比较里每家的列组：左 4 列 ERP 采购历史（只读、每次刷新），右 5 列人填。
+#: 顺序即「参考在左、待填在右」，`VENDOR_FILL` 与 `QUOTE_FIELDS` 一一对应，不可错位。
+VENDOR_HIST = ["采购次数", "最近日期", "最近单价", "最近数量"]
+VENDOR_FILL = ["报价", "可供", "保质期", "交期", "备注"]
+assert len(VENDOR_FILL) == len(QUOTE_FIELDS)
 
 
 def _header_row(ws, first="产品代码"):
@@ -274,6 +284,11 @@ def _row_dicts(ws, first="产品代码"):
             yield d
 
 
+#: 回收时视同空的值。`—` 是表里「这家没供过这个产品」的占位符，不是人填的报价——
+#: 收进来会被当成真报价再写回新表，实测一次污染 70 处（2026-08-30 发现并修）。
+BLANKS = (None, "", "—", "-")
+
+
 def read_previous(path):
     """读回上一版 xlsx 的手填内容 → dict。文件不存在/读不动就返回空，不报错。
 
@@ -291,9 +306,11 @@ def read_previous(path):
     for name in wb.sheetnames:
         ws = wb[name]
         if name.startswith("询价-"):
+            # 旧版（2026-08-30 之前）的一家一张底稿。这些 sheet 已不再生成，但**必须继续读**
+            # ——上一版产出里的手填内容不能因为改版而丢。新版报价比较后读，同键覆盖它。
             vendor = name[3:]
             for d in _row_dicts(ws):
-                vals = {k: d.get(k) for k in QUOTE_FIELDS if d.get(k) not in (None, "")}
+                vals = {k: d.get(k) for k in QUOTE_FIELDS if d.get(k) not in BLANKS}
                 # 「近期无采购…」是上一版自己生成的说明，不是人填的；回收它会让一条
                 # 已经过期的说明跟着新表一直漂下去。
                 if str(vals.get("备注", "")).startswith("近期无采购"):
@@ -301,19 +318,27 @@ def read_previous(path):
                 if vals:
                     quotes[(d["产品代码"], vendor)] = vals
         elif name == "报价比较":
+            # 2026-08-30 起这里是手填的**唯一录入口**（原先只读）。列名形如「P 报价」，
+            # 供应商简称可能含空格（PHARMA LUPUS），故按最后一个空格切，后缀才是字段名。
+            fill = dict(zip(VENDOR_FILL, QUOTE_FIELDS))
             for d in _row_dicts(ws):
                 v = {k: d.get(k) for k in ("选定供应商", "选定数量")
-                     if d.get(k) not in (None, "")}
+                     if d.get(k) not in BLANKS}
                 if v:
                     chosen[d["产品代码"]] = v
+                for h, val in d.items():
+                    vendor, _, suf = str(h).rpartition(" ")
+                    if not vendor or suf not in fill or val in BLANKS:
+                        continue
+                    quotes.setdefault((d["产品代码"], vendor), {})[fill[suf]] = val
         elif name == "汇总对账":
             for d in _row_dicts(ws):
-                if d.get("已下单量(手填)") not in (None, ""):
+                if d.get("已下单量(手填)") not in BLANKS:
                     ordered[d["产品代码"]] = d["已下单量(手填)"]
         elif name.startswith("备货-"):
             so = name[3:]
             for d in _row_dicts(ws):
-                if d.get("分给本单(手填)") not in (None, ""):
+                if d.get("分给本单(手填)") not in BLANKS:
                     alloc[(so, d["产品代码"])] = d["分给本单(手填)"]
     n = len(quotes) + len(chosen) + len(ordered) + len(alloc)
     if n:
@@ -355,36 +380,13 @@ EN = {
     "选定供应商": "Chosen Supplier", "选定数量": "Chosen Qty",
     # 动态列的后缀
     "需求": "Demand", "报价": "Price", "可供": "Avail.",
+    "采购次数": "Purchases", "最近日期": "Last Date", "最近单价": "Last Price",
+    "最近数量": "Last Qty",
     # 表内文案
     "历史": "historic",
     "无采购记录": "no purchase history",
     "(历史)": " (historic)",
 }
-#: 段落级文案单独列——它们太长，混进上面的词表会看不清哪些是列名。
-EN_TEXT = {
-    "备货进度 · {}": "Stock-up Progress · {}",
-    "报价比较 · 产品 × 供应商": "Quote Comparison · Product × Supplier",
-    "询价底稿 · {}": "RFQ Sheet · {}",
-    "「总可用」是几张单共用的池子，不是本单专属；「分给本单」由你填，"
-    "本单缺口与备货率跟着自动算。货到仓后重跑，总可用会自己涨。":
-        "\"Total Available\" is a pool shared by all target orders, not reserved for this one. "
-        "Fill in \"Allocated to This Order\"; gap and coverage follow automatically.",
-    "报价/可供/保质期/交期请填在各家的「询价-x」底稿上，重跑后自动汇总到这里；"
-    "本表只有最右两列「选定」由你填。":
-        "Price / availability / shelf life / lead time are entered on each supplier's RFQ sheet "
-        "and rolled up here automatically. Only the two \"Chosen\" columns are filled in here.",
-    "缺口 = 本产品的**总缺口**，不是分给你的量；同一缺口可能同时问了几家。"
-    "右侧四列问完就填在这里，重跑不会冲掉，并会自动汇总进「报价比较」。":
-        "\"Gap\" is the TOTAL gap for this product, not a quantity allocated to you. "
-        "The same gap may be quoted with several suppliers at the same time.",
-    "近期无采购，数据来自 {}": "no recent purchase; data from {}",
-}
-#: 英文版是**只读快照**（2026-08-27 用户选定）：手填只认中文版那一份，只有一个真相源。
-EN_BANNER = ("READ-ONLY SNAPSHOT for sharing. Do not fill in this file — "
-             "quotes and allocations are maintained in the Chinese master workbook; "
-             "anything entered here is lost on the next refresh.")
-
-
 def translator(lang):
     """→ 一个把规范中文串翻成目标语言的函数。zh 时是恒等函数。"""
     if lang == "zh":
@@ -394,21 +396,15 @@ def translator(lang):
         s = str(s)
         if s in EN:
             return EN[s]
-        for suffix in ("需求", "报价", "可供", "保质期", "交期"):     # 「S04018 需求」「P 报价」
+        # 「S04018 需求」「P 报价」「PHARMA LUPUS 最近单价」
+        for suffix in ("需求", "采购次数", "最近日期", "最近单价", "最近数量",
+                       "报价", "可供", "保质期", "交期", "备注"):
             if s.endswith(" " + suffix):
                 return f"{s[:-len(suffix) - 1]} {EN.get(suffix, suffix)}"
         if s.startswith("备货-"):
             return f"Stock-up-{s[3:]}"
-        if s.startswith("询价-"):
-            return f"RFQ-{s[3:]}"
         return s
     return t
-
-
-def text(lang, template, *args):
-    """段落级文案。找不到译文就退回中文原文——宁可露出一句中文，也不要静默丢内容。"""
-    tpl = EN_TEXT.get(template, template) if lang == "en" else template
-    return tpl.format(*args) if args else tpl
 
 
 # --------------------------------------------------------------------------
@@ -449,18 +445,25 @@ def _candidates(r, t):
                     for v in r["_vendors"]) or t("无采购记录")
 
 
-def _finish(ws, cols, t, widths=None, left=("产品名称",), small=("产品名称",)):
+def _finish(ws, cols, t, widths=None, left=("产品名称",), small=("产品名称",), header_row=1):
+    """统一收尾。所有表的表头都在第 1 行（说明行已于 2026-08-30 全部去掉），
+    `header_row` 形参留着是因为 `style_sheet` 的这个坑值得在调用侧显式可见。
+
+    对齐一律交给 `auto_align` 按实际数据判：非纯数字左对齐、纯数字居中。
+    `left` 只留给「必然是文字、但当前整列还空着」的列（备注），自动判定看不出来。"""
     style_sheet(ws, len(cols), left_cols={t(c) for c in left},
                 small_cols={t(c) for c in small},
-                widths={t(k): v for k, v in (widths or {"产品名称": 46}).items()})
+                widths={t(k): v for k, v in (widths or {"产品名称": 46}).items()},
+                header_row=header_row, auto_align=True)
 
 
-def sheet_summary(wb, rows, meta, prev, t):
-    """汇总对账——**唯一真相源**。已下单量手填，剩余用公式实时算。"""
+def sheet_summary(wb, rows, prev, t):
+    """汇总对账——**唯一真相源**。已下单量手填，剩余用公式实时算。
+
+    2026-08-30 起表上方**不再写标题/口径/时间戳**（用户裁定：不需要，且长文案会把 A 列
+    撑到 140 宽）。生成日期在文件名里，口径在 README 与本文件 docstring 里。"""
     ws = wb.create_sheet(t("汇总对账"), 0)
-    for i, line in enumerate(meta, start=1):
-        ws.cell(i, 1, line)
-    top = len(meta) + 2
+    top = 1
     cols = ["产品代码", "产品名称", "总缺口", "已下单量(手填)", "剩余", "候选供应商"]
     for j, c in enumerate(cols, start=1):
         ws.cell(top, j, t(c))
@@ -472,24 +475,21 @@ def sheet_summary(wb, rows, meta, prev, t):
         ws.cell(i, 5, f"=C{i}-N(D{i})")
         ws.cell(i, 6, _candidates(r, t))
     _finish(ws, cols, t, {"产品名称": 46, "候选供应商": 26},
-            left=("产品名称", "候选供应商"), small=("产品名称", "候选供应商"))
+            small=("产品名称", "候选供应商"), header_row=top)   # top 恒为 1
     return ws
 
 
-def sheet_stock_up(wb, rows, so, prev, t, lang):
+def sheet_stock_up(wb, rows, so, prev, t):
     """一张销售单一张备货进度表。
 
     为什么「分给本单」是手填而不是算的：在手库存和到货是**几张单共用**的，同一批货
     算给谁，表决定不了（2026-08-27 用户裁定）。表只把总量摆出来，分配留给人。
     """
     ws = wb.create_sheet(t(f"备货-{so}"))
-    ws.cell(1, 1, text(lang, "备货进度 · {}", so))
-    ws.cell(2, 1, text(lang, "「总可用」是几张单共用的池子，不是本单专属；「分给本单」由你填，"
-                             "本单缺口与备货率跟着自动算。货到仓后重跑，总可用会自己涨。"))
     cols = ["产品代码", "产品名称", "本单需求", "总可用", "分给本单(手填)", "本单缺口", "备货率"]
     for j, c in enumerate(cols, start=1):
-        ws.cell(4, j, t(c))
-    i = 4
+        ws.cell(1, j, t(c))
+    i = 1
     for r in rows:
         need = r["_per_so"].get(so)
         if not need:
@@ -507,23 +507,21 @@ def sheet_stock_up(wb, rows, so, prev, t, lang):
     return ws
 
 
-def sheet_compare(wb, rows, vendors_all, prev, t, lang):
-    """报价比较——产品 × 供应商横向摊开。
+def sheet_compare(wb, rows, vendors_all, prev, t):
+    """报价比较——产品 × 供应商横向摊开，**唯一录入口**（2026-08-30 用户选定）。
 
-    **这张表不手填**（右侧「选定」两列除外）：报价/可供/保质期/交期填在各自的询价底稿上，
-    这里只是把它们横过来对齐。同一个数只有一个录入口，免得两处不一致时不知道信谁。
+    原先是「只读汇总」，报价填在各家的「询价-x」底稿上。那 6 张底稿已删掉：按供应商看
+    本来就是这张表上筛一次的事，多 6 张 sheet 只增加理解成本（用户裁定）。
+    每家 9 列，**参考在左、待填在右**——最近单价紧挨报价单价，谈价时一眼对得上。
     """
     ws = wb.create_sheet(t("报价比较"))
-    ws.cell(1, 1, text(lang, "报价比较 · 产品 × 供应商"))
-    ws.cell(2, 1, text(lang, "报价/可供/保质期/交期请填在各家的「询价-x」底稿上，重跑后自动汇总到这里；"
-                             "本表只有最右两列「选定」由你填。"))
     cols = ["产品代码", "产品名称", "缺口"]
     for v in vendors_all:
-        cols += [f"{v} 报价", f"{v} 可供", f"{v} 保质期", f"{v} 交期"]
+        cols += [f"{v} {suf}" for suf in VENDOR_HIST + VENDOR_FILL]
     cols += ["选定供应商", "选定数量"]
     for j, c in enumerate(cols, start=1):
-        ws.cell(4, j, t(c))
-    i = 4
+        ws.cell(1, j, t(c))
+    i = 1
     for r in rows:
         if r["缺口"] <= 0:
             continue
@@ -531,55 +529,35 @@ def sheet_compare(wb, rows, vendors_all, prev, t, lang):
         ws.cell(i, 1, r["产品代码"])
         ws.cell(i, 2, r["产品名称"])
         ws.cell(i, 3, r["缺口"])
-        mine = {v["short"] for v in r["_vendors"]}
-        for k, v in enumerate(vendors_all):
-            base = 4 + k * 4
-            q = prev["quotes"].get((r["产品代码"], v), {})
-            if not q and v not in mine:
-                ws.cell(i, base, "—")          # 这家没供过这个产品，与「问了没回价」区分开
+        # 同一简称可能对应多个 ERP 供应商全名，取最近一次采购的那条
+        mine = {}
+        for v in r["_vendors"]:
+            cur = mine.get(v["short"])
+            if cur is None or v["date"] > cur["date"]:
+                mine[v["short"]] = v
+        for k, name in enumerate(vendors_all):
+            base = 4 + k * len(VENDOR_HIST + VENDOR_FILL)
+            v = mine.get(name)
+            q = prev["quotes"].get((r["产品代码"], name), {})
+            if v is None and not q:
+                # 这家没供过这个产品，与「问了没回价」区分开
+                ws.cell(i, base, "—")
                 continue
-            for off, f in enumerate(("报价单价", "可供数量", "保质期", "交期")):
-                ws.cell(i, base + off, q.get(f))
+            if v is not None:
+                ws.cell(i, base, v["n"] if v["in_window"] else t("历史"))
+                ws.cell(i, base + 1, v["date"])
+                ws.cell(i, base + 2, round(v["price"], 4) or None)
+                ws.cell(i, base + 3, v["qty"])
+            for off, f in enumerate(QUOTE_FIELDS):
+                ws.cell(i, base + len(VENDOR_HIST) + off, q.get(f))
         ch = prev["chosen"].get(r["产品代码"], {})
         ws.cell(i, len(cols) - 1, ch.get("选定供应商"))
         ws.cell(i, len(cols), ch.get("选定数量"))
-    _finish(ws, cols, t)
-    return ws
-
-
-def sheet_vendor(wb, vendor, items, used_titles, prev, t, lang):
-    """一家供应商一张询价底稿。**是候选展开，不是分配**：缺口写的都是总缺口。"""
-    title = re.sub(r"[\\/*?:\[\]]", "-", t(f"询价-{vendor}"))[:31]
-    while title in used_titles:
-        title = (title[:28] + f"~{len(used_titles)}")[:31]
-    used_titles.add(title)
-    ws = wb.create_sheet(title)
-    ws.cell(1, 1, text(lang, "询价底稿 · {}", vendor))
-    ws.cell(2, 1, text(lang, "缺口 = 本产品的**总缺口**，不是分给你的量；同一缺口可能同时问了几家。"
-                             "右侧四列问完就填在这里，重跑不会冲掉，并会自动汇总进「报价比较」。"))
-    cols = ["产品代码", "产品名称", "缺口", "在手", "需求合计",
-            "本产品另见", "本家采购次数", "最近一次日期", "最近一次单价", "最近一次数量"] + QUOTE_FIELDS
-    for j, c in enumerate(cols, start=1):
-        ws.cell(4, j, t(c))
-    for i, (r, v) in enumerate(items, start=5):
-        others = [x["short"] for x in r["_vendors"] if x["vendor"] != v["vendor"]]
-        ws.cell(i, 1, r["产品代码"])
-        ws.cell(i, 2, r["产品名称"])
-        ws.cell(i, 3, r["缺口"])
-        ws.cell(i, 4, r["在手"])
-        ws.cell(i, 5, r["需求合计"])
-        ws.cell(i, 6, "、".join(others) or "—")
-        ws.cell(i, 7, v["n"] if v["in_window"] else t("历史"))
-        ws.cell(i, 8, v["date"])
-        ws.cell(i, 9, round(v["price"], 4) or None)
-        ws.cell(i, 10, v["qty"])
-        q = prev["quotes"].get((r["产品代码"], vendor), {})
-        for k, f in enumerate(QUOTE_FIELDS):
-            ws.cell(i, 11 + k, q.get(f))
-        if not v["in_window"] and not q.get("备注"):
-            ws.cell(i, 15, text(lang, "近期无采购，数据来自 {}", v["po"]))
-    _finish(ws, cols, t, {"产品名称": 46, "备注": 30},
-            left=("产品名称", "备注"), small=("产品名称", "备注"))
+    # 60+ 列不冻结没法录入：锁住产品代码/名称两列与表头
+    ws.freeze_panes = "C2"
+    _finish(ws, cols, t, {"产品名称": 46},
+            # 「选定供应商」「x 备注」必然是文字，但录入前整列是空的，自动判定看不出来
+            left=("产品名称", "选定供应商") + tuple(f"{v} 备注" for v in vendors_all))
     return ws
 
 
@@ -592,18 +570,18 @@ def sheet_gap(wb, rows, so_names, t):
     for r in rows:
         ws.append([_candidates(r, t) if c == "候选供应商" else r.get(c) for c in cols])
     _finish(ws, cols, t, {"产品名称": 46, "候选供应商": 26},
-            left=("产品名称", "候选供应商"), small=("产品名称", "候选供应商"))
+            small=("产品名称", "候选供应商"))
     ws.freeze_panes = "C2"
     return ws
 
 
-def build_workbook(rows, so_names, meta, prev, lang="zh"):
+def build_workbook(rows, so_names, prev, lang="zh"):
     t = translator(lang)
     wb = Workbook()
     wb.remove(wb.active)
-    sheet_summary(wb, rows, meta, prev, t)
+    sheet_summary(wb, rows, prev, t)
     for so in so_names:
-        sheet_stock_up(wb, rows, so, prev, t, lang)
+        sheet_stock_up(wb, rows, so, prev, t)
 
     by_vendor = defaultdict(list)
     for r in rows:
@@ -614,13 +592,9 @@ def build_workbook(rows, so_names, meta, prev, lang="zh"):
     vendors_all = sorted({short_vendor(v) for v in by_vendor},
                          key=lambda s: -sum(len(i) for v, i in by_vendor.items()
                                             if short_vendor(v) == s))
-    sheet_compare(wb, rows, vendors_all, prev, t, lang)
+    sheet_compare(wb, rows, vendors_all, prev, t)
     sheet_gap(wb, rows, so_names, t)
-    used = set()
-    for vendor in sorted(by_vendor, key=lambda v: -len(by_vendor[v])):
-        items = sorted(by_vendor[vendor], key=lambda x: -x[0]["缺口"])
-        sheet_vendor(wb, short_vendor(vendor), items, used, prev, t, lang)
-    return wb, len(by_vendor)
+    return wb, len(vendors_all)
 
 
 # --------------------------------------------------------------------------
@@ -657,41 +631,20 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
     rows = build_rows(demand, prods, names, qty_avail, occ_a, in_transit, draft, po_hist)
     n_gap = sum(1 for r in rows if r["缺口"] > 0)
     n_nov = sum(1 for r in rows if r["缺口"] > 0 and not r["_vendors"])
-    meta = [
-        f"采购缺口 / 询价底稿 · 目标单 {'、'.join(names)} · 生成于 {dt.datetime.now():%Y-%m-%d %H:%M}",
-        f"口径：缺口 = 需求 − max(0, 在手 − 他单占用)。他单占用已剥离目标单自身"
-        f"（本次剥离 {sum(occ_mine.values()):.0f} 件）。采购历史回溯 {months} 个月，"
-        f"窗口内无采购的回落到历史最近一次并标『历史』。",
-        "手填的内容（报价/可供/保质期/交期、分给本单、已下单量）重跑不会被冲掉——"
-        "重跑一次 = ERP 那侧的数字刷新一次，你填的原样保留。",
-        f"⚠ 本表不做分配：同一缺口会出现在多家供应商底稿上，都写总缺口。"
-        f"回价后在本 sheet 回填『已下单量』，靠『剩余』防重复下单。",
-        f"产品 {len(rows)} 个，其中有缺口 {n_gap} 个；"
-        f"{n_nov} 个有缺口但查不到任何采购记录（需人工找供应商）。",
-    ]
-    meta_en = [
-        f"Procurement Gap / RFQ Sheets · Orders {', '.join(names)} · "
-        f"generated {dt.datetime.now():%Y-%m-%d %H:%M}",
-        f"Gap = Demand − max(0, On Hand − Committed to other orders). The target orders' own "
-        f"commitments are excluded ({sum(occ_mine.values()):.0f} pcs this run). "
-        f"Purchase history looks back {months} months; products with none in that window fall "
-        f"back to the single most recent purchase, marked \"historic\".",
-        EN_BANNER,
-        "This workbook does NOT allocate: the same gap appears on several suppliers' RFQ sheets, "
-        "each showing the TOTAL gap.",
-        f"{len(rows)} products, {n_gap} with a gap; "
-        f"{n_nov} of those have no purchase history at all (supplier must be sourced manually).",
-    ]
+    # 表上方不再写标题/口径/时间戳（2026-08-30 用户裁定）：口径只说给跑脚本的人听，
+    # 打在终端就够了；写进表里既没人看，长文案还会把 A 列撑到 140 宽。
+    say(f"  口径：缺口 = 需求 − max(0, 在手 − 他单占用)；本次剥离目标单自身占用 "
+        f"{sum(occ_mine.values()):.0f} 件；采购历史回溯 {months} 个月。")
 
     os.makedirs(outdir, exist_ok=True)
     stamp = f"{dt.date.today():%Y%m%d}"
     outs = []
-    for lang, meta_x, fname in (
-            ("zh", meta, f"采购缺口-{'+'.join(names)}-{stamp}.xlsx"),
-            ("en", meta_en, f"Procurement-Gap-{'+'.join(names)}-{stamp}.xlsx")):
+    for lang, fname in (
+            ("zh", f"采购缺口-{'+'.join(names)}-{stamp}.xlsx"),
+            ("en", f"Procurement-Gap-{'+'.join(names)}-{stamp}.xlsx")):
         if lang == "en" and not with_en:
             continue
-        wb, n_vendors = build_workbook(rows, names, meta_x, prev, lang)
+        wb, n_vendors = build_workbook(rows, names, prev, lang)
         path = unique_path(os.path.join(outdir, fname))
         wb.save(path)
         outs.append(path)
@@ -699,9 +652,9 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
     say(f"\n✓ 已写出 {outs[0]}")
     if len(outs) > 1:
         say(f"  英文版（只读快照，手填只认中文版）：{os.path.basename(outs[1])}")
-    say(f"  产品 {len(rows)} 个 / 有缺口 {n_gap} 个 / 询价底稿 {n_vendors} 张")
+    say(f"  产品 {len(rows)} 个 / 有缺口 {n_gap} 个 / 报价比较覆盖供应商 {n_vendors} 家")
     if n_nov:
-        say(f"  ⚠ {n_nov} 个有缺口的产品查不到采购记录，底稿里不会出现，需人工找供应商")
+        say(f"  ⚠ {n_nov} 个有缺口的产品查不到采购记录，报价比较里没有可问的家，需人工找供应商")
     if odd:
         say(f"  ⚠ {len(odd)} 个产品的待出库 move 找不到对应的确认单行（picking 与 SO 脱钩），"
             "这几个的占用数不可信，别按它下单："
@@ -711,7 +664,7 @@ def run(so_names, months=3, outdir=None, fresh=False, with_en=True):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="销售单 → 采购缺口 + 按供应商的询价底稿")
+    ap = argparse.ArgumentParser(description="销售单 → 采购缺口 + 产品×供应商报价比较")
     ap.add_argument("orders", nargs="+", help="销售单号，如 S04018 S04029")
     ap.add_argument("--months", type=int, default=3, help="采购历史回溯月数（默认 3）")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")
