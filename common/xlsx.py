@@ -17,10 +17,12 @@ from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.properties import PageSetupProperties
 
 YELLOW = PatternFill("solid", fgColor="FFFF00")
-# 打印件上的标记色。黄色(FFFF00)灰度亮度约 226/255(89% 白)，黑白激光印出来几乎看不见
-# ——仓库反馈「只有轻微灰度」。ED7D31 灰度约 150/255(59%)，是明确的中灰块，
-# 屏幕上仍是显眼的暖橙，黑字在其上对比度 7.5:1。凡是要打印给人照着做的标记都用它。
-PRINT_HL = PatternFill("solid", fgColor="ED7D31")
+# 打印件上的标记色。灰度亮度(0.299R+0.587G+0.114B)决定黑白激光印出来的深浅与耗粉：
+#   FFFF00 黄 = 226/255(89% 白) —— 几乎看不见，仓库反馈「只有轻微灰度」；
+#   ED7D31 橙 = 150/255(59%)    —— 看得清但**过深、费墨粉**（2026-09-01 实测反馈）；
+#   FFC000 琥珀金 = 189/255(74%) —— 取中：比黄明显得多，又比橙省粉，黑字对比度 11:1。
+# 凡是要打印给人照着做的标记都用它。改色前先算灰度亮度，别只看屏幕。
+PRINT_HL = PatternFill("solid", fgColor="FFC000")
 THIN = Side(style="thin")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
