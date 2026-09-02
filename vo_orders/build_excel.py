@@ -294,7 +294,11 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     highlight_facesheet(ws_face, face_df)
     merge_multiproduct(ws_face, face_df)
     fix_merged_alignment(ws_face, face_left)
-    apply_print(ws_face, landscape=True)
+    # 面单 8 列合计 150.09 字符宽 = 11.36 英寸，A4 横向纸宽 11.69：默认 0.8 英寸边距
+    # 只剩 10.09 可打印，**VO Delivery Type 与仓库备注两列会被甩到第 2 页**，一直靠
+    # 操作员打印前手动调缩放兜着（`FACE_WIDTHS` 那份样表的边距就是手工改成 0.25 的）。
+    # 窄边距把可打印宽推到 11.19，再交给 fit_width 缩最后 2%——肉眼看不出，也不用再手调。
+    apply_print(ws_face, landscape=True, fit_width=True, narrow=True)
     chk_df = build_nogoods_helper(facesheet)
     ws_chk = wb.create_sheet("无货勾选")
     write_df(ws_chk, chk_df)

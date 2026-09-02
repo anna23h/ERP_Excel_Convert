@@ -193,16 +193,37 @@ def write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), w
     return path, len(out)
 
 
+#: Excel 内置「窄」边距(英寸)：上下 0.75、左右 0.25。左右让出来的 1.1 英寸
+#: 够多塞一列，列多的表(如京东装箱复核 7 列)压一页宽时缩放比例明显更松。
+NARROW_MARGINS = {"top": 0.75, "bottom": 0.75, "left": 0.25, "right": 0.25}
+
+#: 本仓一直在用的边距，`narrow=False` 时的取值。**不要顺手改成窄边距**——
+#: apply_print 被拣货表/面单共用，改默认值等于同时改掉两份天天在打的成品。
+DEFAULT_MARGINS = {"top": 0.9, "bottom": 0.9, "left": 0.8, "right": 0.8}
+
+
 def apply_print(ws, landscape=False, fit_width=False, footer="第 &P 页，共 &N 页",
-                top=0.9, bottom=0.9, left=0.8, right=0.8):
+                top=None, bottom=None, left=None, right=None, narrow=False):
     """步骤9 打印设置。footer 用 Excel 字段码：&P=当前页码，&N=总页数。
-    默认『第 &P 页，共 &N 页』(第1页，共3页...)。页边距单位为英寸。"""
+    默认『第 &P 页，共 &N 页』(第1页，共3页...)。页边距单位为英寸。
+
+    纸张**一律 A4**：不写死的话走打印机默认，同一份文件在设成 Letter 的机器上
+    印出来右边会被裁掉一截，且事先看不出来。本仓所有成品都是 A4 打的。
+
+    narrow: 用 Excel 的「窄」边距预设(见 NARROW_MARGINS)。**默认关**——
+    top/bottom/left/right 四个形参显式传值时仍然优先，所以老调用方一格不变。"""
     if landscape:
         ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
     if fit_width:  # 所有列压到一页宽
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-    ws.page_margins = PageMargins(top=top, bottom=bottom, left=left, right=right,
-                                  header=0.3, footer=0.3)
+    m = NARROW_MARGINS if narrow else DEFAULT_MARGINS
+    ws.page_margins = PageMargins(
+        top=m["top"] if top is None else top,
+        bottom=m["bottom"] if bottom is None else bottom,
+        left=m["left"] if left is None else left,
+        right=m["right"] if right is None else right,
+        header=0.3, footer=0.3)
     ws.oddFooter.center.text = footer
