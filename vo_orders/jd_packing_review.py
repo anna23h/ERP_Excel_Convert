@@ -96,9 +96,17 @@ def _out_path(src):
     return os.path.join(d, stem + ext)
 
 
-def convert(src, dst=None):
-    """把一份原始导出改写成瘦表，返回输出路径。"""
+def convert(src, dst=None, outdir=None):
+    """把一份原始导出改写成瘦表，返回输出路径。
+
+    outdir: 只改产出目录、文件名照旧(`xxx_0new(1).xlsx`)。命令行不传 = 就地放在
+    原文件旁边(操作员一次下载一批，转完在同一个文件夹里对着看最省事)；GUI 传共用
+    输出目录，否则「打开输出文件夹」按钮会指到一个根本没有产出的地方。
+    """
     dst = dst or _out_path(src)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+        dst = os.path.join(outdir, os.path.basename(dst))
     wb = load_workbook(src)
     ws = wb.worksheets[0]
 
@@ -183,17 +191,23 @@ def convert(src, dst=None):
     return dst
 
 
-def convert_dir(folder):
+def is_generated(path):
+    """是不是本脚本自己产出的 new 版(或 Excel 的 ~$ 临时文件)。
+
+    GUI 也用它：操作员在文件对话框里全选，很容易把上一轮的 new 版一起选进来，
+    而 new 版已经只剩 7 列，再转一次会撞「原始表缺少列」直接报错。
+    """
+    name = os.path.basename(path)
+    if not name.lower().endswith(".xlsx") or name.startswith("~$"):
+        return True
+    return bool(re.search(r"new(\(\d+\))?$", os.path.splitext(name)[0]))
+
+
+def convert_dir(folder, outdir=None):
     """转换目录下所有原始导出(跳过已生成的 new 版和 Excel 临时文件)。"""
-    out = []
-    for name in sorted(os.listdir(folder)):
-        if not name.lower().endswith(".xlsx") or name.startswith("~$"):
-            continue
-        stem = os.path.splitext(name)[0]
-        if re.search(r"new(\(\d+\))?$", stem):
-            continue
-        out.append(convert(os.path.join(folder, name)))
-    return out
+    return [convert(os.path.join(folder, name), outdir=outdir)
+            for name in sorted(os.listdir(folder))
+            if not is_generated(os.path.join(folder, name))]
 
 
 if __name__ == "__main__":

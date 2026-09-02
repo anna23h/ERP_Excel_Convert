@@ -13,6 +13,7 @@
 | `扫码/` | **运单扫码回流**——**非独立流水线**：VO 拉单阶段一↔阶段二之间的可选替换段（单文件 HTML，零依赖，跑在仓库机） | 浏览器打开 `扫码/扫码回流.html` | [扫码/README.md](扫码/README.md) + [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
+| `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | VO 拉单 GUI 的「京东复核」标签页；或 `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>` | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
@@ -330,6 +331,29 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 `Quantity total`（L 列）预填 SO 订购量；P 列 `核对 箱规×箱数` 是 `=SUMPRODUCT` 公式，仓库填完箱规/箱数后与 L 列对拍，实发≠订购一眼可见（P 列在成品箱单的 15 列之外，是辅助列）。表头**左上角 `A4:C5` 一个大格**（3 列宽 × 2 行高、16 号加粗）写 SO 单号——打印给仓库，要一眼看见，且多张 SO 拼接后单格装不下。每个 SKU 底下预留空行（默认 2）供拆批次。
 要几张 SO 合并成一张箱单，就在 ERP 里一次性导到同一份文件里，脚本按 `Order Reference` 自动分单。
 输出同名自动加序号，不覆盖。
+
+## 京东装箱复核瘦身表
+
+`vo_orders/jd_packing_review.py`。京东后台导出的「装箱复核历史查询」45 列，仓库现场只看 5 列 +
+一个序号。入口：VO 拉单 GUI 的「京东复核」标签页（可一次多选、批量转），或
+`python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`。产出列：
+序号 | 运单号（随单）| 商品编号 | 商品条码 | 商品名称 | 复核数量 | 备注（留白给现场手写）。
+
+**在原文件副本上删列 + 插列，不新建工作簿**：边框、字体、条码列的文本格式原样保留。
+条码带前导 `-`、商品编号 12 位，一旦重写成新表极易被 Excel 当数字吃掉精度。
+
+**一个运单 = 一个包裹 = 一个序号**，一单多品时序号列与运单号列**纵向合并单元格**——
+合并前只是留空、靠视觉挂在上一行下面，打印出来容易看串。分组**按连续段**而不是按值去重：
+不相邻的同号只会各自成一单、最多多一个序号，而按值去重会把远处那行的运单号抹掉、
+让它挂到毫不相干的上一行下面（且不报错）。
+
+**产出直接是打印形态**，打印前不用再调版：A4 横向 + 窄边距 + 7 列压一页宽 + 页脚页码 +
+表头每页重复。7 列合计 152.83 字符宽 = 11.50 英寸，窄边距下可打印 11.19——不缩放的话
+「备注」一列会单独甩到第 2 页（打出一张几乎全空的手写栏），`fit_width` 缩到 97% 解决。
+**列名行的底色是主动去掉的**：京东给的是深色实心底，整行打出来费墨粉又没多少信息量。
+
+GUI 走共用输出目录，命令行则就地放在原文件旁边（操作员一次下载一批，转完在同一个文件夹里
+对着看最省事）。两处都会跳过已经转过的 `…new…` 文件——它只剩 7 列，再转一次会撞「原始表缺少列」。
 
 ## ERP 回写两条（销售分析 / FS 回写）
 

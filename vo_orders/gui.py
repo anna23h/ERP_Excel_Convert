@@ -5,7 +5,7 @@
 阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库。
 阶段二：选 销售ERP + 仓库返回文件(有货/无货) + 出库数据 → 生成 系统履约单号/发货表/账单/出库。
 两阶段在界面上各自独立输入，互不依赖；阶段二无需天猫数据。
-另有「货代合并」与「箱单」两个标签页，与拉单两阶段互不相干，各自独立使用。
+另有「货代合并」「箱单」「京东复核」三个标签页，与拉单两阶段互不相干，各自独立使用。
 """
 import os
 import sys
@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import build_excel  # noqa: E402
 import stage2       # noqa: E402
+import jd_packing_review  # noqa: E402
 from packing_list import packing_list  # noqa: E402
 
 EXCEL_TYPES = [("Excel / CSV", "*.xlsx *.xls *.csv"), ("所有文件", "*.*")]
@@ -88,6 +89,8 @@ class App:
         # 箱单标签：SO 导出 → 箱单半成品
         self.pl_so = tk.StringVar()            # sale.order 导出(一份，可含多张 SO)
         self.pl_spare = tk.StringVar(value="2")  # 每 SKU 预留空行
+
+        self.jd = tk.StringVar()               # 京东复核：装箱复核历史查询导出(可多份)
 
         self._build_ui()
 
@@ -236,6 +239,19 @@ class App:
                        "条码在 ERP 里为空的行会标黄。").pack(anchor="w", pady=(6, 10))
         self._action_row(t4, "▶  生成箱单", self._run_packing_list)
 
+        # 京东复核标签(45 列导出 → 打印用的 7 列瘦表)
+        t5 = ttk.Frame(nb, padding=14); nb.add(t5, text="  京东复核  ")
+        self._file_row(t5, "京东导出:", self.jd, multi=True)
+        self._hint(t5, "选京东后台导出的『装箱复核历史查询』xlsx，可多选(一次全转)。"
+                       "已经转过的 …new… 文件会自动跳过，不用挑。")
+        ttk.Label(t5, style="Hint.TLabel", justify="left", wraplength=520,
+                  text="45 列瘦成 7 列：序号/运单号/商品编号/商品条码/商品名称/复核数量/备注。"
+                       "一个运单 = 一个包裹 = 一个序号，一单多品的序号与运单号合并成一格。"
+                       "产出直接是打印形态：A4 横向、窄边距、所有列压一页宽、"
+                       "页脚带页码、表头每页重复——打印前不用再调版。"
+                       "『备注』整列留空，给仓库现场手写。").pack(anchor="w", pady=(6, 10))
+        self._action_row(t5, "▶  生成复核表", self._run_jd_review)
+
     # ---------- helpers ----------
     def _pick_file(self, var):
         p = filedialog.askopenfilename(filetypes=EXCEL_TYPES)
@@ -379,6 +395,33 @@ class App:
         def work():
             out, lines = packing_list.run(path, outdir, spare)
             return [f"箱单已生成: {out}"] + lines
+        self._bg(work)
+
+    # ---------- 京东复核 ----------
+    def _run_jd_review(self):
+        picked = [p.strip() for p in self.jd.get().split(";") if p.strip()]
+        if not picked:
+            messagebox.showwarning("缺少文件", "请先选择京东导出的『装箱复核历史查询』文件")
+            return
+        # 上一轮的 new 版只剩 7 列，再转一次会撞「原始表缺少列」——全选时很容易带上，
+        # 这里先滤掉；滤完一个不剩就是操作员只选了 new 版，直接说清楚而不是抛异常。
+        files = [p for p in picked if not jd_packing_review.is_generated(p)]
+        skipped = len(picked) - len(files)
+        if not files:
+            messagebox.showwarning("没有可转的文件",
+                                   "选中的都是已经转过的 …new… 文件，请选原始导出")
+            return
+        self._write(f"【京东复核】{len(files)} 份导出 → 打印用瘦表…"
+                    + (f"(跳过 {skipped} 份已转过的)" if skipped else ""))
+        outdir = self.outdir.get()
+
+        def work():
+            lines = []
+            if skipped:
+                lines.append(f"跳过 {skipped} 份已经转过的 …new… 文件")
+            for src in files:
+                lines.append("已生成: " + jd_packing_review.convert(src, outdir=outdir))
+            return lines
         self._bg(work)
 
 
