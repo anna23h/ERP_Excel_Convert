@@ -20,7 +20,7 @@
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
-| `dashboard/` | **询价直通看板**（销售 ↔ 采购，询价阶段不进 ERP）：Excel Online 共享表生成器 + 从 Odoo **只读**离线导出的产品查找表（另有已挂起的 artifact 版页面源码 `board.html`） | `python3 dashboard/make_board_xlsx.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#询价直通看板销售--采购) + 脚本 docstring | 建设中 |
+| `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它近 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
@@ -98,45 +98,76 @@ C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会
 | 昨日发货表 | `1006发货表.xlsx` | 步骤6 去重 |
 | 成品参考 | `…面单+拣货单.xlsx` | 步骤7/8 目标格式 |
 
-## 询价直通看板（销售 ↔ 采购）
+## 采购订单跟踪表（销售 ↔ 采购）
 
-询价阶段的东西不构成真实订单、不进 ERP，单独用这个看板承载。
+询价与在途阶段的东西不构成真实订单、不进 ERP，单独用这张表承载。
+**载体是 Excel Online 共享表**——零开发、零部署、零运维，国内同事可访问。
+（为什么不是自建服务、不是飞书、不是 Google Sheets，见 `ISSUES.md` 的 J 条。）
 
-### 载体：Excel Online 共享表（当前主线，2026-08-26 起）
-
-原先跑在 claude.ai artifact 上，**已挂起**——实测把同事加成协作者后依然不实时同步，
-一方改完必须重新分享链接对方才看得到；而 artifact 无 `db`/`room` 能力，state 只能内嵌
-文档整份重发布，多人协作的物理上限就是「后到者改动直接丢弃」。自建服务（SQLite + 认证 +
-公网 + 备份）评估后判为成本收益倒挂：要自建的那一件事恰是共享文档的看家本领。
-故改走 **Excel Online 共享表**——零开发、零部署、零运维，国内同事可访问。
-（决策全过程与「什么时候才回来自建」的触发条件见 `ISSUES.md` 的 J 条。）
+### 当前主线：转置录入 + 行式总览（2026-09-22 起）
 
 ```bash
-python3 dashboard/make_board_xlsx.py                        # → results/询价看板.xlsx
-python3 dashboard/make_board_xlsx.py --no-sample            # 不带样例数据，出一张空表
-python3 dashboard/make_board_xlsx.py --out /path/to/x.xlsx
+python3 dashboard/make_order_sheet.py                       # → results/采购订单跟踪表.xlsx
+python3 dashboard/make_order_sheet.py --no-sample           # 不带样例数据，出一张空表
+python3 dashboard/make_order_sheet.py --products 80 --suppliers 5
+python3 dashboard/make_order_sheet.py --out /path/to/x.xlsx --dict …/product_dict.json
 ```
 
-四个 sheet：**看板**（五列泳道，只读，卡片自动归位）/ **采购任务**（行式，人只填这里）/
-**产品字典**（5692 条，供 VLOOKUP）/ **供应商**（下拉名单，可自行增删）。
+四个 sheet：**录入**（转置，人只填这里）/ **总览**（行式，只读，全公式）/
+**产品字典**（5681 条，供 VLOOKUP）/ **供应商**（下拉名单，可自行增删）。
 
-- **⚠ 必须转 90 度**：Jürgen 现用的 `260825 Order template.xlsx` 是**转置的**（字段在 A 列，
-  每个产品占一整列，供应商纵向堆三块）。Excel 的筛选/排序/透视/条件格式/动态数组**全部假设
-  「一行一条记录」**——转置布局下做不出任何看板视图。字段一个不改，只是躺下来。
-- **阶段不用人填**：照搬 `board.html` 的 `deriveStage()` 规则写成公式。人只填供应商/量/价/
-  ETA/实收，阶段（待询价 → 询价中 → 已报价·待销售确认 → 已下单 → 已关闭）自己走，
-  看板卡片跟着换列。
-- **泳道用经典 `INDEX`+`MATCH`+`COUNTIF` 辅助键，不用 `FILTER`**：`FILTER` 经 openpyxl
-  写出要带 `_xlfn._xlws.` 前缀，且桌面版 Excel 2019 及更早不支持。兼容性优先于写法优雅。
+- **为什么放弃「转 90 度」**：J 条那版要求 Jürgen 改用行式布局录入，**这一步没谈成，
+  于是整件东西没落地**。转 90 度是为了换 Excel 的筛选/排序/透视——那是**看**的需求，
+  代价却压在**写**的人身上。本版把代价挪回看的一侧：录入布局一格不动，
+  另生成一张只读的行式视图给销售，两张表靠公式实时联动。
+- **录入 = Jürgen 的 `260825 Order template.xlsx`**，字段名与顺序原样（`Product` / `PZN` /
+  `AEP / HAP` / `Order date` / `order quantity` + `Supplier N` / `Quantity` / `price` /
+  `ETA` / `received quant.`），每个产品一整列，供应商纵向堆三块。在此之上补两组行：
+  **手填的**要货日 / 提出人 / 备注（他原表没有，但销售要知道「谁提的、什么时候要」），
+  **自动的**品名（中）/ 已配 / 缺口 / 已到（灰底标明「别手填」）。
+- **⚠ 想自己在表里加字段，不用改脚本也不用重新生成**：在 Excel 里插入行/列时，
+  它会**自动重写所有引用，跨表的也一样**（2026-09-22 在真 Excel 里验过：录入插 3 行后，
+  已配的 `SUM(B12,B17,B22)` 自己变成 `SUM(B15,B20,B25)`，总览拉供应商的 `B$11` 自己变成
+  `B$14`，筛选范围自己从 `A2:X42` 扩到 `A2:AA42`）。唯一要手写的是总览那几列的公式，
+  而且**不能照抄直引**——总览每行对应录入的**不同列**，直引下拉只会增行号、不会移列。
+  要用可下拉的形式：`=IF(INDEX(录入!$B$8:$AO$8,ROW()-2)="","",INDEX(录入!$B$8:$AO$8,ROW()-2))`。
+- **自动算的只有三样**（2026-09-22 用户圈定）：已配 = 各家 `Quantity` 之和；
+  缺口 = `order quantity` − 已配（>0 标红）；已到 = 各家 `received quant.` 之和；
+  外加 PZN → 中文品名。**不做**阶段推导、泳道看板、超时报警——那是看板形态自带的包袱。
+- **总览是只读的**：每行自动取自录入的一列。**别在总览上直接排序**（公式会被排乱），
+  要排序先复制 → 选择性粘贴为「值」。空行是预留产品位，用筛选去掉。
 - **`ETA` 列不设日期格式**：真实数据里 `requested` / `??` 这类非日期值比日期还多。
 - **品名 VLOOKUP 尾部必须接 `&""`**：字典里 `nameZh` 为空时 VLOOKUP 返回空单元格，
-  Excel 会显示成 `0`，并一路污染到看板卡片（2026-08-26 在 Excel 里实跑发现）。
-- **PZN 校验只警告不阻断**：字典是药房产品快照，新品不该被挡住。
+  Excel 会显示成 `0`（2026-08-26 实跑发现，本版同构继承；`16233255` 就是这样一条，
+  已作为固定用例验过）。
+- **PZN 按 `00000000` 补零显示**：字典里是 8 位，手打常是 7 位，不补零两边看着对不上。
+  查找本身走 `TEXT(…,"00000000")`，不受影响。**PZN 校验只警告不阻断**——新品不该被挡住。
+- **字典默认读 `product_dict.min.json`**（457KB，5681 条）；全量版 `product_dict.json` 也认，
+  自动辨认格式。两份都是 gitignore 的产出。
 - **⚠ 真实供应商名与进货价不进公开库**：脚本内只有占位符（`供应商 A~E` + 取整假价）。
   要出一张能直接给采购看的表，放一份 `dashboard/data/board_seed.json`（该目录已 gitignore）：
   `{"suppliers": [...], "sample": [[pzn, 需求量, 参考价, 下单日, 要货日, 提出人, 备注, [[供应商, 数量, 单价, ETA, 实收], ...]], ...]}`。
+  种子沿用 J 条的形态，本表没有「要货日 / 提出人 / 备注」三列，读进来直接忽略。
   没有它照样能生成，只是名单和样例是假的。
-- 产出落 `results/`（已 gitignore）。
+- 产出落 `results/`（已 gitignore）。**重跑不会覆盖线上那份共享表**——
+  线上表里的业务数据是另一份记录，重新生成前想清楚。
+
+### 已挂起：看板版（`dashboard/make_board_xlsx.py`）
+
+代码保留，不再是主线。行式录入 + 五档阶段公式推导 + 五列泳道 + 产品字典，
+2026-08-26 在 Excel 里逐档验过、能跑；挂起的原因不是它不工作，而是**它要求 Jürgen
+换一套录入布局，而这一步没谈成**（复盘见 `ISSUES.md` 的 K 条）。
+什么时候回头用它：等「一行一条记录」的录入方式本身被接受，或者需要泳道/阶段视图时。
+
+```bash
+python3 dashboard/make_board_xlsx.py                        # → results/询价看板.xlsx
+python3 dashboard/make_board_xlsx.py --no-sample --out /path/to/x.xlsx
+```
+
+- **⚠ 它默认读全量字典 `dashboard/data/product_dict.json`**，那份没生成过就直接报错退出；
+  要么先跑 `export_product_dict.py`，要么 `--dict dashboard/data/product_dict.min.json`。
+- 泳道用经典 `INDEX`+`MATCH`+`COUNTIF` 辅助键，**不用 `FILTER`**：`FILTER` 经 openpyxl
+  写出要带 `_xlfn._xlws.` 前缀，且桌面版 Excel 2019 及更早不支持。兼容性优先于写法优雅。
 
 ### 已挂起：artifact 版（`dashboard/board.html`）
 
@@ -153,7 +184,9 @@ python3 dashboard/make_board_xlsx.py --out /path/to/x.xlsx
 
 ### 数据模型（schema 2，两层）
 
-> 两层模型本身不随载体变化，Excel 版沿用同一套（分配条目在 Excel 里横向摊成 5 组供应商列）。
+> 两层模型本身不随载体变化，三版 Excel 都沿用同一套，只是摊法不同：
+> 看板版把分配条目**横向**摊成 5 组供应商列；跟踪表的 `录入` 把它**纵向**堆成 3 块
+> （Jürgen 的原布局），`总览` 再横过来摊成 3 组。
 
 ```
 采购任务 task   一个产品一轮采购（主键 = PZN + 这一轮）
