@@ -161,9 +161,15 @@ def build_scanlist(facesheet, ch):
     return df
 
 
+# x 后跟数字 = 多件装（x2/x3/x4/x10…）；尾部可再挂店铺后缀（`x2_GW` / `x2_VO`）。
+# 2026-09-22：原规则写死 `x\d+$`，把 `Dolormin_02434139x2_GW` 这类漏成单件（实测历史产出里
+# 共 4 个 SKU / 25 行受影响），打包员看不到标色。
+MULTIPACK_RE = re.compile(r"x\d+(?:_(?:GW|VO))?$", re.I)
+
+
 def is_multipack(v):
-    # x 后跟数字结尾 = 多件装（x2/x3/x4/x10…），标色提醒打包员
-    return bool(re.search(r"x\d+$", str(v), re.I))
+    """多件装 SKU → 标色提醒打包员。"""
+    return bool(MULTIPACK_RE.search(str(v)))
 
 
 def highlight_facesheet(ws, df):
