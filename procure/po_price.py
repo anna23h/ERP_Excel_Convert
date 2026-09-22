@@ -42,14 +42,14 @@ for _stream in (sys.stdout, sys.stderr):
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
+from common.vendor import is_noise_vendor
 from common.xlsx import style_sheet, unique_path
 from odoo_api.odoo_client import Odoo, OdooError, m2o_id, m2o_name
 
-#: 采购单里不是真实进货的对手方，整行剔除（同 gap_report.VENDOR_NOISE 的口径）。
-#: Alibaba Health 是伪装成供应商的**我方客户**，名下是 ECMS 退货包裹单，单价恒为 0；
-#: VO Test Order 是建虚拟库存映射的测试单。不剔会把最低价一路拉到 0。
-VENDOR_NOISE = ["Alibaba Health", "VO Test Order"]
-NOISE = re.compile("|".join(re.escape(n) for n in VENDOR_NOISE), re.I)
+#: 采购单里不是真实进货的对手方，整行剔除——不剔会把最低价一路拉到 0。
+#: 判定统一走 `common/vendor.is_noise_vendor()`（名单见同文件 NOISE_VENDOR_PATS），**本文件不再自备**：
+#: 2026-09-22 之前这里与 gap_report 各写一份、注释互称「同…的口径」，
+#: 结果同一个客户的另一个法人实体漏了三处（ISSUES [采购缺口] J）。
 
 #: 采购单显示名的开头即 ERP 单号（P11836），后面还挂着供应商发票号
 #: （"P11836 (Proforma Rechnung Nr. 2007825273 (P11836) Rechnung Nr. 45107763)"，
@@ -152,7 +152,7 @@ def pull_po(od, pids, months):
          ("date_order", ">=", cut)],
         ["product_id", "partner_id", "product_qty", "price_unit", "date_order",
          "order_id"], label="采购历史")
-    kept = [r for r in rows if not NOISE.search(m2o_name(r["partner_id"]) or "")]
+    kept = [r for r in rows if not is_noise_vendor(m2o_name(r["partner_id"]))]
     say(f"  采购历史 {len(rows)} 行（{cut} 起），剔除退货/测试单 {len(rows) - len(kept)} 行")
     by_pid = defaultdict(list)
     for r in kept:

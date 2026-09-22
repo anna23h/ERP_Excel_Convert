@@ -40,7 +40,6 @@
 import argparse
 import datetime as dt
 import os
-import re
 import sys
 from collections import defaultdict
 
@@ -55,14 +54,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from common import localconf
-from common.vendor import short_vendor
+from common.vendor import is_noise_vendor, short_vendor
 from common.xlsx import style_sheet, unique_path
 from odoo_api import stock_report as sr
 from odoo_api.odoo_client import Odoo, OdooError, m2o_id, m2o_name
 
-#: 采购单里不是真实进货的对手方，整行剔除（同 common/po.PO_NOISE_PATS 的口径）。
-#: Alibaba Health 是伪装成供应商的**我方客户**；VO Test Order 是建虚拟库存映射的测试单。
-VENDOR_NOISE = ["Alibaba Health", "VO Test Order"]
+# 采购单里不是真实进货的对手方，整行剔除：判定走 `common/vendor.is_noise_vendor()`，
+# 名单见同文件 `NOISE_VENDOR_PATS`（**全仓唯一出处**，不要在这里另起一份）。
 
 #: B 路线里「陈年未交付」的判定阈值（天）。超过这个岁数还没发货的确认单，
 #: 在本库几乎全是没人清理的死单，不是真实占用。
@@ -210,11 +208,10 @@ def pull_po_history(od, pids, months):
         [("product_id", "in", pids), ("state", "in", ["purchase", "done"])],
         ["product_id", "partner_id", "product_qty", "price_unit", "date_order",
          "qty_received", "order_id"], label="采购历史")
-    noise = re.compile("|".join(re.escape(n) for n in VENDOR_NOISE), re.I)
     per_vendor = defaultdict(list)          # (pid, vendor_name) → [行]
     for r in rows:
         vendor = m2o_name(r["partner_id"]) or "?"
-        if noise.search(vendor):
+        if is_noise_vendor(vendor):
             continue
         per_vendor[(m2o_id(r["product_id"]), vendor)].append(r)
 

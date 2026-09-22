@@ -17,7 +17,7 @@ from common.xlsx import (PRINT_HL, BORDER, CENTER, LEFT_BOTTOM, LEFT_CENTER,  # 
                          style_sheet, write_df, unique_path, write_simple, apply_print)
 from common.vendor import short_vendor, vendor_map  # noqa: E402
 # 采购画像 2026-08-01 搬去 common/po——FS 回写也要用，不该长在 VOTool 私有模块里
-from common.po import (PO_COLS, PO_CUSTOMER_PAT, PO_NOISE_PATS,  # noqa: E402,F401
+from common.po import (PO_COLS, PO_NOISE_PATS,  # noqa: E402,F401
                        _po_base_sku, load_po_stats)
 import step4_merge as s4  # noqa: E402
 

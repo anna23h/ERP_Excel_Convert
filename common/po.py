@@ -9,18 +9,18 @@ import re
 
 import pandas as pd
 
-from common.vendor import vendor_map
+from common.vendor import NOISE_VENDOR_PATS, vendor_map
 
 
 # 采购画像追加列(来自 purchase order 导出，见 load_po_stats)
 PO_COLS = ["供应商(次数)", "最低价", "最低价供应商", "最近一次采购", "采购总量"]
 
-# 采购单里伪装成供应商的客户(实为我方客户，属噪音，整行剔除)
-PO_CUSTOMER_PAT = "Alibaba Health"
 # 采购单里不是真实进货的行，整行剔除——不然会污染采购画像。
-#   Alibaba Health: 伪装成供应商的客户(实为我方客户)
-#   VO Test Order : 测试单。2026-08-01 实测不滤的话有 397 个商品的 FS 会被写成 "VO"
-PO_NOISE_PATS = [PO_CUSTOMER_PAT, "VO Test Order"]
+# 名单**唯一出处是 common/vendor.NOISE_VENDOR_PATS**（2026-09-22 收敛，ISSUES [采购缺口] J），
+# 这里只留兼容别名：vo_orders/build_excel.py 一直按 PO_NOISE_PATS 这个名字导入。
+# 原先还有个 PO_CUSTOMER_PAT = "Alibaba Health"，同日删除——它只被 build_excel 转发、
+# 从无实际使用，而名字写死「Health」正是漏掉新加坡那个法人实体的由来。
+PO_NOISE_PATS = NOISE_VENDOR_PATS
 
 def _po_base_sku(s):
     """SKU 归一：去掉多件装 xN/XN、变体 *N、渠道/门店 _VO/_GW 等尾缀，对齐采购单里的基础 SKU。
