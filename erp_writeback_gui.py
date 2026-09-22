@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""ERP 回写工具 · 图形界面（销售分析 + FS 回写）。
+"""ERP 回写工具 · 图形界面（销售分析 + 安全库存直写 + FS 回写）。
 
 **刻意独立于 VOTool（vo_orders/gui.py），不是忘了合并。**
 2026-07-08 立 fs_writeback 时定过：ERP 回写是个人月频维护动作，不进给同事用的界面——
 同事没有入口就不会误触。2026-08-01 加这个 GUI 时用户复核并维持该决定：
 另起一个应用，VOTool 里仍然没有任何 ERP 回写入口。
 
-两个标签页都**只产出 Odoo 导入文件，不直接写 ERP**。上传始终是人工动作，
+三个标签页都**只产出 Odoo 导入文件，不直接写 ERP**。上传始终是人工动作，
 上传前请看产出里的对照信息复核。
 
 Mac 上跑源码即可（个人工具，不打包 Windows exe）：
@@ -27,6 +27,7 @@ from tkinter import font as tkfont
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)                          # common/ 与两个包
 from sales_insight import sales_insight as si  # noqa: E402
+from sales_insight import safety_writeback as sw  # noqa: E402
 from vo_orders import fs_writeback as fw  # noqa: E402
 from common import vendor as vd  # noqa: E402
 
@@ -52,11 +53,11 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        root.title("ERP 回写工具 · 销售分析 / FS 回写")
+        root.title("ERP 回写工具 · 销售分析 / 安全库存直写 / FS 回写")
         root.geometry("1180x800")
         root.minsize(980, 680)
 
-        # 两个标签页都要产品主数据，故提到共用区——省得同一份文件选两遍
+        # 三个标签页都要产品主数据，故提到共用区——省得同一份文件选三遍
         self.products = tk.StringVar()
         self.outdir = tk.StringVar(
             value=os.path.join(BASE_DIR, "output", date.today().strftime("%Y%m%d")))
@@ -66,6 +67,11 @@ class App:
         self.si_weeks = tk.StringVar()                 # 留空 = 从表头自动数
         self.si_cover = tk.StringVar(value="2")
         self.si_test = tk.StringVar()
+
+        self.sw_safety = tk.StringVar()
+        self.sw_col = tk.StringVar()                   # 留空 = 自动认含「安全库存」的列
+        self.sw_test = tk.StringVar()
+        self.sw_zero = tk.BooleanVar(value=False)      # 允许把安全库存写成 0
 
         self.fw_po = tk.StringVar()
         self.fw_sample = tk.StringVar(value="0")       # 0 = 全量
@@ -131,15 +137,15 @@ class App:
     def _build_ui(self):
         self._init_styles()
 
-        # 顶部横幅：这两个工具产的是 ERP 导入文件，不是普通报表——先说清楚
+        # 顶部横幅：这几个工具产的是 ERP 导入文件，不是普通报表——先说清楚
         ttk.Label(self.root, style="Warn.TLabel", justify="left", wraplength=1120,
                   text="⚠ 本工具产出的是 ERP 导入文件（不直接写 ERP）。上传前请看「对照」信息复核；"
-                       "首次导入务必先用试水（销售分析填试水 SKU / FS 回写填试水行数）。"
+                       "首次导入务必先用试水（销售分析 / 安全库存直写填试水 SKU，FS 回写填试水行数）。"
                        ).pack(anchor="w", padx=14, pady=(10, 0))
 
         common = self._section(self.root, "① 共用输入")
         self._file_row(common, "产品主数据:", self.products)
-        self._hint(common, "ERP 的 product.product 导出，两个标签页共用同一份。"
+        self._hint(common, "ERP 的 product.product 导出，三个标签页共用同一份。"
                            "**筛选条件只勾 `can be sold`**——加别的条件会漏货"
                            "（实测 `VO active=true` 只有 4575 行、漏掉 9 个在管商品）。\n"
                            "列请勾上 External ID / Quantity On Hand / Safety Stock / "
@@ -164,6 +170,7 @@ class App:
         self.log.pack(fill="both", expand=True)
 
         self._tab_sales(nb)
+        self._tab_safety(nb)
         self._tab_fs(nb)
 
     def _tab_sales(self, nb):
@@ -187,6 +194,43 @@ class App:
                        "安全库存回写表（只含运营人工审过的值）/ 安全库存候选值（推算值，待运营审阅，"
                        "不进回写表）。").pack(anchor="w", pady=(6, 10))
         self._action_row(t, "▶  生成销售分析", self._run_sales)
+
+    def _tab_safety(self, nb):
+        """运营发来一张表 → 直接出回写表。与左边那页的区别只有一个：不看销量。"""
+        t = ttk.Frame(nb, padding=14); nb.add(t, text="  安全库存直写  ")
+        self._file_row(t, "安全库存表:", self.sw_safety)
+        self._hint(t, "运营发来的那张表（如「9.18安全库存需求反馈.xlsx」）。"
+                      "**不需要销售数据**——SKU 全集以这张表为准，表里有几个就写几个。\n"
+                      "左边「销售分析」那页是以销售导出为主表的，安全库存表里有、"
+                      "销售导出里没有的 SKU 会被丢掉；只想把运营给的值写进去就用这一页。")
+        self._file_row(t, "值列名:", self.sw_col, optional=True)
+        self._hint(t, "留空 = 自动认含「安全库存」的列（如 `15天安全库存`）。"
+                      "表里若有多个这种列（`15天` 和 `30天`），脚本**不替你猜口径**、会报错，"
+                      "这时把列名原样填进来。这一栏直接填文本，不用点「选择…」。")
+        self._file_row(t, "试水 SKU:", self.sw_test, optional=True)
+        self._hint(t, "首次导入试水：填一个 SKU，回写表就只出这一条，另加一份导入前快照。"
+                      "全量那份照出不误，验完直接导它。")
+        ttk.Checkbutton(t, variable=self.sw_zero, text="允许把安全库存写成 0（危险：等于清零）"
+                        ).pack(anchor="w", padx=(self.LABEL_W * 7, 0), pady=(2, 0))
+        self._hint(t, "默认不勾：值为 0 / 空 / 负数 / 小数的行一律**拒绝出表**并报出行号。"
+                      "确实要把某些 SKU 的安全库存清零，才勾它。")
+        # 共用区那句「列请勾全」是写给另外两页的。这一页只写一个字段，说清楚各列到底干嘛用，
+        # 省得为了两列用不上的东西重导一份 1 万行的产品主数据。
+        self._hint(t, "本页对产品主数据的要求：**只有 `External ID` 和 `Internal Reference` 是必需的**"
+                      "（映射码 + SKU 匹配），缺了直接报错。\n"
+                      "· `Safety Stock` —— 不影响写入，但**值得勾**：它是核对表里「ERP现有值 / 变化」"
+                      "两列的来源，也是你在导入前看出「哪些行其实没变化、哪些变动大得可疑」的唯一依据。\n"
+                      "· `Quantity On Hand` / `Name` / `FS` —— 只影响核对表的在手·缺口与可读性。\n"
+                      "· `Supply Remark` —— **本页压根不写这个字段**，不用为它重导；唯一用处是首次试水时"
+                      "快照里带着它，导入后对比一次、实证该字段没被动过。")
+        ttk.Label(t, style="Hint.TLabel", justify="left", wraplength=560,
+                  text="产出三张：安全库存回写表（id / SKU(勿导入) / Safety Stock，导入 ERP）/ "
+                       "回写核对表（ERP 现值 → 将写入 → 变化，导入前对着它过一遍）/ "
+                       "未匹配SKU（对不上产品主数据的，有才出）。\n"
+                       "⚠ 本页**不写 Supply Remark**：该列整个不出现，Odoo 不会碰这个字段，"
+                       "FS 回写写的供应商画像与人工原文零风险。"
+                       ).pack(anchor="w", pady=(6, 10))
+        self._action_row(t, "▶  生成安全库存回写表", self._run_safety)
 
     def _tab_fs(self, nb):
         t = ttk.Frame(nb, padding=14); nb.add(t, text="  FS 回写  ")
@@ -296,6 +340,22 @@ class App:
 
         def work():
             _, lines = si.run(sales, prods, safety, weeks, cover, outdir, test)
+            return lines
+        self._bg(work)
+
+    def _run_safety(self):
+        if not self._need(("安全库存表", self.sw_safety), ("产品主数据", self.products)):
+            return
+        safety, prods = self.sw_safety.get().strip(), self.products.get().strip()
+        col = self.sw_col.get().strip() or None
+        test = self.sw_test.get().strip() or None
+        zero = self.sw_zero.get()
+        outdir = self.outdir.get()
+        self._write("【安全库存直写】读运营的表 → 回写表 / 核对表…"
+                    + ("（试水 %s）" % test if test else "（全量）"))
+
+        def work():
+            _, lines = sw.run(safety, prods, col, None, outdir, test, zero)
             return lines
         self._bg(work)
 

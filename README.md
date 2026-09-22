@@ -12,7 +12,8 @@
 | `packing_list/` | **出口箱单**（B2B，SO 导出 → Packing List 半成品） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx>` | [下方章节](#出口箱单b2b) | 在用 |
 | `扫码/` | **运单扫码回流**——**非独立流水线**：VO 拉单阶段一↔阶段二之间的可选替换段（单文件 HTML，零依赖，跑在仓库机） | 浏览器打开 `扫码/扫码回流.html` | [扫码/README.md](扫码/README.md) + [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
-| `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写两条销售分析--fs-回写) + 脚本 docstring | 在用 |
+| `sales_insight/safety_writeback.py` | **安全库存直写**（运营的表 + 产品主数据 → `Safety Stock` 回写表，**不要销售数据**） | `ERP回写-Mac.command` →「安全库存直写」页；或 `python3 sales_insight/safety_writeback.py <安全库存表.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
+| `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写三条销售分析--安全库存直写--fs-回写) + 脚本 docstring | 在用 |
 | `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | VO 拉单 GUI 的「京东复核」标签页；或 `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>` | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
@@ -355,19 +356,25 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 GUI 走共用输出目录，命令行则就地放在原文件旁边（操作员一次下载一批，转完在同一个文件夹里
 对着看最省事）。两处都会跳过已经转过的 `…new…` 文件——它只剩 7 列，再转一次会撞「原始表缺少列」。
 
-## ERP 回写两条（销售分析 / FS 回写）
+## ERP 回写三条（销售分析 / 安全库存直写 / FS 回写）
 
-这两条共用入口 `ERP回写-Mac.command` → `erp_writeback_gui.py`，是**个人月频维护工具**，
+这三条共用入口 `ERP回写-Mac.command` → `erp_writeback_gui.py`，是**个人月频维护工具**，
 产出的是给 Odoo 导入界面用的文件——**上传一律保持人工**，脚本不碰 ERP。
 
-| | 销售分析 · 安全库存 | FS 回写 |
-|---|---|---|
-| 写回哪个字段 | `Safety Stock`（+ `Supply Remark` 的自己那一段） | `FS`（**不碰 `Supply Remark`**） |
-| 输入 | 销售数据（按周分组导出）+ `product.product` + 运营的安全库存表（选填但优先） | `purchase.order` + `product.product` |
-| 首次导入试水 | `--test-sku <SKU>`：出单条表核对，**同时照常出全量**，验完直接导全量 | `--sample N`：按覆盖面挑 N 行（每行 FS 值互不相同） |
-| 详细文档 | [sales_insight/README.md](sales_insight/README.md) | `vo_orders/fs_writeback.py` 顶部 docstring |
+| | 销售分析 · 安全库存 | 安全库存直写 | FS 回写 |
+|---|---|---|---|
+| 写回哪个字段 | `Safety Stock`（+ `Supply Remark` 的自己那一段） | `Safety Stock`（**不碰 `Supply Remark`**） | `FS`（**不碰 `Supply Remark`**） |
+| 输入 | 销售数据（按周分组导出）+ `product.product` + 运营的安全库存表（选填但优先） | 运营的安全库存表 + `product.product`，**不要销售数据** | `purchase.order` + `product.product` |
+| SKU 全集由谁定 | 销售导出 | **安全库存表** | 采购单 |
+| 首次导入试水 | `--test-sku <SKU>`：出单条表核对，**同时照常出全量**，验完直接导全量 | 同左 | `--sample N`：按覆盖面挑 N 行（每行 FS 值互不相同） |
+| 详细文档 | [sales_insight/README.md](sales_insight/README.md) | 同左（`safety_writeback.py` 一节） | `vo_orders/fs_writeback.py` 顶部 docstring |
 
-**两条吃同一份产品主数据导出，筛选条件写死：只勾 `can be sold`。**
+**「安全库存直写」是 2026-09-22 新增的**：运营发来一张「这些货配多少安全库存」的表、
+根本不关心销量时，第一条流水线不合用——它以销售导出为主表，安全库存表里有、销售导出里
+没有的 SKU 会被整行丢掉，为跑通它还得伪造一份零销量的销售导出。新脚本反过来以安全库存表
+为主表，只吃两份输入。**判断用哪条的标准：你关心销量吗？**
+
+**三条吃同一份产品主数据导出，筛选条件写死：只勾 `can be sold`。**
 加别的条件会实打实漏货——2026-08-02 实测 `VO active=true` 只有 4575 行（无筛选 10331 行），
 漏掉 9 个运营在管的 SKU（多为 `x2`/`x3` 组合装与渠道变体，但也有普通 SKU）。
 
@@ -509,7 +516,7 @@ VO Test Order 是虚拟库存映射测试单，单价恒为 0，不剔会把最�
 **缺货类涉及 529 个 SKU，其中 449 个（86%）至今没配安全库存**，合计 2,294 EUR / 754 单
 ——安全库存配在哪，跟罚款实际发生在哪，是脱节的。新产出 `缺货违规风险清单.csv` 就是接上它。
 
-上面两条回写吃的是**手工导出**的三份 Excel。周频跑一次，每次都要人进 ERP 点导出、
+上面三条回写吃的是**手工导出**的 Excel。周频跑一次，每次都要人进 ERP 点导出、
 还得记住筛选条件。`odoo_api/` 把这一步换成 XML-RPC 拉数：销量（`sale.report`，
 默认近 4 周）× 在手库存（`stock.quant`，内部库位汇总）× 安全库存（**两路并列**）
 合成一张周报，`launchd` 每周一自动跑。详见 [odoo_api/README.md](odoo_api/README.md)。
@@ -552,9 +559,10 @@ Python + pandas + openpyxl。
 - [x] **重构：按流水线拆目录**（`vo_orders/` / `reorder/` / `packing_list/`）+ 抽最小 `common/`（`xlsx` 排版 / `vendor` 供应商简称 / `po` 采购画像 / `remark` Supply Remark 分段）。
 - [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 预填 SO 订购量 + P 列 `=箱规×箱数` 对拍、J5 写 SO 号（2026-08-29）；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
 - [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。回写的 `Safety Stock` 被阶段一「补货预判清单」读走——两条流水线在此接上。
+- [x] **安全库存直写**（`sales_insight/safety_writeback.py`，2026-09-22）：运营的表 + 产品主数据 → `Safety Stock` 回写表，**不需要销售数据**；以安全库存表为 SKU 全集（`sales_insight` 是以销售导出为全集，表里有、导出里没有的会被丢掉）。**不写 `Supply Remark`**——源表没有备注列，列整个不出现 Odoo 就不碰该字段。四条「宁可报错也不出表」：值为 0/空/负数/小数、源表重复 SKU、产品主数据同 SKU 多行、值列命中多个口径。构造数据测试 28 项。
 - [x] **FS 回写**（`vo_orders/fs_writeback.py`）：采购画像 → 供应商**代号**写回产品主数据 `FS`；`--sample N` 按覆盖面挑试水样本；人写的采购判断整行跳过；滤掉测试单与费用类 SKU；**只写 FS，不碰 `Supply Remark`**（那字段属于运营）。
-- [x] **ERP 回写 GUI**（`erp_writeback_gui.py`）：销售分析 / FS 回写两页，个人月频维护用。**与 VOTool 刻意分开**——同事界面里没有任何 ERP 回写入口就不会误触（2026-07-08 决定，2026-08-01 复核维持）；只在 Mac 跑源码，不打包 exe。
-- [x] **两条回写首次真正导入 ERP 并反向复核**（2026-08-02）：FS 1569/1569 一致；人写值与费用类 SKU 两道保护实证生效；`Supply Remark` 重跑替换而非堆叠、人写原文保住。产品主数据导出条件由此写死为**只勾 `can be sold`**。
+- [x] **ERP 回写 GUI**（`erp_writeback_gui.py`）：销售分析 / 安全库存直写 / FS 回写三页，个人月频维护用。**与 VOTool 刻意分开**——同事界面里没有任何 ERP 回写入口就不会误触（2026-07-08 决定，2026-08-01 复核维持）；只在 Mac 跑源码，不打包 exe。
+- [x] **前两条回写首次真正导入 ERP 并反向复核**（2026-08-02）：FS 1569/1569 一致；人写值与费用类 SKU 两道保护实证生效；`Supply Remark` 重跑替换而非堆叠、人写原文保住。产品主数据导出条件由此写死为**只勾 `can be sold`**。
 - [x] **采购数量+频次**（`po_frequency/po_frequency.py`）：单一供应商 purchase.order 行式导出 → `Summary`（每产品：采购频次/总量/均·最·大 per purchase/首末采购/跨度/平均间隔）+ `Details` 两 sheet 英文表头；`--vendor` 子串过滤、`--out` 可覆盖默认落位。复用 `common/po` 归一 + `common/xlsx` 排版（Details 上万行走轻量表头样式，27s→3.3s）。纯数量+频次、不掺结论/分析列。
 - [x] **SKU 归一统一**（`common/po._po_base_sku`）：口径统一为 `([xX]\d+|\*\d+|_VO|_GW)+$`，全仓一套；修掉 `x2_GW` 组合后缀旧规则脱不掉的漏匹配；三调用方（po_frequency / 补货预判 / FS 回写）对称受益。
 - [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。依赖不在主 requirements 里，按需 `pip install -r requirements-labels.txt`。UTF-8 控制台兜底免去 Windows cp1252 崩溃。打印须选「实际大小 / 100%」，否则模块宽被缩放。早期 Code128 三变体版 `make_bin_labels.py` **已删除**（2026-08-15）：其 QR 变体是本脚本的劣化版（模块 0.375mm、位置不吸附点阵、无版本锁定/下限校验、文字按 7 位硬切），独有的 Code128 与 20×40 竖版现场未采用；将来若要，做成本脚本的开关复用同一套点阵吸附与校验，不再另起脚本。
