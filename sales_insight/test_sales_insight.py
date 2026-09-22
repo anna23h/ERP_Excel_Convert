@@ -128,7 +128,7 @@ def run(d, sales, prods, safety, out, *extra, weeks=PERIOD_WEEKS):
            "--cover-weeks", str(COVER_WEEKS), "-o", out, *extra]
     if weeks is not None:
         cmd += ["--weeks", str(weeks)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if r.returncode:
         print(r.stdout, r.stderr)
     return r
@@ -316,7 +316,7 @@ def main():
     p6 = os.path.join(d, "products_bothid.xlsx")
     pr.to_excel(p6, index=False)
     r6 = subprocess.run([sys.executable, SCRIPT, sales, "--products", p6, "--safety", safety,
-                         "--weeks", str(PERIOD_WEEKS), "-o", f"{d}/o6"], capture_output=True, text=True)
+                         "--weeks", str(PERIOD_WEEKS), "-o", f"{d}/o6"], capture_output=True, text=True, encoding="utf-8")
     check("退出码 0", r6.returncode == 0, r6.stderr[-200:] if r6.returncode else "")
     check("终端回显用了 External ID 列", "`External ID`" in r6.stdout)
     wb6 = pd.read_excel(f"{d}/o6/安全库存回写表.xlsx")
@@ -325,7 +325,7 @@ def main():
 
     print("\n【9】旧的整期累计格式仍要求 --weeks（那种导出里真没有日期）")
     r3 = subprocess.run([sys.executable, SCRIPT, sales, "--products", prods, "-o", f"{d}/o3"],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8")
     # 断言认「说清了缺什么」，不认旗标名——报错文案要同时服务 CLI 和 GUI，不能提 --weeks
     check("缺周数时报错退出且说清原因", r3.returncode != 0
           and "期间周数" in (r3.stderr + r3.stdout), (r3.stderr + r3.stdout)[-80:])
