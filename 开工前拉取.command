@@ -10,12 +10,32 @@
 
 cd "$(dirname "$0")" || exit 1
 PUBLIC="$(pwd)"
+PUBLIC_TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
 
-# 私有库路径从软链解析，不硬编码 —— 两台 Mac 目录布局可以不同
-PRIVATE=""
-if [ -L docs ]; then
-  PRIVATE="$(dirname "$(readlink docs)")"
-fi
+# 私有库定位：**问 git，不问 readlink**（2026-09-22 改）。
+#
+# 原先是 `[ -L docs ] && dirname "$(readlink docs)"`，只在「项目根有 docs 软链」这一种
+# 布局下成立。Mac 是 5 条根软链，成立；**Windows 上一条都没有**——那边建不了文件级软链
+# （mklink 不带 /J 要管理员或开发者模式），走的是 `原始开发文档` → erp-private 的整目录
+# 联接，名字和路径都对不上 `docs`。于是 Windows 上私有库那半从来没被拉过，
+# 2026-09-22 实测本地已落后 11 个提交，直到 push 被拒才发现。
+#
+# 改成逐个候选问 `git rev-parse --show-toplevel`：**是个 git 仓库、且不是公开库自己**，
+# 就是它。不关心那个路径是软链、目录联接还是真目录，一份脚本两边通用，不写 if-Windows。
+resolve_private() {
+  local c top
+  for c in "$ERP_PRIVATE_DIR" docs 原始开发文档 ../erp-private; do
+    [ -n "$c" ] && [ -e "$c" ] || continue
+    top="$(git -C "$c" rev-parse --show-toplevel 2>/dev/null)" || continue
+    if [ -n "$top" ] && [ "$top" != "$PUBLIC_TOP" ]; then
+      echo "$top"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PRIVATE="$(resolve_private)" || PRIVATE=""
 
 fail=0
 
@@ -46,7 +66,10 @@ pull_repo "公开库 $(basename "$PUBLIC")" "$PUBLIC"
 if [ -z "$PRIVATE" ]; then
   echo ""
   echo "── 私有库"
-  echo "   ✗ docs 不是软链，找不到 erp-private —— 私有库没拉，请手工确认"
+  echo "   ✗ 找不到 erp-private —— 私有库没拉，请手工确认"
+  echo "     试过这几处（都不是独立 git 仓库）：\$ERP_PRIVATE_DIR / docs / 原始开发文档 / ../erp-private"
+  echo "     Mac: 项目根应有 docs 等 5 条软链；Windows: 应有 原始开发文档 目录联接"
+  echo "     临时可用 ERP_PRIVATE_DIR=/path/to/erp-private ./开工前拉取.command"
   fail=1
 else
   pull_repo "私有库 $(basename "$PRIVATE")" "$PRIVATE"

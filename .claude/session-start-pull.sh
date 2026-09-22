@@ -29,8 +29,35 @@ else
   note="拉取未全部成功。在动代码前先把这件事告诉用户并确认怎么处理，不要在落后的状态上工作。"
 fi
 
-# 用 jq 转义：拉取输出里有换行、引号、中文，手拼 JSON 必翻车
-jq -Rs --arg msg "$msg" --arg note "$note" \
-  '{systemMessage:$msg, suppressOutput:true,
-    hookSpecificOutput:{hookEventName:"SessionStart",
-      additionalContext:("【开工前拉取 · SessionStart】" + $note + "\n---\n" + .)}}' <<<"$out"
+# JSON 转义用 **Python 而非 jq**（2026-09-22 改）：拉取输出里有换行、引号、中文，
+# 手拼必翻车，所以一定要有个转义器。原来用 jq —— 但 **Windows 的 Git Bash 不自带 jq**，
+# 实测这台机器上 hook 每次都是 `jq: command not found`、退出码 127，什么都没注入，
+# 于是"私有库落后了"从来没被提醒过。Python 是本仓最小集依赖，三台机器上必然有。
+PY=""
+for c in python3 python py; do
+  # WindowsApps 下的 python3 可能只是 Microsoft Store 转发壳，真跑一下才知道能不能用
+  command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1 && { PY="$c"; break; }
+done
+
+if [ -z "$PY" ]; then
+  # 连 Python 都没有：退回一条纯静态消息（不含拉取输出，因而无需转义）
+  printf '%s\n' '{"systemMessage":"⚠ 开工前拉取: 没找到可用的 Python，本次结果无法注入；请手工跑 ./开工前拉取.command"}'
+  exit 0
+fi
+
+# msg/note 走环境变量传进去，免得在 shell 与 Python 两层引号里来回转义。
+# ensure_ascii 保持默认 True：产出纯 ASCII 的 \uXXXX 转义，绕开 Windows 控制台 cp1252
+# 编码问题。读 stdin 也必须走 buffer 再显式 utf-8 解码 —— 同一天已经在
+# test_sales_insight.py 上栽过一次（text=True 走 cp1252 解中文直接炸）。
+MSG="$msg" NOTE="$note" "$PY" -c '
+import json, os, sys
+out = sys.stdin.buffer.read().decode("utf-8", "replace")
+print(json.dumps({
+    "systemMessage": os.environ["MSG"],
+    "suppressOutput": True,
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": "【开工前拉取 · SessionStart】" + os.environ["NOTE"] + "\n---\n" + out,
+    },
+}))
+' <<<"$out"
