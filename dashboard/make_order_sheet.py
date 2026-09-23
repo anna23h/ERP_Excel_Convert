@@ -17,11 +17,14 @@ Jürgen 转 90 度改用新布局——没谈成，于是整件东西没落地�
 
 自动算的只有三样（2026-09-22 用户圈定，其余一律不做）：
   · 已配 = 三家 Quantity 之和；缺口 = order quantity − 已配；已到 = 三家 received quant. 之和
-  · 品名（中）= PZN → 产品字典 VLOOKUP
-  · 品名（德）在总览里兜底：Product 没填时用字典里的德语名顶上
+  · 品名（德）与品名（中）= PZN → 产品字典 VLOOKUP。德语名那格**可以手打覆盖**
+    （非药房品没有 PZN），覆盖只影响那一列
 **不做**阶段推导、泳道看板、超时报警——那是看板形态自带的包袱，不是这张表里的信息。
 
 坑（都是 J 条实跑踩过的，同构，直接继承）：
+  · **「这一列在不在用」的守卫必须比值、不能用 `COUNTA`**：`COUNTA` 把「有公式但结果是
+    空字符串」的格子算作非空，而 Product / 品名（中）行本身就是公式，于是守卫恒为真、
+    空列的已配与已到一律显示成 `SUM(空格子)=0`。用 `AND(B2="",B3="")`。
   · VLOOKUP 尾部必须接 `&""`：字典里中文名为空时返回空单元格，Excel 显示成 `0`。
   · `ETA` 不设日期格式：真实数据里 `requested` / `??` 比日期还多。
   · 不用 `FILTER` 等动态数组：经 openpyxl 写出要带 `_xlfn.` 前缀，且老桌面版不认。
@@ -34,10 +37,11 @@ if hasattr(sys.stdout, "reconfigure"):      # Windows 控制台默认 cp1252，�
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Protection
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.formatting.rule import CellIsRule
+from openpyxl.worksheet.protection import SheetProtection
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DICT = os.path.join(HERE, "data", "product_dict.min.json")
@@ -192,9 +196,18 @@ def build_input_sheet(ws):
 
     for i in range(N_PRODUCTS):
         L = get_column_letter(2 + i)
-        used = 'COUNTA({L}{p}:{L}{z})=0'.format(L=L, p=R_PRODUCT, z=R_PZN)  # 整列是否在用
+        # 整列是否在用。**必须比值，不能用 COUNTA**：COUNTA 把「有公式但结果是空字符串」
+        # 的格子也算作非空，而 Product 行本身就是公式，于是守卫永远为真、空列的
+        # 已配/已到 一律显示成 SUM(空格子)=0（2026-09-23 用户实测报出）。
+        used = 'AND({L}{p}="",{L}{z}="")'.format(L=L, p=R_PRODUCT, z=R_PZN)
         pzn = "{L}{r}".format(L=L, r=R_PZN)
 
+        # Product（德语名）：也从 PZN 查出来。原先留空让人手打，但填了 PZN 却不出德语名
+        # 是反直觉的（2026-09-23 用户实测提出）。**这格仍可手打覆盖**——非药房品没有 PZN，
+        # 覆盖掉公式正是预期用法，只影响这一列。
+        ws["%s%d" % (L, R_PRODUCT)] = (
+            '=IF({pzn}="","",IFERROR(VLOOKUP(TEXT({pzn},"00000000"),'
+            '\'产品字典\'!$A:$C,2,FALSE)&"",""))'.format(pzn=pzn))
         # 品名（中）：空 PZN 不查（TEXT("") 会变成 00000000 撞上真 PZN）。
         # 尾部 &"" 是必须的：字典里中文名为空时 VLOOKUP 返回空单元格，Excel 显示成 0。
         ws["%s%d" % (L, R_NAME_ZH)] = (
@@ -243,14 +256,67 @@ def build_input_sheet(ws):
         r = block_rows(n)["supplier"]
         dv_sup.add("B%d:%s%d" % (r, get_column_letter(N_PRODUCTS + 1), r))
 
-    # PZN 不在字典里 → 只警告不阻断（字典是药房产品快照，新品不该被挡住）
+    # ── 输入约束 ────────────────────────────────────────────────────────
+    # ⚠ 一个格子只能挂**一条**数据验证。PZN 原先挂的是「不在字典里就警告」，
+    # 现在把硬约束（必须是正整数）给验证、把「不在字典里」降级成条件格式变色——
+    # 两者可以共存，且分工更对：垃圾输入直接挡，陌生新品只提示不拦
+    # （字典是药房产品快照，新品不该被挡住，这条从 J 条起就成立）。
+    last_col = get_column_letter(N_PRODUCTS + 1)
     dv_pzn = DataValidation(
-        type="custom", errorStyle="warning", allow_blank=True,
-        formula1='=ISNUMBER(MATCH(TEXT(B$%d,"00000000"),\'产品字典\'!$A:$A,0))' % R_PZN,
-        error="这个 PZN 不在产品字典里。可能是新品，也可能填错了——确认无误可以继续。",
-        errorTitle="PZN 不在字典中")
+        type="whole", operator="between", formula1="1", formula2="99999999",
+        errorStyle="stop", allow_blank=True, showErrorMessage=True,
+        error="PZN 只能是数字（1~99999999 的整数）。别带字母、空格或连字符。",
+        errorTitle="PZN 只能输数字",
+        prompt="填 8 位 PZN，德语名与中文名会自动出来。不在字典里的会标成橙色，但不拦你。",
+        promptTitle="PZN")
     ws.add_data_validation(dv_pzn)
-    dv_pzn.add("B%d:%s%d" % (R_PZN, get_column_letter(N_PRODUCTS + 1), R_PZN))
+    dv_pzn.add("B%d:%s%d" % (R_PZN, last_col, R_PZN))
+
+    # PZN 不在字典里 → 橙色提示（与上面的验证并行不悖）
+    # ⚠ 条件格式的填充走**差异格式 dxf**，颜色必须写 `bgColor`：写成平时的
+    # `PatternFill("solid", fgColor=…)` 规则会照样命中，但画出来是「无填充」，
+    # 看上去就是这条规则没生效（2026-09-23 实测：COM 读回底色是 0x0）。
+    ws.conditional_formatting.add(
+        "B{r}:{c}{r}".format(r=R_PZN, c=last_col),
+        FormulaRule(formula=['AND(B%d<>"",ISNA(MATCH(TEXT(B%d,"00000000"),'
+                             '\'产品字典\'!$A:$A,0)))' % (R_PZN, R_PZN)],
+                    fill=PatternFill(bgColor="FFE0B2")))
+
+    # 数量与金额只能是数：量为非负整数，价为非负小数。
+    # **日期与 ETA 不设验证**——ETA 真实数据里 requested / ?? 比日期还多（J 条已确认），
+    # 下单日/要货日 实测也常被人填成文本，卡死只会逼人去关验证。
+    qty_rows_all = [R_QTY] + [block_rows(n)["qty"] for n in range(1, N_SUPPLIER + 1)] \
+        + [block_rows(n)["recv"] for n in range(1, N_SUPPLIER + 1)]
+    dv_qty = DataValidation(type="whole", operator="greaterThanOrEqual", formula1="0",
+                            errorStyle="stop", allow_blank=True, showErrorMessage=True,
+                            error="数量只能是 0 或正整数。", errorTitle="只能填数量")
+    ws.add_data_validation(dv_qty)
+    for r in qty_rows_all:
+        dv_qty.add("B%d:%s%d" % (r, last_col, r))
+    dv_price = DataValidation(type="decimal", operator="greaterThanOrEqual", formula1="0",
+                              errorStyle="stop", allow_blank=True, showErrorMessage=True,
+                              error="单价只能是数字。谈价中就先空着，别写字。",
+                              errorTitle="只能填数字")
+    ws.add_data_validation(dv_price)
+    for r in [R_AEP] + [block_rows(n)["price"] for n in range(1, N_SUPPLIER + 1)]:
+        dv_price.add("B%d:%s%d" % (r, last_col, r))
+
+    # ── 锁：公式格锁死，其余放开 ─────────────────────────────────────────
+    # Excel 的锁是两段式：格子的 locked 属性**只在工作表被保护后才生效**，
+    # 而所有格子默认 locked=True，所以这里要反过来把「人要填的」逐个解锁。
+    # ⚠ Product 行**不锁**：它虽是公式，但设计上允许手打覆盖（非药房品没有 PZN）。
+    open_rows = [R_PRODUCT, R_PZN, R_AEP, R_ODATE, R_QTY, R_NEEDBY, R_WHO, R_NOTE]
+    for n in range(1, N_SUPPLIER + 1):
+        open_rows += list(block_rows(n).values())
+    for r in open_rows:
+        for i in range(N_PRODUCTS):
+            ws.cell(r, 2 + i).protection = Protection(locked=False)
+    # 无密码：目的是防手滑，不是防人。要加字段就「撤消工作表保护」点一下，改完再保护。
+    ws.protection = SheetProtection(
+        sheet=True, password=None,
+        formatCells=False, formatColumns=False, formatRows=False,   # 调格式/列宽随意
+        insertRows=True, insertColumns=True, deleteRows=True, deleteColumns=True,
+        sort=True, autoFilter=False, selectLockedCells=False, selectUnlockedCells=False)
 
     ws.freeze_panes = "B2"
 
@@ -258,9 +324,7 @@ def build_input_sheet(ws):
 def fill_sample(ws):
     for i, (pzn, need, ref, odate, needby, who, note, allocs) in enumerate(SAMPLE[:N_PRODUCTS]):
         L = get_column_letter(2 + i)
-        if i == 0:
-            # 只给第一个样例填 Product；第二个故意留空，演示总览里「德语名兜底」那条
-            ws["%s%d" % (L, R_PRODUCT)] = "Skinoren 15 % Gel 30 g"
+        # Product 行不填：它现在是公式，填 PZN 就自动出德语名（覆盖掉反而看不出这条）
         ws["%s%d" % (L, R_PZN)] = int(pzn)
         ws["%s%d" % (L, R_QTY)] = need
         if ref is not None:
@@ -373,6 +437,12 @@ def build_overview_sheet(ws):
     ws.freeze_panes = "D%d" % OV_FIRST
     ws.auto_filter.ref = "A%d:%s%d" % (OV_HEAD, get_column_letter(len(cols)),
                                        OV_FIRST + N_PRODUCTS - 1)
+    # 整张表都是公式，全锁。**筛选放开、排序锁死**——表头那句「直接排会把公式排乱」
+    # 从此不只是一句提醒，Excel 会真的拦住。
+    ws.protection = SheetProtection(
+        sheet=True, password=None, autoFilter=False, sort=True,
+        formatCells=False, formatColumns=False, formatRows=False,
+        selectLockedCells=False, selectUnlockedCells=False)
 
 
 # ── 旁挂两张表 ──────────────────────────────────────────────────────────
@@ -386,6 +456,9 @@ def build_dict_sheet(ws, products):
         ws.append([pzn, de, zh])
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = "A1:C%d" % (len(products) + 1)
+    # 字典是 export_product_dict.py 的产出快照，不该在这里改（改了也会被下次导出冲掉）
+    ws.protection = SheetProtection(sheet=True, password=None, autoFilter=False,
+                                    selectLockedCells=False, selectUnlockedCells=False)
 
 
 def build_supplier_sheet(ws):
