@@ -1,0 +1,100 @@
+@echo off
+setlocal enabledelayedexpansion
+REM ============================================
+REM Lot Entry - Windows launcher (self-updating)   [ISSUES: lot entry R]
+REM Use: drag an Excel file onto this .bat, OR double-click and pick the file.
+REM   Odoo receipt export   -> Lot_Entry_*.xlsx  (operators type lot / MHD / qty)
+REM   filled Lot_Entry file -> Lot_Import_*.xlsx (import into Odoo) + Lot_Check_*.xlsx
+REM   Results go to output\YYYYMMDD\ and the folder opens automatically.
+REM Update = git fetch + reset --hard origin/main: only tracked code is overwritten;
+REM   your outputs (output/), raw_data/, .venv/ are untracked/ignored and kept as-is.
+REM Requires: Python 3 (check "Add Python to PATH") and Git for Windows.
+REM   Missing Git or offline -> skip update, keep running the current version.
+REM NOTE: all text here is plain ASCII on purpose, so this file runs correctly
+REM   under ANY Windows locale / code page. Do not add non-ASCII characters.
+REM ============================================
+
+REM Go to this script's own folder
+cd /d "%~dp0"
+
+REM --- Auto-update to latest (public repo, anonymous fetch, no login needed) ---
+set "OLD="
+set "NEW="
+where git >nul 2>&1
+if !errorlevel! equ 0 (
+  if exist ".git" (
+    echo Checking for updates...
+    for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "OLD=%%i"
+    git fetch --quiet origin 2>nul
+    if !errorlevel! equ 0 (
+      git reset --hard origin/main 2>nul
+      if !errorlevel! neq 0 ( echo Update not applied, using current version. )
+    ) else (
+      echo Online update failed ^(maybe offline^), using current version.
+    )
+    for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "NEW=%%i"
+    if defined NEW if not "!OLD!"=="!NEW!" ( echo Updated to the latest version. )
+  ) else (
+    echo Note: this folder is not a git checkout, skipping auto-update.
+  )
+) else (
+  echo Note: Git not found, skipping auto-update. Install Git for Windows to enable it.
+)
+
+REM --- Find a usable Python launcher ---
+set "PY="
+py -3 --version >nul 2>&1 && set "PY=py -3"
+if not defined PY ( python --version >nul 2>&1 && set "PY=python" )
+if not defined PY ( python3 --version >nul 2>&1 && set "PY=python3" )
+
+if not defined PY (
+  echo.
+  echo Python 3 not found. Install it from: https://www.python.org/downloads/
+  echo During install, be sure to check "Add Python to PATH".
+  echo If typing "python" opens the Microsoft Store: Settings ^> Apps ^> Advanced app settings ^> App execution aliases
+  echo   -^> turn OFF "python.exe" and "python3.exe".
+  echo.
+  pause
+  goto :eof
+)
+
+set "VENV=.venv"
+set "VPY=%VENV%\Scripts\python.exe"
+
+REM --- Health check: the folder can exist yet be broken (repo renamed, Python upgraded).
+REM     Only "it exists" is not enough - probe it, and rebuild if the probe fails.
+if exist "%VPY%" "%VPY%" -c "import sys" >nul 2>&1
+if exist "%VPY%" if errorlevel 1 (
+  echo Environment looks broken, rebuilding it...
+  rmdir /s /q "%VENV%"
+)
+
+REM First run needs an environment; after an update deps may change, reinstall once
+set "NEED_DEP="
+if not exist "%VPY%" (
+  echo.
+  echo First run: creating the environment ^(about 1-2 minutes, only this once^)...
+  %PY% -m venv "%VENV%" || ( echo Failed to create virtual environment & pause & goto :eof )
+  set "NEED_DEP=1"
+)
+if defined OLD if defined NEW if not "!OLD!"=="!NEW!" set "NEED_DEP=1"
+
+if defined NEED_DEP (
+  echo Installing/updating dependencies...
+  "%VPY%" -m pip install --upgrade pip >nul 2>&1
+  REM Dep install failure only warns: do NOT block startup. If something is really
+  REM   missing, Python raises a clear ImportError - far better than "cannot open".
+  "%VPY%" -m pip install -r requirements.txt
+  if errorlevel 1 echo WARNING: dependency install failed ^(check network/proxy^). Starting anyway; send any ImportError text to the developer.
+)
+
+echo.
+"%VPY%" lot_entry\lot_entry.py %*
+if errorlevel 1 (
+  echo.
+  echo Something went wrong. Please send the text above to the developer.
+)
+echo.
+REM Always pause: this tool prints its summary ^(errors / warnings^) in this window
+pause
+endlocal
