@@ -22,6 +22,9 @@ import lot_entry as L  # noqa: E402
     ("30.01.2028", date(2028, 1, 30)),
     ("2027-10", date(2027, 10, 31)),
     ("2027-10-05", date(2027, 10, 5)),
+    ("05.28", date(2028, 5, 31)),           # 操作员习惯 MM.YY
+    ("5/28", date(2028, 5, 31)),
+    ("02.28", date(2028, 2, 29)),
     (" 12 . 2027 ", date(2027, 12, 31)),
     (datetime(2028, 3, 1), date(2028, 3, 1)),
 ])
@@ -29,10 +32,21 @@ def test_parse_mhd_ok(raw, want):
     assert L.parse_mhd(raw) == (want, None)
 
 
-@pytest.mark.parametrize("raw", ["05.28", "13.2027", "31.02.2028", "2027", "11,2027x", 11.2027])
+@pytest.mark.parametrize("raw", ["28.05", "13.28", "13.2027", "31.02.2028", "2027", "11,2027x", 11.2027])
 def test_parse_mhd_rejects(raw):
     d, err = L.parse_mhd(raw)
     assert d is None and err
+
+
+def test_parse_mhd_yy_mm_hint():
+    d, err = L.parse_mhd("28.05")
+    assert d is None and "05.28" in err
+
+
+def test_mhd_too_far_ahead_is_error():
+    b = dict(row=3, name="X", soll=1, entries=[(3, "AB1234", "05.82", None)])
+    lots, issues = L.check_block(b)
+    assert any(lvl == "ERROR" and "years ahead" in m for lvl, _, m in issues)
 
 
 def test_parse_mhd_empty():
@@ -121,7 +135,7 @@ def _fill(path):
     put("Wolz_3", 0, "WZ0001", "12.2027", 1)                    # 合计 1 ≠ 2 → 警告
     put("Derm_4", 0, mhd="06.2028")                             # 无批次只写 MHD → 警告、跳过
     put("Flo_5", 0, "FL5555", "07.2028")                        # 与品名 MHD 2028/05 不符 → 警告
-    put("Ome_6", 0, "OM1111", "05.28", 1)                       # 两位年 → 错误
+    put("Ome_6", 0, "OM1111", "28.05", 1)                       # YY.MM → 错误
     put("Ome_6", 1, "OM2222", "06.2028", 1)
     # Hylo 三批：操作员在续行下面（紧贴下一产品的上方）插一行
     ws.insert_rows(prod["Hylo_7"] + L.ENTRY_ROWS)

@@ -61,6 +61,9 @@ IMPORT_HEADER = [
     "move_line_ids/expiration_date",
 ]
 
+# MHD 合理性上限：防 `05.82` 这类笔误被当成 2082 年（ISSUES R4）
+MHD_MAX_YEARS = 10
+MHD_MAX = lambda today: today.replace(year=today.year + MHD_MAX_YEARS, day=min(today.day, 28))
 LOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-/.]{2,19}$")
 
 
@@ -78,8 +81,11 @@ def month_end(y, m):
 def parse_mhd(val):
     """→ (date, None) 或 (None, 错误说明)。空值返回 (None, None)。
 
-    认：MM.YYYY / M.YYYY / DD.MM.YYYY / YYYY-MM-DD / YYYY-MM，分隔符 . / - 都行。
-    只有月份 → 当月最后一天。两位年份（05.28）分不清是 月.年 还是 日.月，不猜，报错。
+    认：MM.YY（操作员习惯）/ MM.YYYY / DD.MM.YYYY / YYYY-MM-DD / YYYY-MM，分隔符 . / - 都行，
+    月份可一位。只有月份 → 当月最后一天。
+
+    MM.YY 无歧义（ISSUES R4）：MHD 在未来，两位年 ≥ 26 > 12，不可能被读成「日.月」的月份。
+    YY.MM（`28.05`）同样无歧义，但不是操作员习惯——用户定**报错**并提示改写，只认一种习惯。
     """
     if val is None or (isinstance(val, str) and not val.strip()):
         return None, None
@@ -98,6 +104,12 @@ def parse_mhd(val):
     try:
         if len(parts) == 2 and lens[1] == 4 and lens[0] <= 2:          # MM.YYYY
             return month_end(nums[1], nums[0]), None
+        if len(parts) == 2 and lens[1] == 2 and lens[0] <= 2:          # MM.YY
+            if 1 <= nums[0] <= 12:
+                return month_end(2000 + nums[1], nums[0]), None
+            if 1 <= nums[1] <= 12:
+                return None, "MHD %r looks like YY.MM - write MM.YY, e.g. %02d.%02d" % (
+                    val, nums[1], nums[0])
         if len(parts) == 2 and lens[0] == 4 and lens[1] <= 2:          # YYYY-MM
             return month_end(nums[0], nums[1]), None
         if len(parts) == 3 and lens[2] == 4 and max(lens[:2]) <= 2:    # DD.MM.YYYY
@@ -106,7 +118,7 @@ def parse_mhd(val):
             return date(nums[0], nums[1], nums[2]), None
     except ValueError:
         return None, "MHD is not a real date: %r" % val
-    return None, "MHD not recognised (use MM.YYYY or DD.MM.YYYY): %r" % val
+    return None, "MHD not recognised (use MM.YY, MM.YYYY or DD.MM.YYYY): %r" % val
 
 
 def name_mhd_months(name):
@@ -442,6 +454,8 @@ def check_block(b):
         else:
             if d <= date.today():
                 E(row, "MHD %s is not in the future" % d.strftime("%d.%m.%Y"))
+            elif d > MHD_MAX(date.today()):
+                E(row, "MHD %s is more than %d years ahead - typo?" % (d.strftime("%d.%m.%Y"), MHD_MAX_YEARS))
             if name_months and (d.year, d.month) not in name_months:
                 W(row, "MHD %s differs from the MHD in the product name" % d.strftime("%m.%Y"))
         q = num(qty)
