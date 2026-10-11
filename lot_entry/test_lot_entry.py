@@ -96,7 +96,7 @@ def _fill(path):
     prod = locate()
 
     def put(code, k, lot=None, mhd=None, qty=None):
-        r = locate()[code] + 1 + k
+        r = locate()[code] + k          # 第 1 个批次就在产品行上
         for col, v in ((L.C_LOT, lot), (L.C_MHD, mhd), (L.C_QTY, qty)):
             if v is not None:
                 ws.cell(r, col, v)
@@ -105,13 +105,12 @@ def _fill(path):
     put("Dopp_2", 0, "AB1234", "30.01.2028", 300)
     put("Dopp_2", 1, "4X3X-A", "04.2029", 60)
     put("Wolz_3", 0, "WZ0001", "12.2027", 1)                    # 合计 1 ≠ 2 → 警告
-    ws.cell(prod["Derm_4"], L.C_NOLOT, "x")
     put("Derm_4", 0, mhd="06.2028")                             # 无批次只写 MHD → 警告、跳过
     put("Flo_5", 0, "FL5555", "07.2028")                        # 与品名 MHD 2028/05 不符 → 警告
     put("Ome_6", 0, "OM1111", "05.28", 1)                       # 两位年 → 错误
     put("Ome_6", 1, "OM2222", "06.2028", 1)
-    # Hylo 三批：操作员在第 2 行录入行下面插一行
-    ws.insert_rows(prod["Hylo_7"] + 3)
+    # Hylo 三批：操作员在续行下面（紧贴下一产品的上方）插一行
+    ws.insert_rows(prod["Hylo_7"] + L.ENTRY_ROWS)
     prod = locate()
     put("Hylo_7", 0, "HY0001", "01.2028", 3)
     put("Hylo_7", 1, "HY0002", "02.2028", 3)
@@ -130,9 +129,24 @@ def test_end_to_end(tmp_path):
     ws = load_workbook(entry)["Erfassung"]
     assert ws.cell(2, 1).value.startswith("WH/IN/1")
     assert ws.cell(3, L.C_CODE).value == "Rosu_1" and ws.cell(3, L.C_SOLL).value == 1000
-    assert ws.cell(4, L.C_LOT).number_format == "@"
-    assert ws.cell(4, L.C_LOT).protection.locked is False
+    assert ws.cell(3, L.C_NAME).value == "Rosuvastatin 100 St"
+    for r in (3, 4):                                             # 产品行本身 + 续行都可录
+        assert ws.cell(r, L.C_LOT).number_format == "@"
+        assert ws.cell(r, L.C_LOT).protection.locked is False
+    assert ws.cell(3, L.C_NAME).protection.locked is not False
     assert ws.protection.sheet is True
+    assert ws.print_area == "'Erfassung'!$A$1:$F$%d" % (ws.max_row - 1)  # Σ / Status 不打印
+    assert ws.cell(3, L.C_STAT).value.startswith("=IF(")
+    # 单内按品名字母序（导出里是 Doppelherz, Cardio, Badesalz, Flohsamen, Omega, Hylo, Elmex, Nobody）
+    groups = []
+    for r in range(2, ws.max_row + 1):
+        t = ws.cell(r, L.C_TECH0).value
+        if t == "H":
+            groups.append([])
+        elif t == "P":
+            groups[-1].append(ws.cell(r, L.C_NAME).value)
+    assert len(groups[1]) == 8
+    assert groups[1] == sorted(groups[1], key=str.casefold)
 
     _fill(entry)
     kind, files, summary = L.run(entry, str(tmp_path))
@@ -164,13 +178,13 @@ def test_end_to_end(tmp_path):
     assert "ml10" not in lines
 
     check = list(load_workbook(chk).active.iter_rows(values_only=True))[1:]
-    msgs = {(c[0], c[1]) for c in check}
+    msgs = {(c[0], c[2]) for c in check}
     assert ("WARN", "Wolz_3") in msgs
-    assert ("WARN", "Derm_4") in msgs
+    assert ("WARN", "Derm_4") in msgs and ("NO LOT", "Derm_4") in msgs
     assert ("WARN", "Flo_5") in msgs
     assert ("ERROR", "Ome_6") in msgs and ("SKIP", "Ome_6") in msgs
     assert ("ERROR", "Elm_8") in msgs
-    assert ("EMPTY", "Untouched_9") in msgs
+    assert ("NO LOT", "Untouched_9") in msgs
 
 
 def test_missing_column_is_reported(tmp_path):

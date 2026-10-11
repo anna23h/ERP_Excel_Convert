@@ -14,7 +14,8 @@
   - 导入表带上所选单的**全部**已有行（没录的原值写回）：不赌 Odoo 对未列出的 o2m 行是保留还是替换。
 
 用户裁决：MHD 只写月份 → 当月最后一天；合计 ≠ 应收只警告；产品名里的 MHD 与录入不符只警告；
-「Keine Charge」= 包装上本就没有批次，该产品跳过。
+一个批次都没写 = 包装上本就没有批次，该产品跳过（核对清单里列为 NO LOT 供复查）。
+版式（R2）：单内按品名排序；第 1 个批次与产品同行，多批次同列往下续写；Σ / Status 只在屏幕上、不进打印区域。
 """
 import calendar
 import os
@@ -194,11 +195,13 @@ def read_export(ws):
 # --------------------------------------------------------------------------
 # 2. 生成录入表
 # --------------------------------------------------------------------------
-# 可见列
-C_CODE, C_NAME, C_SOLL, C_LOT, C_MHD, C_QTY, C_NOLOT, C_STAT = range(1, 9)
-# 隐藏技术列（只在产品行上有值）
+# 可见列（2026-10-11 R2：品名打头作查找键；第 1 个批次与产品同行；去掉 Keine Charge 列）
+C_NAME, C_CODE, C_SOLL, C_LOT, C_MHD, C_QTY, C_STAT = range(1, 8)
+C_PRINT_LAST = C_QTY  # 打印区域到 Menge 为止；Σ / Status 只在屏幕上看
+# 隐藏技术列（只在产品行上有值）。H 列留空作隔离。
 TECH = ["_type", "move_id", "line_ids", "picking_id", "product", "uom", "loc_from", "loc_to"]
-C_TECH0 = 10  # J 起；I 留空作隔离
+C_TECH0 = 9  # I 起
+ROW_H = 26   # 打印出来要能手写
 
 THIN = Side(style="thin", color="999999")
 BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -211,13 +214,43 @@ F_WARN = PatternFill("solid", fgColor="FFEB9C")
 UNLOCK = Protection(locked=False)
 
 
+def _status_formula(row, end):
+    """产品行上的 Σ / Status。产品块 = 本行起、到下一个有类型标记的行（下一产品 / 单头 / END）之前。
+
+    续行与操作员插的行类型列都为空，所以块的长度用 MATCH 现找，不写死区间：
+    在块内任何位置插行（含紧贴下一产品的上方）都会被算进来。
+    """
+    t = ws_col(C_TECH0)
+    k = 'MATCH(TRUE,INDEX(${t}{n}:${t}${e}<>"",0),0)'.format(t=t, n=row + 1, e=end)
+    rng = lambda c: "{c}{r}:INDEX({c}:{c},ROW()+{k}-1)".format(c=ws_col(c), r=row, k=k)
+    n, s, soll = "COUNTA(%s)" % rng(C_LOT), "SUM(%s)" % rng(C_QTY), "%s%d" % (ws_col(C_SOLL), row)
+    return ('=IF({n}=0,"",IF(AND({n}=1,{s}=0),"✓ = Soll",'
+            'IF({s}={c},"✓ "&{s},"≠ "&{s}&" / "&{c})))').format(n=n, s=s, c=soll)
+
+
+def ws_col(i):
+    from openpyxl.utils import get_column_letter
+    return get_column_letter(i)
+
+
+def _entry_cells(ws, r, dv_qty):
+    for col in (C_LOT, C_MHD, C_QTY):
+        c = ws.cell(r, col)
+        c.protection = UNLOCK
+        c.fill = F_INPUT
+        c.font = Font(size=12)
+        c.alignment = Alignment(vertical="center")
+        if col != C_QTY:
+            c.number_format = "@"  # 文本：防 11.2027 变小数、1E5 变科学计数
+    dv_qty.add(ws.cell(r, C_QTY))
+
+
 def build_entry(pickings, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Erfassung"
-    heads = ["Produkt", "Bezeichnung", "Soll", "Charge / Lot", "MHD", "Menge",
-             "Keine Charge", "Σ / Status"]
-    widths = [26, 52, 7, 18, 13, 8, 9, 16]
+    heads = ["Bezeichnung", "Produkt", "Soll", "Charge / Lot", "MHD", "Menge", "Σ / Status"]
+    widths = [50, 24, 7, 20, 14, 9, 16]
     for i, (h, w) in enumerate(zip(heads, widths), start=1):
         c = ws.cell(1, i, h)
         c.font = Font(bold=True)
@@ -226,21 +259,20 @@ def build_entry(pickings, path):
         ws.column_dimensions[c.column_letter].width = w
     for j, h in enumerate(TECH):
         ws.cell(1, C_TECH0 + j, h)
-        ws.column_dimensions[ws.cell(1, C_TECH0 + j).column_letter].hidden = True
-    ws.column_dimensions["I"].hidden = True
+        ws.column_dimensions[ws_col(C_TECH0 + j)].hidden = True
+    ws.column_dimensions[ws_col(C_STAT + 1)].hidden = True
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
 
-    dv_nolot = DataValidation(type="list", formula1='"x"', allow_blank=True,
-                              error="Only x (or empty)", showErrorMessage=True)
     dv_qty = DataValidation(type="decimal", operator="greaterThan", formula1="0",
                             allow_blank=True, error="Quantity must be a number > 0",
                             showErrorMessage=True)
-    ws.add_data_validation(dv_nolot)
     ws.add_data_validation(dv_qty)
 
+    n_rows = 1 + sum(1 + len(p["moves"]) * ENTRY_ROWS for p in pickings.values())
+    end = n_rows + 1  # END 标记行
     r = 2
-    status_cells = []
+    status_rows = []
     for pid, pk in pickings.items():
         ref = pk["ref"] or pk["origin"] or pid
         title = " · ".join(str(x) for x in (ref, pk["origin"] if pk["ref"] else None,
@@ -253,57 +285,41 @@ def build_entry(pickings, path):
         ws.row_dimensions[r].height = 24
         ws.cell(r, C_TECH0, "H")
         r += 1
-        for mid, mv in pk["moves"].items():
+        # 单内按品名字母序：对货时按包装上的名字找
+        moves = sorted(pk["moves"].items(), key=lambda kv: split_product(kv[1]["product"])[1].casefold())
+        for mid, mv in moves:
             code, name = split_product(mv["product"])
             prod_row = r
-            vals = {C_CODE: code, C_NAME: name, C_SOLL: clean_num(mv["demand"])}
-            for col in range(1, C_STAT + 1):
-                c = ws.cell(r, col, vals.get(col))
-                c.fill = F_PROD
-                c.border = BOX
-                c.alignment = Alignment(vertical="center", wrap_text=(col == C_NAME))
-            ws.cell(r, C_CODE).font = Font(bold=True, size=12)
-            ws.cell(r, C_SOLL).font = Font(bold=True, size=12)
-            ws.cell(r, C_SOLL).alignment = Alignment(horizontal="center", vertical="center")
-            nolot = ws.cell(r, C_NOLOT)
-            nolot.fill = F_INPUT
-            nolot.protection = UNLOCK
-            nolot.alignment = Alignment(horizontal="center", vertical="center")
-            dv_nolot.add(nolot)
+            for k in range(ENTRY_ROWS):
+                for col in range(1, C_STAT + 1):
+                    c = ws.cell(r, col)
+                    c.border = BOX
+                    if k == 0 and col < C_LOT:
+                        c.fill = F_PROD
+                _entry_cells(ws, r, dv_qty)
+                ws.row_dimensions[r].height = ROW_H
+                r += 1
+            for col, v, font in ((C_NAME, name, Font(bold=True, size=11)),
+                                 (C_CODE, code, Font(size=10, color="555555")),
+                                 (C_SOLL, clean_num(mv["demand"]), Font(bold=True, size=12))):
+                c = ws.cell(prod_row, col, v)
+                c.font = font
+                c.alignment = Alignment(vertical="center", wrap_text=(col == C_NAME),
+                                        horizontal="center" if col == C_SOLL else None)
+            if len(name) > 48:
+                ws.row_dimensions[prod_row].height = ROW_H + 12
             tech = ["P", mid, "|".join(mv["lines"]), pid, mv["product"], mv["uom"],
                     mv["loc_from"], mv["loc_to"]]
             for j, v in enumerate(tech):
-                ws.cell(r, C_TECH0 + j, v)
-            r += 1
-            for _ in range(ENTRY_ROWS):
-                for col in range(1, C_STAT + 1):
-                    ws.cell(r, col).border = BOX
-                for col in (C_LOT, C_MHD, C_QTY):
-                    c = ws.cell(r, col)
-                    c.protection = UNLOCK
-                    c.fill = F_INPUT
-                    if col != C_QTY:
-                        c.number_format = "@"  # 文本：防 11.2027 变小数、1E5 变科学计数
-                dv_qty.add(ws.cell(r, C_QTY))
-                ws.cell(r, C_CODE, "   ↳").font = Font(color="999999")
-                ws.cell(r, C_TECH0, "E")
-                r += 1
-            # 合计区间一直延到下一产品行/单头行：在它正上方插行也会被公式区间吃进去
-            a, b = prod_row + 1, r
-            L, Q, S = (ws.cell(1, x).column_letter for x in (C_LOT, C_QTY, C_SOLL))
-            n = "COUNTA(%s%d:%s%d)" % (L, a, L, b)
-            s = "SUM(%s%d:%s%d)" % (Q, a, Q, b)
-            G = ws.cell(1, C_NOLOT).column_letter
-            f = ('=IF({g}{p}<>"","keine Charge",IF({n}=0,"",IF(AND({n}=1,{s}=0),"✓ = Soll",'
-                 'IF({s}={c}{p},"✓ "&{s},"≠ "&{s}&" / "&{c}{p}))))').format(
-                g=G, p=prod_row, n=n, s=s, c=S)
-            st = ws.cell(prod_row, C_STAT, f)
-            st.alignment = Alignment(horizontal="center", vertical="center")
-            status_cells.append(st.coordinate)
-    end = r
+                ws.cell(prod_row, C_TECH0 + j, v)
+            status_rows.append(prod_row)
+    assert r == end, (r, end)
     ws.cell(end, C_TECH0, "END")
+    for pr in status_rows:
+        st = ws.cell(pr, C_STAT, _status_formula(pr, end))
+        st.alignment = Alignment(horizontal="center", vertical="center")
 
-    col = ws.cell(1, C_STAT).column_letter
+    col = ws_col(C_STAT)
     rng = "%s2:%s%d" % (col, col, end)
     ws.conditional_formatting.add(rng, FormulaRule(formula=['LEFT(%s2,1)="✓"' % col], fill=F_OK))
     ws.conditional_formatting.add(rng, FormulaRule(formula=['LEFT(%s2,1)="≠"' % col], fill=F_WARN))
@@ -312,8 +328,10 @@ def build_entry(pickings, path):
     ws.protection.insertRows = False   # False = 允许：多批次时操作员自己插行
     ws.protection.deleteRows = False
     ws.protection.formatCells = False
+    ws.protection.formatRows = False
     ws.protection.autoFilter = False
-    ws.page_setup.orientation = "landscape"
+    ws.print_area = "A1:%s%d" % (ws_col(C_PRINT_LAST), end - 1)
+    ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -331,9 +349,10 @@ def build_entry(pickings, path):
 # 3. 录入表 → 导入表 + 核对清单
 # --------------------------------------------------------------------------
 def read_entry(ws):
-    """→ 产品块列表：{tech..., code, name, soll, nolot, entries:[(row, lot, mhd, qty)]}。
+    """→ 产品块列表：{tech..., code, name, soll, entries:[(row, lot, mhd, qty)]}。
 
-    行类型看隐藏列 `_type`；操作员插进来的行该列为空，归到上方最近的产品块。
+    行类型看隐藏列 `_type`：产品行 P 本身就是第 1 个录入行；续行与操作员插的行该列为空，
+    归到上方最近的产品块。
     """
     blocks, cur = [], None
     for r in range(2, ws.max_row + 1):
@@ -345,9 +364,8 @@ def read_entry(ws):
             tech = {TECH[j]: ws.cell(r, C_TECH0 + j).value for j in range(1, len(TECH))}
             cur = dict(tech, row=r, code=ws.cell(r, C_CODE).value,
                        name=ws.cell(r, C_NAME).value, soll=num(ws.cell(r, C_SOLL).value) or 0,
-                       nolot=bool(str(ws.cell(r, C_NOLOT).value or "").strip()), entries=[])
+                       entries=[])
             blocks.append(cur)
-            continue
         if cur is None:
             continue
         lot = ws.cell(r, C_LOT).value
@@ -365,19 +383,19 @@ def check_block(b):
     E = lambda row, m: issues.append(("ERROR", row, m))
     W = lambda row, m: issues.append(("WARN", row, m))
     entries = b["entries"]
-    if b["nolot"]:
-        if any(lot for _, lot, _, _ in entries):
-            E(b["row"], "'Keine Charge' is ticked but a lot was entered")
-        elif any(m not in (None, "") for _, _, m, _ in entries):
-            W(b["row"], "No lot: the MHD cannot be stored in Odoo without a lot, skipped")
-        return [], issues
-    if not entries:
+    if not any(lot for _, lot, _, _ in entries):
+        # 一个批次都没写 = 包装上没有批次（用户 2026-10-11 定），跳过；写了别的就提醒一句
+        if any(m not in (None, "") for _, _, m, _ in entries):
+            W(b["row"], "MHD entered but no lot - not imported (Odoo stores MHD on the lot). "
+                        "Lot forgotten?")
+        elif entries:
+            W(b["row"], "Quantity entered but no lot - not imported")
         return [], issues
     seen = set()
     name_months = name_mhd_months(b["name"])
     for row, lot, mhd, qty in entries:
         if not lot:
-            E(row, "Lot is empty (tick 'Keine Charge' if the pack has no lot)")
+            E(row, "Lot is empty on this row, but other lots were entered for the product")
             continue
         if not LOT_RE.match(lot):
             E(row, "Lot %r: only letters, digits and - / . allowed, 3-20 characters" % lot)
@@ -465,19 +483,17 @@ def build_import(blocks, import_path, check_path):
 
 
 def _check_rows(b, lots, issues):
-    rows = []
-    if not b["entries"] and not b["nolot"]:
-        return [("EMPTY", b["code"], "", "", "", "Nothing entered - line left unchanged")]
-    for level, row, msg in issues:
-        rows.append((level, b["code"], "", "", "", "row %d: %s" % (row, msg)))
-    if not any(i[0] == "ERROR" for i in issues):
-        for lot, d, q in lots:
-            rows.append(("OK", b["code"], lot, d.strftime("%d.%m.%Y") if d else "",
-                         clean_num(q), ""))
-    else:
-        rows.append(("SKIP", b["code"], "", "", "", "Product NOT in the import file - fix the red rows"))
-    if b["nolot"] and not any(i[0] == "ERROR" for i in issues):
-        rows.append(("SKIP", b["code"], "", "", "", "Keine Charge - not in the import file"))
+    """核对清单行：(状态, 品名, 编码, 批次, MHD, 数量, 说明)。"""
+    head = lambda st, msg, lot="", d="", q="": (st, b["name"], b["code"], lot, d, q, msg)
+    rows = [head(level, "row %d: %s" % (row, msg)) for level, row, msg in issues]
+    if not any(lot for _, lot, _, _ in b["entries"]):
+        rows.append(head("NO LOT", "No lot entered - skipped. Pack without lot? If not, enter it and rerun"))
+        return rows
+    if any(i[0] == "ERROR" for i in issues):
+        rows.append(head("SKIP", "Product NOT in the import file - fix the red rows and rerun"))
+        return rows
+    for lot, d, q in lots:
+        rows.append(head("OK", "", lot, d.strftime("%d.%m.%Y") if d else "", clean_num(q)))
     return rows
 
 
@@ -485,8 +501,9 @@ def _write_check(check, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Check"
-    ws.append(["Status", "Produkt", "Charge", "MHD (Odoo)", "Menge", "Hinweis"])
-    fills = {"ERROR": F_BAD, "SKIP": F_BAD, "WARN": F_WARN, "OK": F_OK}
+    ws.append(["Status", "Bezeichnung", "Produkt", "Charge", "MHD (Odoo)", "Menge", "Hinweis"])
+    fills = {"ERROR": F_BAD, "SKIP": F_BAD, "WARN": F_WARN, "OK": F_OK,
+             "NO LOT": PatternFill("solid", fgColor="E7E6E6")}
     for row in check:
         ws.append(list(row))
         f = fills.get(row[0])
@@ -494,7 +511,7 @@ def _write_check(check, path):
             ws.cell(ws.max_row, 1).fill = f
     for c in ws[1]:
         c.font = Font(bold=True)
-    for col, w in zip("ABCDEF", (9, 26, 16, 12, 8, 80)):
+    for col, w in zip("ABCDEFG", (9, 44, 22, 16, 12, 8, 80)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
     wb.save(path)
@@ -527,7 +544,11 @@ def run(path, dest=None):
         cnt = {k: sum(1 for c in check if c[0] == k) for k in ("ERROR", "WARN", "SKIP")}
         lines = ["Products written to import file: %d / %d" % (n, len(blocks)),
                  "Errors: %d   Warnings: %d" % (cnt["ERROR"], cnt["WARN"])]
-        lines += ["  %-5s %s  %s" % (c[0], c[1], c[5]) for c in check if c[0] in ("ERROR", "WARN")]
+        lines += ["  %-5s %s  %s" % (c[0], c[2], c[6]) for c in check if c[0] in ("ERROR", "WARN")]
+        no_lot = [c[2] for c in check if c[0] == "NO LOT"]
+        if no_lot:
+            lines.append("No lot entered (skipped, check these are really packs without lot): "
+                         + ", ".join(no_lot))
         files = ([imp] if n else []) + [chk]
         if not n:
             lines.append("Nothing valid to import - no import file written.")
