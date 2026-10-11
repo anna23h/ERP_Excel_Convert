@@ -199,7 +199,7 @@ def read_export(ws):
 C_NAME, C_CODE, C_SOLL, C_LOT, C_MHD, C_QTY, C_STAT = range(1, 8)
 C_PRINT_LAST = C_QTY  # 打印区域到 Menge 为止；Σ / Status 只在屏幕上看
 # 隐藏技术列（只在产品行上有值）。H 列留空作隔离。
-TECH = ["_type", "move_id", "line_ids", "picking_id", "product", "uom", "loc_from", "loc_to"]
+TECH = ["_type", "move_id", "line_ids", "picking_id", "product", "uom", "loc_from", "loc_to", "code"]
 C_TECH0 = 9  # I 起
 ROW_H = 26   # 打印出来要能手写
 
@@ -228,6 +228,37 @@ def _status_formula(row, end):
             'IF({s}={c},"✓ "&{s},"≠ "&{s}&" / "&{c})))').format(n=n, s=s, c=soll)
 
 
+NEW_PZN_RE = re.compile(r"\b(?:new|neue?)\s*PZN\s*:?\s*(\d{7,8})\b", re.I)
+
+
+def new_pzn(name):
+    """品名里的 `(New PZN 19765739)` / `neue PZN: …` → 新 PZN；没有返回 None。实物上印的是它。"""
+    m = NEW_PZN_RE.search(name or "")
+    return m.group(1) if m else None
+
+
+def pzn_rich(code, name):
+    """Produkt 格：PZN 是操作员和实物比对的号，加粗大字；前缀小灰。
+
+    品名里有 New PZN → 新 PZN 打头 + NEU，第二行小灰「alt: 原编码」（用户 2026-10-11，ISSUES R3）。
+    """
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    big = InlineFont(b=True, sz=13)
+    small = InlineFont(sz=9, color="777777")
+    new = new_pzn(name)
+    if new:
+        return CellRichText(TextBlock(big, new), TextBlock(InlineFont(b=True, sz=9, color="C00000"), "  NEU"),
+                            TextBlock(small, "\nalt: " + code))
+    m = re.match(r"^(.*?)(\d{7,8})$", code or "")
+    if not m:
+        return CellRichText(TextBlock(big, code or ""))
+    parts = [TextBlock(big, m.group(2))]
+    if m.group(1):
+        parts.insert(0, TextBlock(small, m.group(1)))
+    return CellRichText(*parts)
+
+
 def ws_col(i):
     from openpyxl.utils import get_column_letter
     return get_column_letter(i)
@@ -249,7 +280,7 @@ def build_entry(pickings, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Erfassung"
-    heads = ["Bezeichnung", "Produkt", "Soll", "Charge / Lot", "MHD", "Menge", "Σ / Status"]
+    heads = ["Bezeichnung", "Produkt", "Soll", "LOT", "MHD", "Menge", "Status"]
     widths = [50, 24, 7, 20, 14, 9, 16]
     for i, (h, w) in enumerate(zip(heads, widths), start=1):
         c = ws.cell(1, i, h)
@@ -300,16 +331,17 @@ def build_entry(pickings, path):
                 ws.row_dimensions[r].height = ROW_H
                 r += 1
             for col, v, font in ((C_NAME, name, Font(bold=True, size=11)),
-                                 (C_CODE, code, Font(size=10, color="555555")),
+                                 (C_CODE, pzn_rich(code, name), None),
                                  (C_SOLL, clean_num(mv["demand"]), Font(bold=True, size=12))):
                 c = ws.cell(prod_row, col, v)
-                c.font = font
-                c.alignment = Alignment(vertical="center", wrap_text=(col == C_NAME),
+                if font:
+                    c.font = font
+                c.alignment = Alignment(vertical="center", wrap_text=(col in (C_NAME, C_CODE)),
                                         horizontal="center" if col == C_SOLL else None)
-            if len(name) > 48:
+            if len(name) > 48 or new_pzn(name):
                 ws.row_dimensions[prod_row].height = ROW_H + 12
             tech = ["P", mid, "|".join(mv["lines"]), pid, mv["product"], mv["uom"],
-                    mv["loc_from"], mv["loc_to"]]
+                    mv["loc_from"], mv["loc_to"], code]
             for j, v in enumerate(tech):
                 ws.cell(prod_row, C_TECH0 + j, v)
             status_rows.append(prod_row)
@@ -362,7 +394,7 @@ def read_entry(ws):
             continue
         if t == "P":
             tech = {TECH[j]: ws.cell(r, C_TECH0 + j).value for j in range(1, len(TECH))}
-            cur = dict(tech, row=r, code=ws.cell(r, C_CODE).value,
+            cur = dict(tech, row=r,
                        name=ws.cell(r, C_NAME).value, soll=num(ws.cell(r, C_SOLL).value) or 0,
                        entries=[])
             blocks.append(cur)

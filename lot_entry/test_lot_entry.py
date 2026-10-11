@@ -48,6 +48,20 @@ def test_name_mhd_months():
     assert L.name_mhd_months("Elmex Kariesschutz 400ml") == set()
 
 
+def test_new_pzn():
+    assert L.new_pzn("Doppelherz Knoblauch 480St. (New PZN 19765739)") == "19765739"
+    assert L.new_pzn("Foo (neue PZN: 1234567)") == "1234567"
+    assert L.new_pzn("Rosuvastatin Hexal 10 Mg 100 St") is None
+
+
+def test_pzn_rich():
+    plain = str(L.pzn_rich("DOPH_15994609", "Doppelherz 480St."))
+    assert plain == "DOPH_15994609"
+    r = L.pzn_rich("DOPH_15994609", "Doppelherz 480St. (New PZN 19765739)")
+    assert str(r).startswith("19765739") and "alt: DOPH_15994609" in str(r)
+    assert r[0].font.b                                           # 新 PZN 加粗打头
+
+
 def test_split_product_flattens_newlines():
     assert L.split_product("[DOPH_12454290] Doppelherz \nFlohsamenschalen \n250 G") == \
         ("DOPH_12454290", "Doppelherz Flohsamenschalen 250 G")
@@ -91,7 +105,7 @@ def _fill(path):
     wb = load_workbook(path)
     ws = wb["Erfassung"]
     def locate():
-        return {ws.cell(r, L.C_CODE).value: r for r in range(2, ws.max_row + 1)
+        return {ws.cell(r, L.C_TECH0 + L.TECH.index("code")).value: r for r in range(2, ws.max_row + 1)
                 if ws.cell(r, L.C_TECH0).value == "P"}
     prod = locate()
 
@@ -128,13 +142,14 @@ def test_end_to_end(tmp_path):
 
     ws = load_workbook(entry)["Erfassung"]
     assert ws.cell(2, 1).value.startswith("WH/IN/1")
-    assert ws.cell(3, L.C_CODE).value == "Rosu_1" and ws.cell(3, L.C_SOLL).value == 1000
+    assert ws.cell(3, L.C_TECH0 + L.TECH.index("code")).value == "Rosu_1" and ws.cell(3, L.C_SOLL).value == 1000
     assert ws.cell(3, L.C_NAME).value == "Rosuvastatin 100 St"
     for r in (3, 4):                                             # 产品行本身 + 续行都可录
         assert ws.cell(r, L.C_LOT).number_format == "@"
         assert ws.cell(r, L.C_LOT).protection.locked is False
     assert ws.cell(3, L.C_NAME).protection.locked is not False
     assert ws.protection.sheet is True
+    assert [ws.cell(1, c).value for c in (L.C_LOT, L.C_STAT)] == ["LOT", "Status"]
     assert ws.print_area == "'Erfassung'!$A$1:$F$%d" % (ws.max_row - 1)  # Σ / Status 不打印
     assert ws.cell(3, L.C_STAT).value.startswith("=IF(")
     # 单内按品名字母序（导出里是 Doppelherz, Cardio, Badesalz, Flohsamen, Omega, Hylo, Elmex, Nobody）
