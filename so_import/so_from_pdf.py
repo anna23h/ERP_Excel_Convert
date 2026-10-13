@@ -207,8 +207,9 @@ def report(lines, dropped, summe):
             print(f"    行级四舍五入 {l['pzn']}：{l['netto'] * l['qty']} 印成 {l['nsum']}（{diff:+}）")
     no_sale = [l for l in lines if not l["sale_ok"]]
     if no_sale:
-        print(f"\n⚠ {len(no_sale)} 个产品未勾可销售（sale_ok=False）：导入前最好先勾上，"
-              f"否则可能报错或订单行显示异常：{', '.join(l['pzn'] for l in no_sale)}")
+        # 只提示不拦：2026-10-13 实测按外部 ID 导入 SO，8 个 sale_ok=False 的 Temp_ 品照常导入成功
+        print(f"\nℹ {len(no_sale)} 个产品未勾可销售（sale_ok=False），不影响按外部 ID 导入（2026-10-13 实测）；"
+              f"在 SO 界面手动选产品时搜不到它们：{', '.join(l['pzn'] for l in no_sale)}")
 
 
 def run(pdf, template, outdir=None, exclude=(), pick=None, candidates_fn=odoo_candidates):
