@@ -34,9 +34,10 @@ META_KIND = "lot_entry_v1"
 ENTRY_ROWS = 2  # 每产品预留的空录入行（用户 2026-10-11 定）
 
 # Odoo 导出列：技术名（勾了导入兼容）与英文标签两种都认。
-# 注意 `ID`（大写，数据库数字 ID）**不是** `id`（External ID），不收。
+# 存成导出模板后 `External ID` 列名会变成 `ID`，与数据库数字 `ID` 同名、可能两列并存（ISSUES R5），
+# 所以 ID 类字段不按列名定，按值形态挑：只认 `模块.名称` 形态的 External ID，纯数字列不收。
 FIELDS = OrderedDict([
-    ("picking_id", ("id", "External ID")),
+    ("picking_id", ("id", "External ID", "ID")),
     ("line_id", ("move_line_ids/id", "Operations/ID", "Operations/External ID")),
     ("move_id", ("move_line_ids/move_id/id", "Operations/Stock Move/ID",
                  "Operations/Stock Move/External ID")),
@@ -53,6 +54,9 @@ OPTIONAL = OrderedDict([
 ])
 # 单头字段：一对多导出里只在每张单第一行出现，后续行要向下继承
 PICKING_KEYS = ("picking_id", "ref", "partner", "origin")
+# 值是 External ID 的字段（写进导入表作匹配键，写成数字 ID 导回去会新建单/行）
+XID_KEYS = ("picking_id", "line_id", "move_id")
+XID_RE = re.compile(r"^\w+\.\w+$")  # __export__.stock_picking_433727_9a35dba9
 
 IMPORT_HEADER = [
     "id", "move_line_ids/id", "move_line_ids/move_id/id", "move_line_ids/product_id",
@@ -160,13 +164,37 @@ def clean_num(x):
 # --------------------------------------------------------------------------
 # 1. 读 Odoo 导出
 # --------------------------------------------------------------------------
-def _map_header(header):
-    pos = {}
+def _xid_col(cands, rows):
+    """同名候选列里挑值为 External ID 的那一列：非空值全是 `模块.名称` 形态。都不是 → None。
+
+    候选列全空（无数据可判）→ 取第一列，由后面的「没有入库行」报错。
+    """
+    filled = False
+    for i in cands:
+        vals = [str(r[i]).strip() for r in rows[1:] if i < len(r) and r[i] not in (None, "")]
+        filled = filled or bool(vals)
+        if vals and all(XID_RE.match(v) for v in vals):
+            return i
+    return None if filled else cands[0]
+
+
+def _map_header(header, rows):
+    pos, numeric = {}, []
     for key, aliases in list(FIELDS.items()) + list(OPTIONAL.items()):
-        for a in aliases:
-            if a in header:
-                pos[key] = header.index(a)
-                break
+        cands = [i for a in aliases for i, h in enumerate(header) if h == a]
+        if not cands:
+            continue
+        if key in XID_KEYS:
+            i = _xid_col(cands, rows)
+            if i is None:
+                numeric.append("%s (column %s)" % (key, " / ".join(sorted({header[c] for c in cands}))))
+                continue
+            pos[key] = i
+        else:
+            pos[key] = cands[0]
+    if numeric:
+        raise InputError("These columns hold database numbers, not External IDs: " + "; ".join(numeric)
+                         + ". Add 'External ID' to the export template (it may show up as 'ID').")
     missing = [k for k in FIELDS if k not in pos]
     if missing:
         need = ["%s (e.g. %s)" % (k, FIELDS[k][-1]) for k in missing]
@@ -178,7 +206,7 @@ def read_export(ws):
     """→ OrderedDict picking_id → {ref, partner, origin, moves: OrderedDict move_id → move}。"""
     rows = list(ws.iter_rows(values_only=True))
     header = [str(h).strip() if h is not None else "" for h in rows[0]]
-    pos = _map_header(header)
+    pos = _map_header(header, rows)
     pickings = OrderedDict()
     cur = {}
     for r in rows[1:]:

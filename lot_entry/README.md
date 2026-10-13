@@ -20,7 +20,7 @@ Odoo 入库单导出 ──①──> Lot_Entry_*.xlsx ──操作员填──>
 
 | 必需字段 | 英文标签 | 技术名 |
 |---|---|---|
-| 入库单 External ID | `External ID` | `id` |
+| 入库单 External ID | `External ID`（存成模板后会变成 `ID`，见下） | `id` |
 | 行 ID | `Operations/ID` | `move_line_ids/id` |
 | Stock Move ID | `Operations/Stock Move/ID` | `move_line_ids/move_id/id` |
 | 产品 | `Operations/Product` | `move_line_ids/product_id` |
@@ -28,7 +28,11 @@ Odoo 入库单导出 ──①──> Lot_Entry_*.xlsx ──操作员填──>
 | 单位 / 来源库位 / 目标库位 | `Operations/Unit of Measure` / `From` / `To` | `…/product_uom_id` / `location_id` / `location_dest_id` |
 
 选填：`Reference`（WH/IN 单号，**强烈建议**——操作员靠它对纸面；缺时用 `Source Document` 作单头）、
-`Contact`、`Source Document`。另有数字 `ID` 列（数据库 ID）会被忽略。
+`Contact`、`Source Document`。
+
+**`ID` 列按值认，不按列名认**（2026-10-13，ISSUES R5）：Odoo 把 `External ID` 存进导出模板后，列名会变成 `ID`，
+和数据库数字 `ID` 同名，两列可能并存。入库单 / 行 / Stock Move 三个 ID 字段都在同名候选列里挑**值全是
+`__export__.xxx_123_abcd` 形态**的那列；只有纯数字列时报错（数字 ID 写进导入表，Odoo 会认不出、另建新单）。
 
 ## 产出 1：`Lot_Entry_*.xlsx`（录入表）
 

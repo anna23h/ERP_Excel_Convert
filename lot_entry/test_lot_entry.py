@@ -89,6 +89,11 @@ HEADER = ["Operations/ID", "Operations/Stock Move/ID", "Operations/Product",
           "Reference"]
 
 
+def X(s):
+    """测试用 External ID：真实导出里是 `__export__.stock_move_line_601322_7a578f8e` 形态。"""
+    return "__export__." + s
+
+
 def _export(path):
     rows = [
         # 单 1：一个产品
@@ -109,8 +114,8 @@ def _export(path):
     ws = wb.active
     ws.append(HEADER)
     for ml, mv, prod, dem, pk, partner, origin, ref in rows:
-        ws.append([ml, mv, prod, None, 0, "Units", "Partner Locations/Vendors", "WH/Stock",
-                   None, "123" if pk else None, pk, partner, dem, origin, ref])
+        ws.append([X(ml), X(mv), prod, None, 0, "Units", "Partner Locations/Vendors", "WH/Stock",
+                   None, "123" if pk else None, pk and X(pk), partner, dem, origin, ref])
     wb.save(path)
 
 
@@ -187,24 +192,24 @@ def test_end_to_end(tmp_path):
     body = rows[1:]
     by_lot = {r[4]: r for r in body if r[4]}
     pickings = [r[0] for r in body if r[0]]
-    assert pickings == ["pk1", "pk2"]                            # 单 3 没人录 → 不出现
+    assert pickings == [X("pk1"), X("pk2")]                            # 单 3 没人录 → 不出现
 
-    assert by_lot["25P039A"][1] == "ml1" and by_lot["25P039A"][5] == 1000
+    assert by_lot["25P039A"][1] == X("ml1") and by_lot["25P039A"][5] == 1000
     assert by_lot["25P039A"][9] == datetime(2027, 11, 30)
-    assert by_lot["AB1234"][1] == "ml2" and by_lot["AB1234"][5] == 300
-    assert by_lot["4X3X-A"][1] is None and by_lot["4X3X-A"][2] == "mv2"
+    assert by_lot["AB1234"][1] == X("ml2") and by_lot["AB1234"][5] == 300
+    assert by_lot["4X3X-A"][1] is None and by_lot["4X3X-A"][2] == X("mv2")
     assert by_lot["4X3X-A"][3] == "[Dopp_2] Doppelherz 480St"
     assert by_lot["4X3X-A"][9] == datetime(2029, 4, 30)
-    assert [by_lot[x][1] for x in ("HY0001", "HY0002", "HY0003")] == ["ml7", None, None]
+    assert [by_lot[x][1] for x in ("HY0001", "HY0002", "HY0003")] == [X("ml7"), None, None]
     assert "WZ0001" in by_lot and "FL5555" in by_lot             # 只警告的照写
     assert not ({"OM1111", "OM2222", "EL 12"} & set(by_lot))    # 标红的整产品不写
 
     # 没写批次的已有行原样带上（防 Odoo 把未列出的行替换掉）
     lines = [r[1] for r in body if r[1]]
-    for ml in ("ml4", "ml6", "ml8", "ml9"):
+    for ml in (X("ml4"), X("ml6"), X("ml8"), X("ml9")):
         assert ml in lines
-    assert all(r[4] is None and r[5] == 0 for r in body if r[1] in ("ml4", "ml6", "ml8", "ml9"))
-    assert "ml10" not in lines
+    assert all(r[4] is None and r[5] == 0 for r in body if r[1] in (X("ml4"), X("ml6"), X("ml8"), X("ml9")))
+    assert X("ml10") not in lines
 
     check = list(load_workbook(chk).active.iter_rows(values_only=True))[1:]
     msgs = {(c[0], c[2]) for c in check}
@@ -222,4 +227,38 @@ def test_missing_column_is_reported(tmp_path):
     p = tmp_path / "bad.xlsx"
     wb.save(p)
     with pytest.raises(L.InputError, match="move_id"):
+        L.run(str(p), str(tmp_path))
+
+
+def _id_export(path, id_cols):
+    """最小导出：一张单一行；`id_cols` = [(列名, 单头值)]，模拟模板里 External ID 被改名成 `ID`。"""
+    head = ["Operations/ID", "Operations/Stock Move/ID", "Operations/Product",
+            "Operations/Unit of Measure", "Operations/From", "Operations/To",
+            "Operations/Stock Move/Demand", "Reference"] + [h for h, _ in id_cols]
+    wb = Workbook()
+    ws = wb.active
+    ws.append(head)
+    ws.append([X("ml1"), X("mv1"), "[A_1] A", "Units", "V", "WH/Stock", 2, "WH/IN/1"]
+              + [v for _, v in id_cols])
+    ws.append([X("ml2"), X("mv2"), "[B_2] B", "Units", "V", "WH/Stock", 1, None] + [None for _ in id_cols])
+    wb.save(path)
+
+
+@pytest.mark.parametrize("id_cols", [
+    [("ID", X("stock_picking_433727_9a35dba9")), ("ID", "433727")],   # 2026-10-13 实测：两列同名
+    [("ID", "433727"), ("ID", X("stock_picking_433727_9a35dba9"))],   # 顺序反过来也挑对
+    [("ID", X("stock_picking_433727_9a35dba9"))],                     # 只有改了名的那列
+])
+def test_picking_id_column_named_ID(tmp_path, id_cols):
+    p = tmp_path / "exp.xlsx"
+    _id_export(p, id_cols)
+    pk = L.read_export(load_workbook(p).active)
+    assert list(pk) == [X("stock_picking_433727_9a35dba9")]
+    assert len(pk[X("stock_picking_433727_9a35dba9")]["moves"]) == 2
+
+
+def test_numeric_id_only_is_rejected(tmp_path):
+    p = tmp_path / "exp.xlsx"
+    _id_export(p, [("ID", 433727)])
+    with pytest.raises(L.InputError, match="database numbers.*picking_id"):
         L.run(str(p), str(tmp_path))
