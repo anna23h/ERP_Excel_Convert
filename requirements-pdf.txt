@@ -1,0 +1,3 @@
+# 客户 Bestellung PDF → SO 导入表 so_import/so_from_pdf.py 专用，按需单独装：
+#   pip install -r requirements-pdf.txt
+pdfplumber

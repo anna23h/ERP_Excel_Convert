@@ -24,6 +24,7 @@
 | `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它近 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
+| `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
@@ -534,6 +535,25 @@ VO Test Order 是虚拟库存映射测试单，单价恒为 0，不剔会把最�
 故只按 `Alibaba` 子串匹配、不写全名。
 **一张采购单里同一产品拆成的几行逐行保留**（实测 P11255 的 20 件 + 120 件）——
 这是收集表，合并就等于替人做了判断。
+
+## SO 导入表（客户 Bestellung PDF → Odoo 销售单）
+
+`so_import/so_from_pdf.py`。客户发来 Bestellung PDF，在 Odoo 建好空 SO 后导出一张模板（表头即导入列名，
+第 2 行带该 SO 的 `ID` / `Order Reference` / `Customer`），脚本把 PDF 明细填进去，产出
+`output/YYYYMMDD/{SO号}_import_{PDF名}.xlsx`，可直接导入。跑法见 [运行指令 · 十四](启动说明/运行指令.md)；
+Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
+
+- **PZN 是唯一连接键，绝不按品名兜底**。PDF 的 PZN 补足 8 位，与 Odoo `product.product.pzn` 精确比对
+  （含已归档品），取 `__export__` 外部 ID 写进 `Order Lines/Product/ID`；`Internal Reference` 留空。
+- **匹配异常整表不出**（退出码 2）：查不到 / 命中多个（常见单品 + `[2 Packs]` 组合装）都列出来，
+  由人决定后用 `--exclude PZN` 剔除、`--pick PZN=外部ID` 指定，再重跑。
+- **只用 Odoo API，不吃产品主数据 xlsx**：2026-10-13 实测 0730 快照 13 个 PZN 查不到 10 个，API 找回 8 个
+  （新建的 `Temp_` 临时品）。这类临时品常 `sale_ok=False`，脚本出表后单独警告。
+- `Unit Price` = PDF `Netto` × 1.19，**全精度不四舍五入**。出表后打印核对表与合计核对：对方系统按行先
+  四舍五入到 2 位再求和，与全精度合计差几厘属正常，脚本逐行列出舍入差。
+- **只支持目前这一家的 Bestellung 版式**。护栏：抽出的行 Nettosumme 合计必须等于印的 `Summe`，
+  否则判为版式不认识、拒绝出表（不会静默漏行）。
+- 依赖 `pdfplumber` 不进主 requirements（同事不用这条），按需 `pip install -r requirements-pdf.txt`。
 
 ## 采购对账（算法就绪，待验证）
 
