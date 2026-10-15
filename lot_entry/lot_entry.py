@@ -85,11 +85,13 @@ def month_end(y, m):
 def parse_mhd(val):
     """→ (date, None) 或 (None, 错误说明)。空值返回 (None, None)。
 
-    认：MM.YY（操作员习惯）/ MM.YYYY / DD.MM.YYYY / YYYY-MM-DD / YYYY-MM，分隔符 . / - 都行，
-    月份可一位。只有月份 → 当月最后一天。
+    认：MM.YY（操作员习惯）/ MM.YYYY / DD.MM.YYYY / DD.MM.YY / YYYY-MM-DD / YYYY-MM，分隔符 . / - 都行，
+    日、月可一位。只有月份 → 当月最后一天。
 
     MM.YY 无歧义（ISSUES R4）：MHD 在未来，两位年 ≥ 26 > 12，不可能被读成「日.月」的月份。
     YY.MM（`28.05`）同样无歧义，但不是操作员习惯——用户定**报错**并提示改写，只认一种习惯。
+    DD.MM.YY（照抄包装全日期，ISSUES R6）：三段两位理论上也能读成 YY.MM.DD，但德式只有日.月.年一种，
+    用户定**只按 DD.MM.YY 读、不提示**；笔误靠已过期 / 超 10 年检查兜底。
     """
     if val is None or (isinstance(val, str) and not val.strip()):
         return None, None
@@ -118,11 +120,13 @@ def parse_mhd(val):
             return month_end(nums[0], nums[1]), None
         if len(parts) == 3 and lens[2] == 4 and max(lens[:2]) <= 2:    # DD.MM.YYYY
             return date(nums[2], nums[1], nums[0]), None
+        if len(parts) == 3 and max(lens) <= 2:                         # DD.MM.YY
+            return date(2000 + nums[2], nums[1], nums[0]), None
         if len(parts) == 3 and lens[0] == 4 and max(lens[1:]) <= 2:    # YYYY-MM-DD
             return date(nums[0], nums[1], nums[2]), None
     except ValueError:
         return None, "MHD is not a real date: %r" % val
-    return None, "MHD not recognised (use MM.YY, MM.YYYY or DD.MM.YYYY): %r" % val
+    return None, "MHD not recognised (use MM.YY, MM.YYYY, DD.MM.YY or DD.MM.YYYY): %r" % val
 
 
 def name_mhd_months(name):

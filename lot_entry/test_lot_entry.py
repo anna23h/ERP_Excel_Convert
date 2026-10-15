@@ -25,6 +25,9 @@ import lot_entry as L  # noqa: E402
     ("05.28", date(2028, 5, 31)),           # 操作员习惯 MM.YY
     ("5/28", date(2028, 5, 31)),
     ("02.28", date(2028, 2, 29)),
+    ("31.10.29", date(2029, 10, 31)),       # DD.MM.YY 照抄包装全日期（R6）
+    ("1.6.28", date(2028, 6, 1)),
+    ("27-11-28", date(2028, 11, 27)),
     (" 12 . 2027 ", date(2027, 12, 31)),
     (datetime(2028, 3, 1), date(2028, 3, 1)),
 ])
@@ -32,7 +35,7 @@ def test_parse_mhd_ok(raw, want):
     assert L.parse_mhd(raw) == (want, None)
 
 
-@pytest.mark.parametrize("raw", ["28.05", "13.28", "13.2027", "31.02.2028", "2027", "11,2027x", 11.2027])
+@pytest.mark.parametrize("raw", ["28.05", "13.28", "13.2027", "31.02.2028", "31.02.28", "2027", "11,2027x", 11.2027])
 def test_parse_mhd_rejects(raw):
     d, err = L.parse_mhd(raw)
     assert d is None and err
@@ -45,6 +48,12 @@ def test_parse_mhd_yy_mm_hint():
 
 def test_mhd_too_far_ahead_is_error():
     b = dict(row=3, name="X", soll=1, entries=[(3, "AB1234", "05.82", None)])
+    lots, issues = L.check_block(b)
+    assert any(lvl == "ERROR" and "years ahead" in m for lvl, _, m in issues)
+
+
+def test_mhd_dd_mm_yy_too_far_ahead_is_error():
+    b = dict(row=3, name="X", soll=1, entries=[(3, "AB1234", "15.09.82", None)])
     lots, issues = L.check_block(b)
     assert any(lvl == "ERROR" and "years ahead" in m for lvl, _, m in issues)
 
