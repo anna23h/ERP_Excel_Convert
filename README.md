@@ -25,6 +25,7 @@
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它近 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
+| `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
@@ -557,6 +558,24 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
 - **只支持目前这一家的 Bestellung 版式**。护栏：抽出的行 Nettosumme 合计必须等于印的 `Summe`，
   否则判为版式不认识、拒绝出表（不会静默漏行）。
 - 依赖 `pdfplumber` 不进主 requirements（同事不用这条），按需 `pip install -r requirements-pdf.txt`。
+
+## JD 问题包裹 SAD 归类（荷兰出口申报单 → POE 声明）
+
+`sad_export/sad_batch.py`。京东直邮小包裹每月一批荷兰出口申报单（SAD）：`declaration.xlsx`
+（`TrackingId | DeclarationUcr | FileName`）+ 每行一份 `SAD-<TrackingId>-<时间戳>.pdf`，正常单 3 份。
+没有出境确认的包裹要出具 POE 声明。跑法见 [运行指令 · 十五](启动说明/运行指令.md)；
+Claude 侧流程见 `.claude/skills/SAD水印归类/SKILL.md`。
+
+- **源文件夹只读，产出一律复制**到输出目录：`待处理/`（问题包裹）、`正常/`（每个 TrackingId 一份带
+  `Exit Confirmed` 水印的 PDF，多份取时间戳最新）、`Export statement - <输出目录名>.xlsx`（复制模板，
+  只填「无水印需要POE声明-VP」，Sheet2 不动）。输出目录已存在则拒绝，不覆盖。
+- **问题包裹 = declaration 里 TrackingId 只出现 1 次**；脚本同时解每份 PDF 内容流查水印，要求两者完全一致。
+  识别水印不靠文件名：2026-10 批水印件恒为按时间戳第 3 份、同单最大，但这只是规律，「最大」只作交叉核对。
+- **任一异常整批不出**（退出码 2）：缺 declaration / 列名不同 / 与磁盘对不上、两套判定不一致、
+  问题包裹 > 3%（往批 1.0%、0.38%）、问题包裹 SAD 多于 1 个 Artikelen、字段缺失或格式异常。
+- 字段以 `pdftotext -layout` 为主、PDF 内容流坐标为独立交叉核对，两者必须相同；金额 / 重量照抄德式逗号、以文本写入。
+  `verify` 子命令用上一批成品逐格回归，PDF 版式可能变了时先跑。
+- 依赖只有 `openpyxl` + 系统 `pdftotext`（Mac `brew install poppler`；Windows Git 自带）。不进 requirements。
 
 ## 采购对账（算法就绪，待验证）
 
