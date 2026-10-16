@@ -233,13 +233,7 @@ class App:
                   style="Field.TLabel").pack(side="left")
         ttk.Entry(fr4, textvariable=self.pl_spare, width=10).pack(side="left", padx=6)
         self._hint(t4, "每个 SKU 底下多留几行空行，供仓库拆批次号/保质期(默认 2)。")
-        ttk.Label(t4, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="产出照抄成品箱单排版：品名/SKU/条码/HS/原产国由脚本填，"
-                       "托盘号/箱号/箱规/箱数/毛重/尺寸/体积重留空给仓库手填"
-                       "(批次号/保质期：出库单导出自动填，SO 导出留空)。"
-                       "Quantity total 预填订购量，最右『核对』列 =箱规×箱数，仓库填完与之对拍。"
-                       "条码在 ERP 里为空的行会标黄。").pack(anchor="w", pady=(6, 10))
-        self._action_row(t4, "▶  生成箱单", self._run_packing_list)
+        self._action_row(t4, "▶  生成箱单", self._run_packing_list, pady=(10, 0))
 
         # 京东复核标签(45 列导出 → 打印用的 7 列瘦表)
         t5 = ttk.Frame(nb, padding=14); nb.add(t5, text="  京东复核  ")
