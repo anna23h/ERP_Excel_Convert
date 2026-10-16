@@ -4,10 +4,12 @@
 机器可知的列（品名/SKU/条码/HS/原产国）填好，仓库现场才知道的列
 （托盘号/批次号/箱号/箱规/箱数/保质期/毛重/尺寸/体积重）留空给手填。
 
-也吃 stock.picking 出库单的「详细操作」导出（按表头自动认）：这时批次号与
-保质期由 ERP 预留的批次带出，一个批次一行；Quantity total 取各批次数量之和。
+也吃 stock.picking 出库单导出（按表头自动认）：批次号与保质期由 ERP 预留的
+批次带出，一个批次一行。推荐「箱单」导出模板（Stock Moves 往下导，见 ISSUES
+[箱单] D）：数量取 Demand（= SO 行数量），没预留的 SO 行也在，预留不足标黄。
+旧的「详细操作」(Operations/…) 导出也还认，但它只含已预留的行。
 
-Quantity total（L 列）预填 SO 订购量（出库单则为批次数量之和）；
+Quantity total（L 列）预填 SO 订购量（旧出库单格式为批次数量之和）；
 P 列 =SUMPRODUCT(箱规*箱数)，仓库填完与 L 列对拍。
 
 用法:
@@ -78,6 +80,23 @@ P_EXPIRY = ("Operations/Lot/Serial Number/Expiration Date",)
 # 一个产品分两批时会每行各算一遍。
 P_RESERVED = ("Operations/Reserved",)
 P_DONE = ("Operations/Done",)   # 可选：拣货/验证后 Reserved 会归零，这时取 Done
+
+# stock.picking「箱单」导出模板（Stock Moves 往下导，ISSUES [箱单] D）。
+# Stock Moves = move_lines：每个 SO 行一条 move，不论有没有预留，Demand 就是 SO 行数量。
+# 批次挂在其下的 Move Line；但 Move Line/Lot/Serial Number 在导出对话框里展不开，
+# Move Line/Expiration Date 又是 move line 自己的字段（出库恒空），所以效期从并列的
+# Operations/Lot/Serial Number/… 块按 (SKU, 批次号) 查。两块在导出里各自成段、行不对齐。
+M_DEMAND = ("Stock Moves/Demand",)
+M_ID = ("Stock Moves/ID", "Stock Moves/External ID")   # 值都是 __export__.stock_move_…
+M_NAME = ("Stock Moves/Product/Display Name",)
+M_SKU = ("Stock Moves/Product/Internal Reference",)
+M_BARCODE = ("Stock Moves/Product/Barcode",)
+M_HS = ("Stock Moves/Product/HS Code",)
+M_LOT = ("Stock Moves/Move Line/Lot/Serial Number",)
+M_RESERVED = ("Stock Moves/Move Line/Reserved",)
+L_SKU = ("Operations/Product/Internal Reference",)
+L_LOT = ("Operations/Lot/Serial Number",)
+L_EXPIRY = ("Operations/Lot/Serial Number/Expiration Date",)
 EXPIRY_FORMAT = "mm.yyyy"       # 2026-10-16 用户定：只写到月（显示 10.2028）
 
 
@@ -111,6 +130,8 @@ def read_orders(path):
     """
     ws = openpyxl.load_workbook(path, data_only=True).active
     header = [_clean(c.value) for c in ws[1]]
+    if "Stock Moves/Demand" in header:
+        return _read_moves(ws, header)
     if _is_picking(header):
         return _read_picking(ws, header)
 
@@ -150,6 +171,7 @@ def _new_line(sku, name, barcode, hs, qty):
         "hs_defaulted": not hs,
         "qty": qty,
         "lots": [],   # [{"lot", "expiry", "qty"}]，只有出库单导出才有
+        "reserved": None,   # 只有 Stock Moves 模板才有：预留合计，≠ qty 就标黄
     }
 
 
@@ -207,15 +229,80 @@ def _read_picking(ws, header):
                 sku, name or None, _clean(row[idx[P_BARCODE]]),
                 _clean(row[idx[P_HS]]), 0)
         line["qty"] += qty
-        # 同一批次分在两条 move line（不同包裹）时合成一行
-        lot_no = _clean(row[idx[P_LOT]])
-        lot = next((l for l in line["lots"] if l["lot"] == lot_no), None)
-        if lot:
-            lot["qty"] += qty
-        else:
-            line["lots"].append({"lot": lot_no,
-                                 "expiry": _expiry(row[idx[P_EXPIRY]]),
-                                 "qty": qty})
+        _add_lot(line, _clean(row[idx[P_LOT]]), _expiry(row[idx[P_EXPIRY]]), qty)
+    return [o for o in by_no.values() if o["lines"]]
+
+
+def _add_lot(line, lot_no, expiry, qty):
+    """同一批次分在两条 move line（不同包裹 / 同 SKU 两条 move）时合成一行。"""
+    lot = next((l for l in line["lots"] if l["lot"] == lot_no), None)
+    if lot:
+        lot["qty"] += qty
+    else:
+        line["lots"].append({"lot": lot_no, "expiry": expiry, "qty": qty})
+
+
+def _read_moves(ws, header):
+    """「箱单」导出模板：Stock Moves 块出产品与订购量、批次与预留，Operations 块出效期。
+
+    一条 move 在 `Stock Moves/ID` 非空的行开头，其下 ID 为空、批次或预留有值的行是它的
+    其余批次；两项都空的行只属于 Operations 块。没预留的 move 只有一行、批次为 False。
+    """
+    try:
+        idx = {f: _col(header, f) for f in
+               (P_ORDER, M_DEMAND, M_ID, M_NAME, M_SKU, M_BARCODE, M_HS,
+                M_LOT, M_RESERVED)}
+    except ValueError as e:
+        raise ValueError(f"出库单（Stock Moves）导出缺列：{e}\n实际表头：{header}")
+    try:
+        lk = {f: _col(header, f) for f in (L_SKU, L_LOT, L_EXPIRY)}
+    except ValueError as e:
+        hint = ""
+        if "Stock Moves/Move Line/Expiration Date" in header:
+            hint = ("\n导出里的『Stock Moves/Move Line/Expiration Date』是 move line 自己的效期，"
+                    "出库单上恒空；效期要从『Operations/Lot/Serial Number/Expiration Date』取。")
+        raise ValueError(f"出库单导出缺效期块的列：{e}（要按 SKU+批次号查效期）{hint}\n"
+                         f"实际表头：{header}")
+
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    expiry_of = {}
+    for row in rows:
+        lot_no = _clean(row[lk[L_LOT]])
+        if lot_no:
+            expiry_of[(_clean(row[lk[L_SKU]]), lot_no)] = _expiry(row[lk[L_EXPIRY]])
+
+    by_no = {}
+    current = line = None
+    for row in rows:
+        order_no = _clean(row[idx[P_ORDER]])
+        if order_no:
+            current = by_no.setdefault(
+                order_no, {"order": order_no, "kind": "moves", "lines": {}})
+        move_id = _clean(row[idx[M_ID]])
+        lot_no = _clean(row[idx[M_LOT]])
+        reserved = row[idx[M_RESERVED]]
+        if move_id:
+            if current is None:
+                raise ValueError("出库单导出第一条 move 前没有『Source Document』(SO 号)，"
+                                 "无法判断属于哪张单")
+            sku = _clean(row[idx[M_SKU]])
+            if not sku:
+                raise ValueError(f"move {move_id} 没有『Internal Reference』(SKU)")
+            line = current["lines"].get(sku)
+            if not line:
+                name = re.sub(r"^\[[^\]]*\]\s*", "", _clean(row[idx[M_NAME]]) or "")
+                line = current["lines"][sku] = _new_line(
+                    sku, name or None, _clean(row[idx[M_BARCODE]]),
+                    _clean(row[idx[M_HS]]), 0)
+                line["reserved"] = 0
+            line["qty"] += row[idx[M_DEMAND]] or 0   # Demand 只在 move 首行，每条只算一次
+        elif not lot_no and reserved in (None, False):
+            continue   # 只属于 Operations 块的行
+        if line is None:
+            continue
+        line["reserved"] += reserved or 0
+        if lot_no or reserved:
+            _add_lot(line, lot_no, expiry_of.get((line["sku"], lot_no)), reserved or 0)
     return [o for o in by_no.values() if o["lines"]]
 
 
@@ -270,6 +357,10 @@ def _write_head(ws, made_on, so_no):
         ws.column_dimensions[col].width = width
 
 
+def _short(line):
+    return line["reserved"] is not None and line["reserved"] != line["qty"]
+
+
 def _write_line(ws, row, line, spare):
     """一个 SKU 占 max(批次数, 1) 行 + spare 行空行（供仓库按箱拆行）。
 
@@ -303,6 +394,9 @@ def _write_line(ws, row, line, spare):
         # ERP 主数据缺失 → 标黄，提醒回 ERP 补维护而不是在这里手补
         if col in (COL_BARCODE, COL_HS) and not ws.cell(row, col).value:
             ws.cell(row, col).fill = WARN_FILL
+    # 出库单预留合计 ≠ 订购量 → L 列标黄：ERP 里还没备齐，发货前回 Odoo 核对
+    if _short(line):
+        ws.cell(row, COL_QTY).fill = WARN_FILL
 
     for r in range(row, last + 1):
         for col in range(1, len(HEADERS) + 1):
@@ -384,15 +478,29 @@ def run(export, outdir="output", spare=2):
             what = "已拣" if o["used_done"] else "预留"
             n_lots = sum(1 for l in o["lines"].values() for lot in l["lots"] if lot["lot"])
             lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / {n_lots} 个批次"
-                         f" / {what} {qty:g} 件（出库单导出）")
+                         f" / {what} {qty:g} 件（出库单旧格式）")
+        elif o["kind"] == "moves":
+            n_lots = sum(1 for l in o["lines"].values() for lot in l["lots"] if lot["lot"])
+            reserved = sum(l["reserved"] for l in o["lines"].values())
+            lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / {n_lots} 个批次"
+                         f" / 订购 {qty:g} 件，预留 {reserved:g} 件（出库单导出）")
         else:
             lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / 订购 {qty:g} 件")
     lines.append(f"  共 {len(orders)} 张 SO，每行预留 {spare} 行空行")
-    no_lot = sum(1 for o in orders if o["kind"] == "picking"
+    no_lot = sum(1 for o in orders if o["kind"] != "so"
                  for l in o["lines"].values() for lot in l["lots"] if not lot["lot"])
     if no_lot:
-        lines.append(f"  · {no_lot} 行在出库单上没有批次（产品不追踪批次或还没预留），"
+        lines.append(f"  · {no_lot} 行在出库单上没有批次（产品不追踪批次），"
                      f"批次号/保质期留空")
+    short = [(o["order"], l) for o in orders for l in o["lines"].values() if _short(l)]
+    if short:
+        lines.append(f"  ⚠ {len(short)} 个产品在 ERP 里预留 ≠ 订购，Quantity total 已标黄"
+                     f"——发货前回 Odoo 核对这张出库单：")
+        for order_no, l in short:
+            lines.append(f"      {order_no} {l['sku']}: 订购 {l['qty']:g} / 预留 {l['reserved']:g}")
+    if any(o["kind"] == "picking" for o in orders):
+        lines.append("  · 这是旧的『详细操作』导出：只含已预留的行，没预留的 SO 行会整行漏掉，"
+                     "数量也是预留数。建议改用『箱单』导出模板（Stock Moves 往下导）")
     if renamed:
         lines.append(f"  · 同名文件 {name} 已存在，本次另存为 {path.name}（不覆盖）")
     if blanks:

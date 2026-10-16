@@ -225,9 +225,9 @@ class App:
         # 箱单标签页(SO 导出 → 箱单半成品，机器可知的列填好、现场才知道的留空)
         t4 = ttk.Frame(nb, padding=14); nb.add(t4, text="  箱单  ")
         self._file_row(t4, "SO/出库单导出:", self.pl_so)
-        self._hint(t4, "选 ERP 导出的 sale.order 行明细，或出库单(stock.picking)的详细操作导出——"
-                       "后者会自动带出批次号和保质期(导出时批次要选『Lot/Serial Number』，"
-                       "不是『…Name』)。要几张单合并成一张箱单，就一次性导到同一份文件里，脚本自动分单。")
+        self._hint(t4, "选 ERP 导出的 sale.order 行明细，或出库单(stock.picking)用『箱单』导出模板导出的文件——"
+                       "后者会自动带出批次号和保质期，ERP 预留不足的产品数量标黄。"
+                       "要几张单合并成一张箱单，就一次性导到同一份文件里，脚本自动分单。")
         fr4 = ttk.Frame(t4); fr4.pack(fill="x", pady=4)
         ttk.Label(fr4, text="每SKU预留空行:", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
