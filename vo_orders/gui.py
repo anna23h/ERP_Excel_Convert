@@ -224,9 +224,10 @@ class App:
 
         # 箱单标签页(SO 导出 → 箱单半成品，机器可知的列填好、现场才知道的留空)
         t4 = ttk.Frame(nb, padding=14); nb.add(t4, text="  箱单  ")
-        self._file_row(t4, "SO 导出:", self.pl_so)
-        self._hint(t4, "选 ERP 导出的 sale.order 行明细。要几张 SO 合并成一张箱单，"
-                       "就在 ERP 里把它们一次性导到同一份文件里——脚本按『Order Reference』自动分单。")
+        self._file_row(t4, "SO/出库单导出:", self.pl_so)
+        self._hint(t4, "选 ERP 导出的 sale.order 行明细，或出库单(stock.picking)的详细操作导出——"
+                       "后者会自动带出批次号和保质期(导出时批次要选『Lot/Serial Number』，"
+                       "不是『…Name』)。要几张单合并成一张箱单，就一次性导到同一份文件里，脚本自动分单。")
         fr4 = ttk.Frame(t4); fr4.pack(fill="x", pady=4)
         ttk.Label(fr4, text="每SKU预留空行:", width=self.LABEL_W, anchor="e",
                   style="Field.TLabel").pack(side="left")
@@ -234,8 +235,9 @@ class App:
         self._hint(t4, "每个 SKU 底下多留几行空行，供仓库拆批次号/保质期(默认 2)。")
         ttk.Label(t4, style="Hint.TLabel", justify="left", wraplength=520,
                   text="产出照抄成品箱单排版：品名/SKU/条码/HS/原产国由脚本填，"
-                       "托盘号/批次号/箱号/箱规/箱数/保质期/毛重/尺寸/体积重留空给仓库手填。"
-                       "Quantity total 写成公式 =箱规×箱数，仓库填完自动出数。"
+                       "托盘号/箱号/箱规/箱数/毛重/尺寸/体积重留空给仓库手填"
+                       "(批次号/保质期：出库单导出自动填，SO 导出留空)。"
+                       "Quantity total 预填订购量，最右『核对』列 =箱规×箱数，仓库填完与之对拍。"
                        "条码在 ERP 里为空的行会标黄。").pack(anchor="w", pady=(6, 10))
         self._action_row(t4, "▶  生成箱单", self._run_packing_list)
 
@@ -379,7 +381,7 @@ class App:
     def _run_packing_list(self):
         path = self.pl_so.get().strip()
         if not path:
-            messagebox.showwarning("缺少文件", "请先选择 ERP 导出的 SO 文件")
+            messagebox.showwarning("缺少文件", "请先选择 ERP 导出的 SO 或出库单文件")
             return
         try:
             spare = int(self.pl_spare.get().strip() or 2)
@@ -389,7 +391,7 @@ class App:
         if spare < 0:
             messagebox.showwarning("预留空行填错", "『每SKU预留空行』不能是负数")
             return
-        self._write("【箱单】读 SO 导出 → 生成箱单半成品…")
+        self._write("【箱单】读 SO/出库单导出 → 生成箱单半成品…")
         outdir = self.outdir.get()
 
         def work():
