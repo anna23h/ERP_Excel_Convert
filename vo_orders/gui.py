@@ -5,7 +5,7 @@
 阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库。
 阶段二：选 销售ERP + 仓库返回文件(有货/无货) + 出库数据 → 生成 系统履约单号/发货表/账单/出库。
 两阶段在界面上各自独立输入，互不依赖；阶段二无需天猫数据。
-另有「货代合并」「箱单」「京东复核」三个标签页，与拉单两阶段互不相干，各自独立使用。
+另有「货代合并」「箱单」「京东复核」「入库批次」四个标签页，与拉单两阶段互不相干，各自独立使用。
 """
 import os
 import sys
@@ -26,6 +26,7 @@ import build_excel  # noqa: E402
 import stage2       # noqa: E402
 import jd_packing_review  # noqa: E402
 from packing_list import packing_list  # noqa: E402
+from lot_entry import lot_entry  # noqa: E402
 
 EXCEL_TYPES = [("Excel / CSV", "*.xlsx *.xls *.csv"), ("所有文件", "*.*")]
 
@@ -91,6 +92,7 @@ class App:
         self.pl_spare = tk.StringVar(value="2")  # 每 SKU 预留空行
 
         self.jd = tk.StringVar()               # 京东复核：装箱复核历史查询导出(可多份)
+        self.lot = tk.StringVar()              # 入库批次：Odoo 入库单导出 或 填好的录入表
 
         self._build_ui()
 
@@ -247,6 +249,17 @@ class App:
                        "页脚带页码、表头每页重复——打印前不用再调版。"
                        "『备注』整列留空，给仓库现场手写。").pack(anchor="w", pady=(6, 10))
         self._action_row(t5, "▶  生成复核表", self._run_jd_review)
+
+        # 入库批次标签(ISSUES: [入库批次] R8)：同一个入口两用，脚本按文件内容自动分流
+        t6 = ttk.Frame(nb, padding=14); nb.add(t6, text="  入库批次  ")
+        self._file_row(t6, "入库单/录入表:", self.lot)
+        self._hint(t6, "两种文件都选这里，程序自动认：")
+        ttk.Label(t6, style="Hint.TLabel", justify="left", wraplength=520,
+                  text="① Odoo 入库单导出(Inventory → Transfers，用存好的导出模板) → 生成录入表 Lot_Entry，"
+                       "打印去对货、手写批次/MHD，再照抄进这张表。\n"
+                       "② 填好的 Lot_Entry 录入表 → 生成 Lot_Import(导回 Odoo) + Lot_Check(核对清单)。"
+                       "核对清单里标红的产品不进导入表，导入前先看一眼。").pack(anchor="w", pady=(6, 10))
+        self._action_row(t6, "▶  开始生成", self._run_lot_entry)
 
     # ---------- helpers ----------
     def _pick_file(self, var):
@@ -417,6 +430,35 @@ class App:
                 lines.append(f"跳过 {skipped} 份已经转过的 …new… 文件")
             for src in files:
                 lines.append("已生成: " + jd_packing_review.convert(src, outdir=outdir))
+            return lines
+        self._bg(work)
+
+    # ---------- 入库批次 ----------
+    def _run_lot_entry(self):
+        path = self.lot.get().strip()
+        if not path:
+            messagebox.showwarning("缺少文件", "请先选择 Odoo 入库单导出，或填好的 Lot_Entry 录入表")
+            return
+        self._write("【入库批次】读文件，自动判断：入库单导出 → 录入表 / 录入表 → 导入表 + 核对清单…")
+        outdir = self.outdir.get()
+
+        def work():
+            os.makedirs(outdir, exist_ok=True)
+            try:
+                kind, files, summary = lot_entry.run(path, dest=outdir)
+            except lot_entry.InputError as e:   # 脚本的报错是英文(兼顾独立启动器的控制台)，补一句中文
+                raise ValueError("文件内容不对——既不是可用的 Odoo 入库单导出，也不是录入表。\n" + str(e))
+            lines = ["模式: " + ("入库单导出 → 录入表" if kind == "entry"
+                                 else "录入表 → 导入表 + 核对清单")]
+            lines += summary.splitlines()
+            lines += ["已生成: " + f for f in files]
+            # 只看日志末尾的「✅ 完成」容易直接去导入：有 ERROR 就弹窗点明去看核对清单
+            errors = sum(1 for ln in summary.splitlines() if ln.lstrip().startswith("ERROR"))
+            if errors:
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "有产品没进导入表",
+                    f"{errors} 处错误，相关产品没写进导入表。\n"
+                    "请打开 Lot_Check 核对清单看红色行，改好录入表后再生成一次。"))
             return lines
         self._bg(work)
 

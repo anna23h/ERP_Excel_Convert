@@ -18,7 +18,7 @@
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
-| `lot_entry/` | **入库批次录入**（Odoo 入库单导出 → 操作员录入表 → 批次/效期/数量导回 Odoo 的导入表 + 核对清单；一个入口按文件内容自动分流） | 拖 xlsx 到 `Lot-Entry-Windows.bat` / 双击 `Lot-Entry-Mac.command`；或 `python3 lot_entry/lot_entry.py <xlsx>` | [lot_entry/README.md](lot_entry/README.md) | 建设中（2026-10-11 起，待仓库实测） |
+| `lot_entry/` | **入库批次录入**（Odoo 入库单导出 → 操作员录入表 → 批次/效期/数量导回 Odoo 的导入表 + 核对清单；一个入口按文件内容自动分流） | VO 拉单 GUI 的「入库批次」标签页；拖 xlsx 到 `Lot-Entry-Windows.bat` / 双击 `Lot-Entry-Mac.command`；或 `python3 lot_entry/lot_entry.py <xlsx>` | [lot_entry/README.md](lot_entry/README.md) | 建设中（2026-10-11 起，待仓库实测） |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐） | `python3 make_labels.py <储位.xlsx / codes.txt>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
 | `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
@@ -71,7 +71,7 @@ C 端口径（`--ref-contains VO,GW`）算出来 **45 个**——口径混用会
 
 **所有入口与 CLI 参数的一站式清单**（详版，51 KB）：[启动说明/运行指令.md](启动说明/运行指令.md)。
 
-**入库批次录入是「同事不碰 ERP 回写」的有意例外**（2026-10-11 用户定）：它给仓库操作员产 Odoo 导入表，但独立启动器、不进 VOTool，且导入仍由人在 Odoo 里手工点——脚本不直写 ERP。
+**入库批次录入是「同事不碰 ERP 回写」的有意例外**（2026-10-11 用户定）：它产 Odoo 导入表，但导入仍由人在 Odoo 里手工点——脚本不直写 ERP。原定独立启动器、不进 VOTool；2026-10-19 用户改为**也进 VOTool**（「入库批次」标签页，ISSUES R8），独立启动器保留给仓库操作员拖拽用。
 
 **两个 GUI 是刻意分开的，不是忘了合并**：`vo_orders/gui.py`（VOTool）给办公室同事用，
 里面**没有任何 ERP 回写入口**；`erp_writeback_gui.py` 是个人月频维护工具，产 ERP 导入文件。

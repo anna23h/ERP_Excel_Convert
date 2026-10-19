@@ -9,6 +9,7 @@ Odoo 入库单导出 ──①──> Lot_Entry_*.xlsx ──操作员填──>
 
 一个入口两用，**按文件内容自动判断**走 ① 还是 ②（录入表里有隐藏 sheet `_meta` 作标记）：
 
+- VOTool（`vo_orders/gui.py`）「入库批次」标签页：选文件 → 开始生成；产出写界面顶部共用「输出目录」，有 ERROR 时弹窗提醒（ISSUES R8）。
 - Windows：把 xlsx **拖到 `Lot-Entry-Windows.bat` 上**，或双击后选文件。跑完窗口停住看摘要，并自动打开产出目录。
 - Mac：双击 `Lot-Entry-Mac.command` 选文件；或 `python3 lot_entry/lot_entry.py <xlsx> [--no-open]`。
 - 产出一律写 `output/YYYYMMDD/`，文件名带时间戳，不覆盖。
