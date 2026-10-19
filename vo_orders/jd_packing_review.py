@@ -194,8 +194,8 @@ def convert(src, dst=None, outdir=None):
 def is_generated(path):
     """是不是本脚本自己产出的 new 版(或 Excel 的 ~$ 临时文件)。
 
-    GUI 也用它：操作员在文件对话框里全选，很容易把上一轮的 new 版一起选进来，
-    而 new 版已经只剩 7 列，再转一次会撞「原始表缺少列」直接报错。
+    传目录时用它跳过上一轮的 new 版：new 版已经只剩 7 列，再转一次会撞
+    「原始表缺少列」直接报错。(原先 VOTool 的京东复核页也用它，该页 2026-10-19 已去掉。)
     """
     name = os.path.basename(path)
     if not name.lower().endswith(".xlsx") or name.startswith("~$"):

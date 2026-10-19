@@ -14,7 +14,7 @@
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `sales_insight/safety_writeback.py` | **安全库存直写**（运营的表 + 产品主数据 → `Safety Stock` 回写表，**不要销售数据**） | `ERP回写-Mac.command` →「安全库存直写」页；或 `python3 sales_insight/safety_writeback.py <安全库存表.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写三条销售分析--安全库存直写--fs-回写) + 脚本 docstring | 在用 |
-| `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | VO 拉单 GUI 的「京东复核」标签页；或 `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>` | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
+| `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`（2026-10-19 起不再进 VOTool） | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
 | `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
@@ -402,8 +402,8 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 ## 京东装箱复核瘦身表
 
 `vo_orders/jd_packing_review.py`。京东后台导出的「装箱复核历史查询」45 列，仓库现场只看 5 列 +
-一个序号。入口：VO 拉单 GUI 的「京东复核」标签页（可一次多选、批量转），或
-`python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`。产出列：
+一个序号。入口：`python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`
+（VOTool 的「京东复核」标签页 2026-10-19 已去掉，脚本本身不变）。产出列：
 序号 | 运单号（随单）| 商品编号 | 商品条码 | 商品名称 | 复核数量 | 备注（留白给现场手写）。
 
 **在原文件副本上删列 + 插列，不新建工作簿**：边框、字体、条码列的文本格式原样保留。
