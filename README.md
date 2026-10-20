@@ -25,6 +25,7 @@
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它近 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
+| `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；单价 AEP 净价、税按 Code 分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
 | `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
@@ -558,6 +559,28 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
 - **只支持目前这一家的 Bestellung 版式**。护栏：抽出的行 Nettosumme 合计必须等于印的 `Summe`，
   否则判为版式不认识、拒绝出表（不会静默漏行）。
 - 依赖 `pdfplumber` 不进主 requirements（同事不用这条），按需 `pip install -r requirements-pdf.txt`。
+
+## PO 导入表（批发商 Rechnung/Lieferschein PDF → Odoo 采购单）
+
+`po_import/po_from_pdf.py`，与上节 SO 导入表同构。批发商随货的 Rechnung/Lieferschein PDF，在 Odoo 建好空 PO
+（选好供应商）后导出一张模板（第 2 行带 `ID` / `Order Reference` / `Vendor`，**须勾上 `Order Lines/Taxes`**，
+数量**勾 `Quantity` 不是 `Total Quantity`**——后者是只读计算字段，导进去无效；建议也勾 `Vendor Reference`），产出 `output/YYYYMMDD/{PO号}_import_{PDF名}.xlsx`。跑法见
+[运行指令 · 十六](启动说明/运行指令.md)；Claude 侧流程见 `.claude/skills/PO导入表/SKILL.md`。
+
+- 填值（2026-10-20 用户定，与该供应商历史 PO 的手工口径一致）：`Product/ID` ← PZN 匹配的外部 ID；
+  `Quantity` ← `Menge`；`Unit Price` ← `AEP`（**净价，不乘税**）；`Taxes` ← Code 含 `M` → `7% Vorsteuer`，否则 `19% Vorsteuer`
+  （模板是 `…/Taxes/ID` 列就写 SKR03 外部 ID，是 `…/Taxes` 列就写名称）；`Vendor Reference` ← PDF 单号。
+- PZN 匹配、`--exclude` / `--pick` 规矩照搬 SO 导入表。多命中时异常清单附各候选的 Internal Reference 与历史采购行数
+  （常见：基础品 + `_VO` / `_GW` 渠道副本，副本历史采购为 0），**只作参考，由人决定**。
+- **四道解析护栏**，任一不符整表不出：逐行 AEP × Menge = Gesamt；Σ Gesamt = 印的 Warenwert gesamt = Endsumme；
+  行数 / 件数 = 印的 `Anz. Pos.`；`M` 行合计 = 印的 ermäß. MwSt 税基、其余 = volle MwSt 税基（税率归类有独立校验）。
+- **防重**：Odoo 里已有 `Vendor Reference` = 本单号的 PO 就停。
+- 模板表头**界面名与技术名都认**（`Order Lines/Quantity` ≡ `order_line/product_qty` 等）；产品列若导出成
+  `order_line/product_id/.id` 就写产品数据库 ID。模板**必须有 PO 的 `ID`/`id` 列**——没有它 Odoo 导入会新建一张 PO，
+  而不是填进建好的草稿（导出时勾「兼容导入的导出」即自带）。
+- 产品在 Odoo 的默认进项税与 PDF 税码不一致时**只提示不拦**（表里按 PDF 写），提醒去核产品主数据。
+  2026-10-20 查：该供应商历史 136 行 PO 的税与产品默认税全部一致，样本 9 行也一致。
+- 只支持目前这一家批发商的版式；依赖 `pdfplumber`（`requirements-pdf.txt`）。
 
 ## JD 问题包裹 SAD 归类（荷兰出口申报单 → POE 声明）
 
