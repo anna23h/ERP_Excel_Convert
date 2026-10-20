@@ -53,14 +53,14 @@ def _lines():
     return P.parse_text([PAGE])[0]
 
 
-def _cand(xid, n=0, taxes=(P.TAX_FULL[1],), dbid=0):
-    return (xid, "ERP " + xid, "REF_" + xid, True, n, taxes, dbid)
+def _cand(xid, n=0, taxes=(P.TAX_FULL[1],), dbid=0, ref=None):
+    return (xid, "ERP " + xid, ref or "Base_" + xid.split(".")[-1], True, n, taxes, dbid)
 
 
 def test_match_unique_none_multi_and_pick():
     lines = _lines()
     cands = {"17173992": [_cand("__export__.a")],
-             "02758221": [_cand("__export__.b", 75), _cand("__export__.b_vo")]}
+             "02758221": [_cand("__export__.b", 75), _cand("__export__.b2")]}
     problems = P.match(lines, cands, {})
     assert lines[0]["xmlid"] == "__export__.a"
     assert [(l["pzn"], len(h)) for l, h in problems] == [("02758221", 2), ("20101140", 0)]
@@ -155,3 +155,37 @@ def test_template_prefers_external_product_id(tmp_path, monkeypatch):
     rows = list(load_workbook(_run(tmp_path, monkeypatch, _template(tmp_path, cols))).active
                 .iter_rows(values_only=True))
     assert rows[1][4] == "__export__.a" and rows[1][-1] is None
+
+
+@pytest.mark.parametrize("code, variant", [
+    ("Orthomol_17209603", False), ("Orthomol_17209603_GW", True), ("Legalon_11548215_VO", True),
+    ("Orthomol_17209603x2_GW", True), ("Avene_00670485x2", True), ("Babix_04459669x3_VO", True),
+    ("Betaisodona_00721478 ", False), ("", False),
+])
+def test_is_variant(code, variant):
+    assert P.is_variant(code) is variant
+
+
+def test_match_drops_variants():
+    cands = {
+        # 基础品 + 两个副本 → 自动用基础品
+        "17173992": [_cand("__export__.a", ref="A_17173992"), _cand("__export__.a_gw", ref="A_17173992_GW"),
+                     _cand("__export__.a2", ref="A_17173992x2_GW")],
+        # 只有副本 → 停，不退回去用副本
+        "02758221": [_cand("__export__.b_vo", ref="B_02758221_VO"), _cand("__export__.b_gw", ref="B_02758221_GW")],
+        # 两个基础品 + 一个副本 → 停，只列基础品
+        "20101140": [_cand("__export__.c", ref="C_20101140"), _cand("__export__.c_old", ref="C_123456"),
+                     _cand("__export__.c_vo", ref="C_20101140_VO")],
+    }
+    lines = _lines()
+    problems = P.match(lines, cands, {})
+    assert lines[0]["xmlid"] == "__export__.a"
+    assert [h[0] for h in lines[0]["variants"]] == ["__export__.a_gw", "__export__.a2"]
+    assert [(l["pzn"], [h[0] for h in b]) for l, b in problems] == [
+        ("02758221", []), ("20101140", ["__export__.c", "__export__.c_old"])]
+
+    lines = _lines()
+    problems = P.match(lines, cands, {"20101140": "__export__.c_old"})
+    assert lines[2]["xmlid"] == "__export__.c_old" and [l["pzn"] for l, _ in problems] == ["02758221"]
+    with pytest.raises(P.StopError, match="副本"):
+        P.match(_lines(), cands, {"02758221": "__export__.b_vo"})

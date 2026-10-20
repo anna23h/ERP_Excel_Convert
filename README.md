@@ -570,8 +570,10 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
 - 填值（2026-10-20 用户定，与该供应商历史 PO 的手工口径一致）：`Product/ID` ← PZN 匹配的外部 ID；
   `Quantity` ← `Menge`；`Unit Price` ← `AEP`（**净价，不乘税**）；`Taxes` ← Code 含 `M` → `7% Vorsteuer`，否则 `19% Vorsteuer`
   （模板是 `…/Taxes/ID` 列就写 SKR03 外部 ID，是 `…/Taxes` 列就写名称）；`Vendor Reference` ← PDF 单号。
-- PZN 匹配、`--exclude` / `--pick` 规矩照搬 SO 导入表。多命中时异常清单附各候选的 Internal Reference 与历史采购行数
-  （常见：基础品 + `_VO` / `_GW` 渠道副本，副本历史采购为 0），**只作参考，由人决定**。
+- PZN 匹配、`--exclude` / `--pick` 规矩照搬 SO 导入表，另加一条：**采购只用基础品**（2026-10-20 用户定）。
+  Internal Reference 带渠道 / 组合装尾缀（`_VO` / `_GW` / `xN` / `*N` 及组合，判定复用 `common/po._po_base_sku`）的候选
+  自动排除，核对表后列出排除了哪些。排除后恰好 1 个基础品就直接用；**只剩副本**（没有基础品）就停、不退回去用副本；
+  仍有 ≥2 个基础品才交人 `--pick`（只能选基础品）。2026-10-20 全库扫：429 个多命中 PZN 里 332 个因此变唯一。
 - **四道解析护栏**，任一不符整表不出：逐行 AEP × Menge = Gesamt；Σ Gesamt = 印的 Warenwert gesamt = Endsumme；
   行数 / 件数 = 印的 `Anz. Pos.`；`M` 行合计 = 印的 ermäß. MwSt 税基、其余 = volle MwSt 税基（税率归类有独立校验）。
 - **防重**：Odoo 里已有 `Vendor Reference` = 本单号的 PO 就停。

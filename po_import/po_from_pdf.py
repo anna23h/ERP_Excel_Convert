@@ -8,6 +8,7 @@
 
 同构 `so_import/so_from_pdf.py`，规矩照搬：**PZN 是唯一连接键，绝不按品名兜底**；
 匹配不到 / 命中多个产品就整张表不出、退出码 2，剔除（`--exclude`）与多选一（`--pick`）由用户定。
+**采购只用基础品**：带渠道 / 组合装尾缀的候选先自动排除（`is_variant`），见 ISSUES [PO 导入] B。
 
 填值口径（2026-10-20 用户定，与该供应商历史 PO 的手工口径一致）：
     Order Lines/Product/ID   ← 匹配到的外部 ID
@@ -42,6 +43,7 @@ for _stream in (sys.stdout, sys.stderr):
 from openpyxl import load_workbook
 
 from common.xlsx import unique_path
+from common.po import _po_base_sku
 from so_import.so_from_pdf import StopError, apply_exclude, de_num, pzn8, read_pdf
 
 HEAD_COLS = ("ID", "Order Reference", "Vendor")
@@ -132,10 +134,18 @@ def parse_text(page_texts):
     return lines, docs.pop()
 
 
+def is_variant(code):
+    """Internal Reference 带渠道 / 组合装尾缀（`_VO`、`_GW`、`xN`、`*N` 及组合）= 副本，采购不用。
+    判定复用全仓 SKU 归一口径 `common/po._po_base_sku`（ISSUES [PO 导入] B，2026-10-20 用户定）。"""
+    code = (code or "").strip()
+    return _po_base_sku(code) != code
+
+
 def match(lines, candidates, pick):
     """candidates: pzn → odoo_candidates 的元组。pick: pzn → 外部ID。
 
-    命中恰好 1 个才填进行里；否则收进 problems 原样返回，不猜。
+    采购只用基础品：先排除副本（`is_variant`），剩下恰好 1 个基础品才填进行里，被排除的副本记在
+    `l["variants"]` 供核对表留痕；0 个或多个基础品收进 problems 原样返回，不猜、也不退回去用副本。
     """
     pick = {pzn8(k): v for k, v in pick.items()}
     unknown = set(pick) - {l["pzn"] for l in lines}
@@ -144,16 +154,20 @@ def match(lines, candidates, pick):
     problems = []
     for l in lines:
         hits = candidates.get(l["pzn"], [])
+        base = [h for h in hits if not is_variant(h[2])]
+        l["variants"] = [h for h in hits if is_variant(h[2])]
         if l["pzn"] in pick:
-            chosen = [h for h in hits if h[0] == pick[l["pzn"]]]
+            if pick[l["pzn"]] in {h[0] for h in l["variants"]}:
+                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这是渠道 / 组合装副本，采购只用基础品。")
+            chosen = [h for h in base if h[0] == pick[l["pzn"]]]
             if not chosen:
-                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这个外部 ID 不在该 PZN 的命中里 "
-                                f"{[h[0] for h in hits]}")
-            hits = chosen
-        if len(hits) == 1:
-            l["xmlid"], l["erp_name"], _, l["active"], _, l["erp_taxes"], l["dbid"] = hits[0]
+                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这个外部 ID 不在该 PZN 的基础品命中里 "
+                                f"{[h[0] for h in base]}")
+            base = chosen
+        if len(base) == 1:
+            l["xmlid"], l["erp_name"], _, l["active"], _, l["erp_taxes"], l["dbid"] = base[0]
         else:
-            problems.append((l, hits))
+            problems.append((l, base))
     return problems
 
 
@@ -270,6 +284,11 @@ def report(lines, dropped):
         for l in off:
             want = (TAX_REDUCED if l["reduced"] else TAX_FULL)[1]
             print(f"    {l['pzn']} | {l['erp_name']} | PDF → {want} | 产品默认 {', '.join(l['erp_taxes']) or '无'}")
+    skipped = [l for l in lines if l["variants"]]
+    if skipped:
+        print("\n自动排除的渠道 / 组合装副本（采购只用基础品）：")
+        for l in skipped:
+            print(f"    {l['pzn']} → 用 {l['xmlid']}；排除 {', '.join(h[2].strip() for h in l['variants'])}")
     if dropped:
         print("\n已剔除（建档后需手补进这张 PO）：")
         for l in dropped:
@@ -293,11 +312,14 @@ def run(pdf, template, outdir=None, exclude=(), pick=None,
     lines, dropped = apply_exclude(lines, exclude)
     problems = match(lines, candidates_fn({l["pzn"] for l in lines}), pick or {})
     if problems:
-        msg = ["以下行匹配异常，未出表（剔除用 --exclude PZN，多选一用 --pick PZN=外部ID）："]
-        for l, hits in problems:
-            msg.append(f"  {l['pzn']} | {l['name']} | 数量 {l['qty']} | 命中 {len(hits)} 个")
+        msg = ["以下行匹配异常，未出表（剔除用 --exclude PZN，多个基础品里选一个用 --pick PZN=外部ID）："]
+        for l, base in problems:
+            why = ("Odoo 里只有渠道 / 组合装副本、没有基础品——先建基础品，或这次剔掉" if not base and l["variants"]
+                   else "Odoo 里查不到" if not base else f"{len(base)} 个基础品")
+            msg.append(f"  {l['pzn']} | {l['name']} | 数量 {l['qty']} | {why}")
             msg += [f"      {h[0]}  {h[1]}  [{h[2]}]  历史采购 {h[4]} 行{'' if h[3] else '  已归档'}"
-                    for h in hits]
+                    for h in base]
+            msg += [f"      （已排除副本）{h[0]}  [{h[2]}]" for h in l["variants"]]
         raise StopError("\n".join(msg))
     outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
     os.makedirs(outdir, exist_ok=True)
