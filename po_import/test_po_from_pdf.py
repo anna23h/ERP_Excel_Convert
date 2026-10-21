@@ -201,3 +201,13 @@ def test_parse_zero_value_insert_row():
     # 金额非 0 的同形行不归它管 → 漏行被护栏拦
     with pytest.raises(P.StopError):
         P.parse_text([page.replace("B E I P A C K 0,00 0,00 0,00", "B E I P A C K 1,00 0,00 1,00")])
+
+
+@pytest.mark.parametrize("extra", [
+    "Gutschrift Menge + Wert",                    # 页尾单据类型（ISSUES [PO 导入] D）
+    "Aus RG/LF 7654320 vom 15.10.2026",           # 只有引用原单的行也算贷项
+])
+def test_parse_refuses_credit_note(extra):
+    with pytest.raises(P.StopError, match="Gutschrift"):
+        P.parse_text([PAGE + "\n" + extra])
+    assert P.parse_text([PAGE + "\nNormal-Auftrag"])[1] == "1234567"

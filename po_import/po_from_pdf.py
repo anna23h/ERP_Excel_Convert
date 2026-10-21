@@ -29,6 +29,7 @@ PDF 版式**只支持一家**（明细行 `PZN Menge Packung DarForm 名称 Code
     · Code 含 M 的行 Gesamt 合计 = 印的 Warenwert ermäß. MwSt，其余 = volle MwSt
       ——税率归类有独立校验；品名末尾恰是单个字母被误读成 Code 也会在这里被拦。
 防重：Odoo 里已有 Vendor Reference = 本单号的 PO 就停。
+贷项：页面含 `Gutschrift` 或 `Aus RG/LF … vom …` 引用行就停（退货不走 PO 导入）。
 """
 import argparse
 import datetime as dt
@@ -87,10 +88,24 @@ DOC_RE = re.compile(r"^(\d{7}) (\d+)$")
 #: 底部合计行：…Anz. Pos.(行数/件数) volle MwSt € ermäß. MwSt € gesamt €（€ 常被抽成乱码，按任意非空白吃掉）
 FOOT_RE = re.compile(rf"(?<!\S)(\d+)/(\d+) ({_NUM}) \S+ ({_NUM}) \S+ ({_NUM})(?: \S+)?$")
 END_RE = re.compile(rf"Endsumme \*+ ({_NUM})")
+#: 贷项（Gutschrift）信号：页尾单据类型（如 `Gutschrift Menge + Wert`；正常发货是 `Normal-Auftrag`），
+#: 或行下引用原单 `Aus RG/LF 3086294 vom 15.10.2026`。任一命中就停，见 ISSUES [PO 导入] D。
+CREDIT_RE = re.compile(r"Gutschrift|Aus RG/LF \d+ vom")
+
+
+def refuse_credit_note(page_texts):
+    """贷项单据（退量 / 退款）不是采购，按 PO 导入会把退货记成进货 → 停。"""
+    hits = [ln.strip() for text in page_texts for ln in (text or "").splitlines() if CREDIT_RE.search(ln)]
+    if hits:
+        doc = next((m[1] for text in page_texts for ln in (text or "").splitlines()
+                    if (m := DOC_RE.match(ln.strip()))), "?")
+        raise StopError(f"单号 {doc} 是 Gutschrift（贷项 / 退货），不是采购，不出表——请在 Odoo 走退货或供应商贷项。命中：\n"
+                        + "\n".join(f"  {h}" for h in hits))
 
 
 def parse_text(page_texts):
-    """各页文本 → (明细行列表, 单号)。行内含 pzn/name/qty/aep/gesamt/reduced/page。"""
+    """各页文本 → (明细行列表, 单号)。行内含 pzn/name/qty/aep/gesamt/reduced/page。贷项单据先停。"""
+    refuse_credit_note(page_texts)
     lines, docs, foot, endsumme = [], set(), None, None
     for i, text in enumerate(page_texts, 1):
         for ln in (text or "").splitlines():
