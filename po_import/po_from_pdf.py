@@ -21,6 +21,7 @@
 就写数据库 ID。
 
 PDF 版式**只支持一家**（明细行 `PZN Menge Packung DarForm 名称 Code AEP AVP Gesamt`，
+另认 0 元附件行 `PZN Menge 名称 0,00 0,00 0,00`（如 BEIPACK，照样进 PO、单价 0、按 19%），
 底部 `Anz. Pos.` / 两档税基 / `Warenwert gesamt` / `Endsumme`）。解析护栏，任一不符就拒绝出表：
     · 逐行 AEP × Menge = Gesamt
     · Σ Gesamt = 印的 Warenwert gesamt = Endsumme
@@ -78,6 +79,9 @@ TAX_FULL = ("l10n_de_skr03.1_tax_vst_19_skr03", "19% Vorsteuer")
 _NUM = r"\d{1,3}(?:\.\d{3})*,\d{2}"
 #: 明细行：PZN Menge Packung DarForm 名称 Code(一个或多个 * E M S T V) AEP AVP Gesamt
 ROW_RE = re.compile(rf"^(\d{{6,8}}) (\d+) (\S+) (\S+) (.+?) ((?:[*EMSTV] )*[*EMSTV]) ({_NUM}) ({_NUM}) ({_NUM})$")
+#: 0 元附件行（如 `05855555 1 B E I P A C K 0,00 0,00 0,00`）：无 Packung/DarForm/Code，三个金额全为 0。
+#: 用户定照样进 PO（数量照 PDF、单价 0），见 ISSUES [PO 导入] C。
+ZERO_RE = re.compile(r"^(\d{6,8}) (\d+) (.+?) 0,00 0,00 0,00$")
 #: 页眉第一行：单号 页码
 DOC_RE = re.compile(r"^(\d{7}) (\d+)$")
 #: 底部合计行：…Anz. Pos.(行数/件数) volle MwSt € ermäß. MwSt € gesamt €（€ 常被抽成乱码，按任意非空白吃掉）
@@ -96,6 +100,13 @@ def parse_text(page_texts):
                 lines.append(dict(page=i, pzn=pzn8(m[1]), qty=int(m[2]), name=f"{m[3]} {m[4]} {m[5]}",
                                   code=m[6], reduced="M" in m[6].split(),
                                   aep=de_num(m[7]), gesamt=de_num(m[9])))
+                continue
+            m = ZERO_RE.match(ln)
+            if m:
+                words = m[3].split()
+                name = "".join(words) if all(len(w) == 1 for w in words) else m[3]
+                lines.append(dict(page=i, pzn=pzn8(m[1]), qty=int(m[2]), name=name, code="", reduced=False,
+                                  aep=Decimal(0), gesamt=Decimal(0)))
                 continue
             m = DOC_RE.match(ln)
             if m:

@@ -575,7 +575,7 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
   自动排除，核对表后列出排除了哪些。排除后恰好 1 个基础品就直接用；**只剩副本**（没有基础品）就停、不退回去用副本；
   仍有 ≥2 个基础品才交人 `--pick`（只能选基础品）。2026-10-20 全库扫：429 个多命中 PZN 里 332 个因此变唯一。
 - **四道解析护栏**，任一不符整表不出：逐行 AEP × Menge = Gesamt；Σ Gesamt = 印的 Warenwert gesamt = Endsumme；
-  行数 / 件数 = 印的 `Anz. Pos.`；`M` 行合计 = 印的 ermäß. MwSt 税基、其余 = volle MwSt 税基（税率归类有独立校验）。
+  行数 / 件数 = 印的 `Anz. Pos.`（0 元附件行如 `BEIPACK` 也解析、计入，Odoo 无档时按查不到处理、可 `--exclude`）；`M` 行合计 = 印的 ermäß. MwSt 税基、其余 = volle MwSt 税基（税率归类有独立校验）。
 - **防重**：Odoo 里已有 `Vendor Reference` = 本单号的 PO 就停。
 - 模板表头**界面名与技术名都认**（`Order Lines/Quantity` ≡ `order_line/product_qty` 等）；产品列若导出成
   `order_line/product_id/.id` 就写产品数据库 ID。模板**必须有 PO 的 `ID`/`id` 列**——没有它 Odoo 导入会新建一张 PO，

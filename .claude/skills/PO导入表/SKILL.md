@@ -30,7 +30,7 @@ python3 -m po_import.po_from_pdf <Lieferschein.pdf> <purchase.order 模板.xlsx>
 
 | 情况 | 交给用户的问题 |
 |---|---|
-| 某 PZN 在 Odoo 查不到 | 先去建档后重跑，还是这次剔掉这行？ |
+| 某 PZN 在 Odoo 查不到 | 先去建档后重跑，还是这次剔掉这行？（0 元附件行如 `BEIPACK` 常见，2026-10-21 用户选剔掉） |
 | 某 PZN 只有渠道 / 组合装副本、没有基础品 | 先在 Odoo 建基础品后重跑，还是这次剔掉这行？（**不能**改用副本） |
 | 排除副本后仍有多个基础品 | 用哪个外部 ID？（清单里带 Internal Reference 和历史采购行数） |
 | Odoo 已有同单号（Vendor Reference）的 PO | 这张是不是已经录过？ |

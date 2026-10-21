@@ -189,3 +189,15 @@ def test_match_drops_variants():
     assert lines[2]["xmlid"] == "__export__.c_old" and [l["pzn"] for l, _ in problems] == ["02758221"]
     with pytest.raises(P.StopError, match="副本"):
         P.match(_lines(), cands, {"02758221": "__export__.b_vo"})
+
+
+def test_parse_zero_value_insert_row():
+    # 0 元附件行（ISSUES [PO 导入] C）：品名逐字母带空格、无 Code，照样进明细、单价 0、按 19%
+    page = PAGE.replace(ROWS[0], "05855555 1 B E I P A C K 0,00 0,00 0,00\n" + ROWS[0]).replace("3/17", "4/18")
+    lines, _ = P.parse_text([page])
+    z = lines[0]
+    assert (z["pzn"], z["qty"], z["name"], z["aep"], z["gesamt"], z["reduced"]) == \
+        ("05855555", 1, "BEIPACK", Decimal(0), Decimal(0), False)
+    # 金额非 0 的同形行不归它管 → 漏行被护栏拦
+    with pytest.raises(P.StopError):
+        P.parse_text([page.replace("B E I P A C K 0,00 0,00 0,00", "B E I P A C K 1,00 0,00 1,00")])
