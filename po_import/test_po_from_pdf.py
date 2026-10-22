@@ -252,16 +252,58 @@ def test_parse_b_refuses(bad):
         P.parse_text([bad])
 
 
-def test_template_multiple_pos_needs_po(tmp_path, monkeypatch):
+def _two_po_template(tmp_path):
     p = _template(tmp_path)
     wb = load_workbook(p)
     wb.active.append(["__export__.purchase_order_2", "P00002", "Vendor X"] + [None] * (len(COLS) - 3))
     wb.save(p)
-    with pytest.raises(P.StopError, match="--po"):
-        P.read_template(p)
+    return p
+
+
+BLANK = ("draft", 0, "")
+
+
+def test_template_multiple_pos_and_explicit_po(tmp_path, monkeypatch):
+    p = _two_po_template(tmp_path)
+    assert [h["Order Reference"] for h in P.read_template(p)[2]] == ["P00001", "P00002"]
     with pytest.raises(P.StopError, match="P00009"):
         P.read_template(p, "P00009")
-    out = _run(tmp_path, monkeypatch, p, po="P00002")
+    # 给了 --po 就用那张，不查空白
+    out = _run(tmp_path, monkeypatch, p, po="P00002", po_status_fn=lambda _: pytest.fail("不该查"))
     rows = list(load_workbook(out).active.iter_rows(values_only=True))
     assert rows[1][:4] == ("__export__.purchase_order_2", "P00002", "Vendor X", "1234567")
     assert len(rows) == 4 and os.path.basename(out).startswith("P00002_")
+
+
+@pytest.mark.parametrize("status", [("purchase", 0, ""), ("draft", 3, ""), ("draft", 0, "999")])
+def test_blank_reason(status):
+    assert P.blank_reason(BLANK) is None
+    assert P.blank_reason(status) and P.blank_reason(None)
+
+
+def test_auto_po_picks_blank_skips_taken_and_reuses_same_pdf(tmp_path, monkeypatch):
+    p = _two_po_template(tmp_path)
+    both = {"__export__.purchase_order_1": BLANK, "__export__.purchase_order_2": BLANK}
+    # 两张都空白 → 按行序取第一张
+    out1 = _run(tmp_path, monkeypatch, p, po_status_fn=lambda _: both)
+    assert os.path.basename(out1) == "P00001_import_L 1.xlsx"
+    # 同一 PDF 重跑 → 沿用 P00001（unique_path 加序号）
+    out2 = _run(tmp_path, monkeypatch, p, po_status_fn=lambda _: both)
+    assert os.path.basename(out2) == "P00001_import_L 1(1).xlsx"
+    # 另一张 PDF → P00001 已被占用，去 P00002
+    monkeypatch.setattr(P, "read_pdf", lambda _: [PAGE])
+    cands = {"17173992": [_cand("__export__.a")], "02758221": [_cand("__export__.b")],
+             "20101140": [_cand("__export__.c")]}
+    out3 = P.run("L 2.pdf", p, str(tmp_path / "out"), candidates_fn=lambda _: cands,
+                 existing_fn=lambda _: [], po_status_fn=lambda _: both)
+    assert os.path.basename(out3) == "P00002_import_L 2.xlsx"
+
+
+def test_auto_po_skips_non_blank_and_stops_when_none(tmp_path, monkeypatch):
+    p = _two_po_template(tmp_path)
+    st = {"__export__.purchase_order_1": ("draft", 2, ""), "__export__.purchase_order_2": BLANK}
+    out = _run(tmp_path, monkeypatch, p, po_status_fn=lambda _: st)
+    assert os.path.basename(out).startswith("P00002_")
+    st["__export__.purchase_order_2"] = ("purchase", 0, "")
+    with pytest.raises(P.StopError, match="已有 2 行"):
+        _run(tmp_path, monkeypatch, p, po_status_fn=lambda _: st)

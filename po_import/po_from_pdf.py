@@ -4,7 +4,7 @@
     python3 -m po_import.po_from_pdf <Lieferschein.pdf> <purchase.order 模板.xlsx>
     python3 -m po_import.po_from_pdf L.pdf T.xlsx --exclude <PZN> <PZN>
     python3 -m po_import.po_from_pdf L.pdf T.xlsx --pick <PZN>=__export__.product_product_<…>
-    python3 -m po_import.po_from_pdf L.pdf T.xlsx --po P12380   # 模板含多张 PO 时选哪张
+    python3 -m po_import.po_from_pdf L.pdf T.xlsx --po P12380   # 模板含多张 PO 时指定（不给就自动选空白 PO）
     python3 -m po_import.po_from_pdf L.pdf T.xlsx -o /tmp/x      # 输出目录（默认 output/YYYYMMDD）
 
 同构 `so_import/so_from_pdf.py`，规矩照搬：**PZN 是唯一连接键，绝不按品名兜底**；
@@ -37,7 +37,8 @@ PDF 版式**只支持一家**（明细行 `PZN Menge Packung DarForm 名称 Code
 AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、`n Positionen m Stück`、`Gesamtsumme EUR 7% 19% 总` 全对上；
 页眉单据类型不是 LIEFERSCHEIN / RECHNUNG 就停。
 
-模板含多张 PO（Odoo 一次导出多张空 PO）时用 `--po <Order Reference>` 选写哪张；多张没给就停。
+模板含多张 PO（Odoo 一次导出多张空 PO）且没给 `--po` 时自动选空白 PO（Odoo 里 draft/sent、无行、无 Vendor Reference），
+按模板行序取；输出目录里已为别的 PDF 出过表的 PO 跳过，同一 PDF 重跑沿用原 PO（`choose_po`，ISSUES [PO 导入] F）。
 """
 import argparse
 import datetime as dt
@@ -305,11 +306,65 @@ def odoo_existing(doc_no):
         "purchase.order", "search_read", [[["partner_ref", "=", doc_no]]], {"fields": ["name", "state"]})]
 
 
+def odoo_po_status(xmlids):
+    """Odoo 只读：PO 外部 ID → (state, 订单行数, Vendor Reference)；Odoo 里找不到的不在结果里。"""
+    od = _odoo()
+    pairs = [x.split(".", 1) for x in xmlids]
+    recs = od.execute("ir.model.data", "search_read",
+                      [[["model", "=", "purchase.order"], ["module", "in", sorted({m for m, _ in pairs})],
+                        ["name", "in", [n for _, n in pairs]]]], {"fields": ["module", "name", "res_id"]})
+    by_res = {r["res_id"]: f"{r['module']}.{r['name']}" for r in recs}
+    pos = od.execute("purchase.order", "read", [sorted(by_res)],
+                     {"fields": ["state", "order_line", "partner_ref"]}) if by_res else []
+    return {by_res[p["id"]]: (p["state"], len(p["order_line"]), p["partner_ref"] or "") for p in pos}
+
+
+def blank_reason(status):
+    """None = 空白草稿 PO（可随意写入）；否则返回不空白的原因。"""
+    if status is None:
+        return "Odoo 里找不到这张 PO"
+    state, nlines, vref = status
+    why = ([f"状态 {state}"] if state not in ("draft", "sent") else []) + \
+          ([f"已有 {nlines} 行"] if nlines else []) + ([f"Vendor Reference 已是 {vref}"] if vref else [])
+    return "、".join(why) or None
+
+
+def _outputs_of(outdir, ref):
+    """outdir 里这张 PO 已出过的导入表 → 对应的 PDF 名集合（去掉 unique_path 加的 `(n)` 序号）。"""
+    prefix = f"{ref}_import_"
+    names = os.listdir(outdir) if os.path.isdir(outdir) else []
+    return {re.sub(r"\(\d+\)$", "", os.path.splitext(f)[0][len(prefix):])
+            for f in names if f.startswith(prefix) and f.endswith(".xlsx")}
+
+
+def choose_po(heads, colmap, outdir, stem, status_fn=odoo_po_status):
+    """模板多张 PO、没给 --po 时自动选（ISSUES [PO 导入] F，2026-10-22 用户定）：空白 PO 之间没有区别，按模板行序取。
+
+    同一 PDF 之前已出到某张仍空白的 PO → 沿用（重跑不换 PO）；输出目录里已为别的 PDF 出过表的 PO 视为已占用、跳过
+    （分次跑同一模板的几张 PDF 不撞同一张）。没有可用的空白 PO 就停，列出每张为何不可用。
+    """
+    ref = colmap["ref"]
+    status = status_fn([h[colmap["id"]] for h in heads])
+    why = {h[ref]: blank_reason(status.get(h[colmap["id"]])) for h in heads}
+    outs = {h[ref]: _outputs_of(outdir, h[ref]) for h in heads}
+    same = [h for h in heads if stem in outs[h[ref]] and not why[h[ref]]]
+    if same:
+        print(f"自动分配：沿用 {same[0][ref]}（同一 PDF 之前已出到这张，仍空白）")
+        return same[0]
+    free = [h for h in heads if not why[h[ref]] and not outs[h[ref]]]
+    if not free:
+        raise StopError("模板里没有可自动写入的空白 PO，用 --po 指定或重新导出模板：\n" + "\n".join(
+            f"  {h[ref]}：{why[h[ref]] or '本目录已为 ' + '、'.join(sorted(outs[h[ref]])) + ' 出过表'}" for h in heads))
+    print(f"自动分配：{free[0][ref]}（空白 PO；模板里可用的空白 PO：{[h[ref] for h in free]}）")
+    return free[0]
+
+
 def read_template(template, po=None):
-    """→ (workbook, 列名, 头信息{列名: 值}, colmap{角色: 列名})。缺列或头信息不全就停。
+    """→ (workbook, 列名, 头信息列表[{列名: 值}], colmap{角色: 列名})。缺列或头信息不全就停。
 
     表头界面名（`Order Lines/Quantity`）与技术名（`order_line/product_qty`）都认，见 ALIASES。
-    头信息取第 2 行；模板含多张 PO（多行带 ID）时按 po（Order Reference）选行，多张而没给 po 就停。
+    头信息取第 2 行起每个带 ID 的行（模板可含多张 PO）；给了 po（Order Reference）就只留那张。
+    多张时选哪张由 run 调 choose_po 定。
     """
     wb = load_workbook(template)
     ws = wb.active
@@ -337,12 +392,10 @@ def read_template(template, po=None):
         heads = [h for h in heads if h[colmap["ref"]] == po]
         if not heads:
             raise StopError(f"--po {po} 不在模板里；模板里的 PO：{refs}")
-    elif len(heads) > 1:
-        raise StopError(f"模板里有 {len(heads)} 张 PO {refs}，用 --po 指定这张 PDF 写进哪张。")
-    head = heads[0] if heads else {}
-    if not head or not all(head.values()):
-        raise StopError(f"模板第 2 行的 ID / Order Reference / Vendor 不全：{head}")
-    return wb, cols, head, colmap
+    bad = [h for h in heads if not all(h.values())] or ([] if heads else [{}])
+    if bad:
+        raise StopError(f"模板第 2 行起的 ID / Order Reference / Vendor 不全：{bad}")
+    return wb, cols, heads, colmap
 
 
 def build(wb, cols, head, colmap, lines, doc_no, out_path):
@@ -403,8 +456,8 @@ def report(lines, dropped):
 
 
 def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
-        candidates_fn=odoo_candidates, existing_fn=odoo_existing):
-    wb, cols, head, colmap = read_template(template, po)
+        candidates_fn=odoo_candidates, existing_fn=odoo_existing, po_status_fn=odoo_po_status):
+    wb, cols, heads, colmap = read_template(template, po)
     lines, doc_no = parse_text(read_pdf(pdf))
     print(f"PDF 单号 {doc_no}，明细 {len(lines)} 行 / {sum(l['qty'] for l in lines)} 件"
           f"（页 {sorted({l['page'] for l in lines})}），合计 {sum(l['gesamt'] for l in lines)}")
@@ -426,6 +479,7 @@ def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
     outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
     os.makedirs(outdir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(pdf))[0]
+    head = heads[0] if len(heads) == 1 else choose_po(heads, colmap, outdir, stem, po_status_fn)
     out = unique_path(os.path.join(outdir, f"{head[colmap['ref']]}_import_{stem}.xlsx"))
     build(wb, cols, head, colmap, lines, doc_no, out)
     print(f"写出 {out}（{len(lines)} 行）；头信息 {head}"
@@ -438,7 +492,7 @@ def main():
     ap = argparse.ArgumentParser(description="供应商 Rechnung/Lieferschein PDF → Odoo 采购单导入表")
     ap.add_argument("pdf", help="供应商 Rechnung/Lieferschein PDF")
     ap.add_argument("template", help="Odoo 导出的 purchase.order 模板 xlsx（第 2 行起带 ID / Order Reference / Vendor）")
-    ap.add_argument("--po", metavar="PO号", help="模板含多张 PO 时写进哪张（Order Reference，如 P12380）")
+    ap.add_argument("--po", metavar="PO号", help="模板含多张 PO 时指定写进哪张（Order Reference，如 P12380）；不给就自动选空白 PO")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")
     ap.add_argument("--exclude", nargs="+", default=[], metavar="PZN", help="剔除这些 PZN 的行（用户裁决后用）")
     ap.add_argument("--pick", nargs="+", default=[], metavar="PZN=外部ID",

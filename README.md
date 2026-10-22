@@ -588,7 +588,10 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
   税按 Symbol 含 `*` 分 7%/19%（**此版式 `M` 是 phonetischer Artikel，不是减税**），AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、
   `n Positionen m Stück` = 行数 / 件数、`Gesamtsumme EUR <7%> <19%> <总>` 两档税基与总额全对上；页眉单据类型不是
   LIEFERSCHEIN / RECHNUNG 就停。第 2 页 `NACHWEIS CHARGEN`（批号证明）不入明细。其他版式不认，依赖 `pdfplumber`（`requirements-pdf.txt`）。
-- 模板里有**多张 PO**（Odoo 一次导出多张空 PO）时用 `--po <Order Reference>` 选写进哪张，多张而没给就停。
+- 模板里有**多张 PO**（Odoo 一次导出多张空 PO）时：不给 `--po` 就**自动写进空白 PO**（2026-10-22 用户定：空白 PO 之间没有区别）。
+  空白 = Odoo 里 draft/sent、无订单行、Vendor Reference 为空（只读查）；按模板行序取第一张。分次跑同一模板的几张 PDF 时，
+  输出目录里已为别的 PDF 出过表的 PO 视为已占用、跳过；同一 PDF 重跑沿用原 PO。没有可用的空白 PO 就停并列出原因。
+  `--po <Order Reference>` 仍可显式指定。
 
 ## JD 问题包裹 SAD 归类（荷兰出口申报单 → POE 声明）
 
