@@ -37,6 +37,7 @@ python3 -m po_import.po_from_pdf <Lieferschein.pdf> <purchase.order 模板.xlsx>
 | Odoo 已有同单号（Vendor Reference）的 PO | 这张是不是已经录过？ |
 | 解析 0 行 / 无单号 / 无合计 / 任一合计或税基对不上 | PDF 版式不认识——**如实说**，不要自己改正则硬凑 |
 | 模板缺列（尤其税列）、第 2 行头信息不全 | 让用户重新导出模板 |
+| 模板里有多张 PO、没给 `--po` | 哪张 PDF 进哪张 PO？（单号 / Beleg-Nr. 对 PO 号，**不替用户配**）→ 每张 PDF 带 `--po <PO号>` 各跑一次 |
 
 **采购只用基础品**（2026-10-20 用户定）：带 `_VO` / `_GW` / `xN` / `*N` 尾缀的渠道 / 组合装副本脚本已自动排除，
 核对表后列出排除了哪些，交付时一并报给用户。剩下的多基础品（常见新旧编码并存，如 `DOPH_001327` vs `DOPH_06445453`）
@@ -60,4 +61,5 @@ python3 -m po_import.po_from_pdf L.pdf T.xlsx --exclude <PZN…> --pick <PZN=外
 - 不用品名做模糊匹配兜底；不替用户选多命中、不自行剔除行。
 - 不绕过护栏另写脚本出表。
 - 单价就是 AEP 净价，不乘 1.19 / 1.07；税只按 Code 的 `M` 分 7% / 19%。
-- 只支持目前这一家的版式。新版式先告诉用户，按项目规则立项后再扩展。
+- 认两家版式（A：`Code` 含 `M` = 7%；B：表头 `Menge Einheit Artikelbezeichnung PZN Symbol`，`Symbol` 含 `*` = 7%，
+  B 的 `M` 是 phonetischer Artikel、**不是**减税），脚本按表头自动分流。第三种版式先告诉用户，按项目规则立项后再扩展。

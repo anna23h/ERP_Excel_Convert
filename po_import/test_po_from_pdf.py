@@ -211,3 +211,57 @@ def test_parse_refuses_credit_note(extra):
     with pytest.raises(P.StopError, match="Gutschrift"):
         P.parse_text([PAGE + "\n" + extra])
     assert P.parse_text([PAGE + "\nNormal-Auftrag"])[1] == "1234567"
+
+
+# 版式 B（ISSUES [PO 导入] E）：照 2026-10-22 实测 Lieferschein 的 pdfplumber 抽取结果构造，品名与价格是造的。
+B_ROWS = [
+    "2 30 ST PRODUKT D KAPSEL 01534672 SE N 2/6 3,45 2,20 4,40",
+    "20 120 ST PRODUKT E SY 07625016 SE N* 4/13 36,95 21,19 423,80",
+    "1 30X3 G PRODUKT F PUL 17458393 S N* 3/8 26,43 26,43",          # AVP 缺
+    "* 30 BESTELLT, 21 ZU AKTIONSKOND. GELIEF.",                    # 说明行，忽略
+    "5 N2 20 ST PRODUKT G TAB 00624605 S N 3/9 9,97 4,40 22,00",
+]
+B_PAGE = ("Kunden-Nr. Beleg-Nr. Datum Blatt\nLIEFERSCHEIN 19.1523 226082 21.10.2026 1 / 1\n"
+          "Menge Einheit Artikelbezeichnung PZN Symbol Lief./Pos. AVP AEP Wert\n" + "\n".join(B_ROWS)
+          + "\n7% USt. 19% USt.\nGesamtsumme EUR 450,23 26,40 476,63\n4 Positionen 28 St�ckZeit:19.11")
+B_CHARGEN = ("NACHWEIS CHARGEN 19.1523 226082 21.10.2026 1 / 1\n"
+             "2 30 ST PRODUKT D KAPSEL 01534672 261193")
+
+
+def test_parse_b_lines_doc_and_tax_class():
+    lines, doc = P.parse_text([B_PAGE, B_CHARGEN])
+    assert doc == "226082"
+    assert [l["pzn"] for l in lines] == ["01534672", "07625016", "17458393", "00624605"]
+    assert [l["reduced"] for l in lines] == [False, True, True, False]
+    assert [l["qty"] for l in lines] == [2, 20, 1, 5]
+    assert lines[2]["aep"] == Decimal("26.43") and lines[3]["name"] == "N2 20 ST PRODUKT G TAB"
+
+
+@pytest.mark.parametrize("bad", [
+    B_PAGE.replace("4 Positionen", "5 Positionen"),                       # 漏行
+    B_PAGE.replace("28 St", "29 St"),                                     # 件数
+    B_PAGE.replace("SE N* 4/13", "SE N 4/13"),                            # 税档误读
+    B_PAGE.replace("476,63", "476,64"),                                   # 总额
+    B_PAGE.replace("2,20 4,40", "2,20 4,50"),                             # AEP×Menge≠Wert
+    B_PAGE.replace("Gesamtsumme EUR 450,23 26,40 476,63", ""),            # 无合计
+    B_PAGE.replace("LIEFERSCHEIN 19.1523", "GUTSCHRIFT 19.1523"),         # 单据类型不对
+    B_PAGE.replace("LIEFERSCHEIN 19.1523 226082 21.10.2026 1 / 1\n", ""),  # 无单号
+])
+def test_parse_b_refuses(bad):
+    with pytest.raises(P.StopError):
+        P.parse_text([bad])
+
+
+def test_template_multiple_pos_needs_po(tmp_path, monkeypatch):
+    p = _template(tmp_path)
+    wb = load_workbook(p)
+    wb.active.append(["__export__.purchase_order_2", "P00002", "Vendor X"] + [None] * (len(COLS) - 3))
+    wb.save(p)
+    with pytest.raises(P.StopError, match="--po"):
+        P.read_template(p)
+    with pytest.raises(P.StopError, match="P00009"):
+        P.read_template(p, "P00009")
+    out = _run(tmp_path, monkeypatch, p, po="P00002")
+    rows = list(load_workbook(out).active.iter_rows(values_only=True))
+    assert rows[1][:4] == ("__export__.purchase_order_2", "P00002", "Vendor X", "1234567")
+    assert len(rows) == 4 and os.path.basename(out).startswith("P00002_")

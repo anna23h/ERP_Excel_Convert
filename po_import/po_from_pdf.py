@@ -4,6 +4,7 @@
     python3 -m po_import.po_from_pdf <Lieferschein.pdf> <purchase.order 模板.xlsx>
     python3 -m po_import.po_from_pdf L.pdf T.xlsx --exclude <PZN> <PZN>
     python3 -m po_import.po_from_pdf L.pdf T.xlsx --pick <PZN>=__export__.product_product_<…>
+    python3 -m po_import.po_from_pdf L.pdf T.xlsx --po P12380   # 模板含多张 PO 时选哪张
     python3 -m po_import.po_from_pdf L.pdf T.xlsx -o /tmp/x      # 输出目录（默认 output/YYYYMMDD）
 
 同构 `so_import/so_from_pdf.py`，规矩照搬：**PZN 是唯一连接键，绝不按品名兜底**；
@@ -30,6 +31,13 @@ PDF 版式**只支持一家**（明细行 `PZN Menge Packung DarForm 名称 Code
       ——税率归类有独立校验；品名末尾恰是单个字母被误读成 Code 也会在这里被拦。
 防重：Odoo 里已有 Vendor Reference = 本单号的 PO 就停。
 贷项：页面含 `Gutschrift` 或 `Aus RG/LF … vom …` 引用行就停（退货不走 PO 导入）。
+
+版式 B（第二家批发商的 Lieferschein，表头 `Menge Einheit Artikelbezeichnung PZN Symbol Lief./Pos. AVP AEP Wert`）
+走 `parse_text_b`，见 ISSUES [PO 导入] E：Symbol 含 `*` → 7%（此版式 `M` 是 phonetischer Artikel，不是减税），
+AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、`n Positionen m Stück`、`Gesamtsumme EUR 7% 19% 总` 全对上；
+页眉单据类型不是 LIEFERSCHEIN / RECHNUNG 就停。
+
+模板含多张 PO（Odoo 一次导出多张空 PO）时用 `--po <Order Reference>` 选写哪张；多张没给就停。
 """
 import argparse
 import datetime as dt
@@ -93,6 +101,76 @@ END_RE = re.compile(rf"Endsumme \*+ ({_NUM})")
 CREDIT_RE = re.compile(r"Gutschrift|Aus RG/LF \d+ vom")
 
 
+#: 版式 B 表头；有它就走 parse_text_b
+B_HEAD_RE = re.compile(r"^Menge Einheit Artikelbezeichnung PZN Symbol")
+#: 版式 B 明细行：Menge 〈Einheit + 品名〉 PZN Symbol…(如 `SE N*`) Lief./Pos. [AVP] AEP Wert（AVP 可缺）
+B_ROW_RE = re.compile(rf"^(\d+) (.+?) (\d{{8}}) ((?:[A-Z*]+ )*[A-Z*]+) \d+/\d+ (?:{_NUM} )?({_NUM}) ({_NUM})$")
+#: 版式 B 页眉：单据类型 Kunden-Nr Beleg-Nr Datum（第 2 页 `NACHWEIS CHARGEN` 同单号，不算类型）
+B_DOC_RE = re.compile(r"^([A-Z][A-Z ]*?) [\d.]+ (\d{6,8}) \d{2}\.\d{2}\.\d{4}\b")
+#: 版式 B 底部：`Gesamtsumme EUR <7% 税基> <19% 税基> <总额>`、`<行数> Positionen <件数> Stück`（ü 常抽成乱码）
+B_TOTAL_RE = re.compile(rf"^Gesamtsumme EUR ({_NUM}) ({_NUM}) ({_NUM})$")
+B_COUNT_RE = re.compile(r"^(\d+) Positionen (\d+) St")
+
+
+def check_totals(lines, foot):
+    """解析护栏（两个版式共用）：逐行 AEP × Menge = Gesamt；行数 / 件数 / 两档税基 / 总额与印的一致；
+    `endsumme`（印的第二个总额）= total。"""
+    bad = [l for l in lines if l["aep"] * l["qty"] != l["gesamt"]]
+    if bad:
+        raise StopError("以下行 AEP × Menge ≠ Gesamt，解析可能错位，不出表：\n" + "\n".join(
+            f"  {l['pzn']} | {l['name']} | {l['aep']} × {l['qty']} ≠ {l['gesamt']}" for l in bad))
+    got = dict(npos=len(lines), nqty=sum(l["qty"] for l in lines),
+               full=sum((l["gesamt"] for l in lines if not l["reduced"]), Decimal(0)),
+               reduced=sum((l["gesamt"] for l in lines if l["reduced"]), Decimal(0)),
+               total=sum(l["gesamt"] for l in lines))
+    diff = {k: (got[k], foot[k]) for k in got if got[k] != foot[k]}
+    if foot["total"] != foot["endsumme"]:
+        diff["endsumme"] = (foot["total"], foot["endsumme"])
+    if diff:
+        labels = dict(npos="行数", nqty="总件数", full="volle MwSt 税基", reduced="ermäß. MwSt 税基",
+                      total="Warenwert gesamt", endsumme="Warenwert gesamt vs Endsumme")
+        raise StopError("抽出的明细与 PDF 印的合计对不上（抽出 vs 印的），说明有行没抽到、抽错了或税码误读，不出表：\n"
+                        + "\n".join(f"  {labels[k]}：{a} vs {b}" for k, (a, b) in diff.items()))
+
+
+def parse_text_b(page_texts):
+    """版式 B 各页文本 → (明细行列表, 单号)，行结构同 parse_text。单据类型不是 LIEFERSCHEIN / RECHNUNG 就停。"""
+    lines, docs, kinds, total, count = [], set(), set(), None, None
+    for i, text in enumerate(page_texts, 1):
+        for ln in (text or "").splitlines():
+            ln = ln.strip()
+            m = B_ROW_RE.match(ln)
+            if m:
+                lines.append(dict(page=i, pzn=pzn8(m[3]), qty=int(m[1]), name=m[2], code=m[4],
+                                  reduced="*" in m[4], aep=de_num(m[5]), gesamt=de_num(m[6])))
+                continue
+            m = B_DOC_RE.match(ln)
+            if m:
+                docs.add(m[2])
+                if m[1] != "NACHWEIS CHARGEN":
+                    kinds.add(m[1])
+                continue
+            m = B_TOTAL_RE.match(ln)
+            if m:
+                total = (de_num(m[1]), de_num(m[2]), de_num(m[3]))
+                continue
+            m = B_COUNT_RE.match(ln)
+            if m:
+                count = (int(m[1]), int(m[2]))
+    if len(docs) != 1:
+        raise StopError(f"页眉单号（Beleg-Nr.）认不出或不唯一：{sorted(docs)}")
+    if not kinds or not kinds <= {"LIEFERSCHEIN", "RECHNUNG"}:
+        raise StopError(f"单号 {next(iter(docs))} 的单据类型是 {sorted(kinds) or '认不出'}，不是 LIEFERSCHEIN / "
+                        "RECHNUNG——若是贷项 / 退货请在 Odoo 走退货或供应商贷项，不做 PO 导入表。")
+    if not lines:
+        raise StopError("PDF 里没解析出任何明细行——版式不认识。")
+    if total is None or count is None:
+        raise StopError("PDF 里找不到底部合计（Gesamtsumme EUR / n Positionen）——版式不认识，不敢确定明细是否抽全。")
+    check_totals(lines, dict(npos=count[0], nqty=count[1], reduced=total[0], full=total[1],
+                             total=total[0] + total[1], endsumme=total[2]))
+    return lines, docs.pop()
+
+
 def refuse_credit_note(page_texts):
     """贷项单据（退量 / 退款）不是采购，按 PO 导入会把退货记成进货 → 停。"""
     hits = [ln.strip() for text in page_texts for ln in (text or "").splitlines() if CREDIT_RE.search(ln)]
@@ -104,7 +182,10 @@ def refuse_credit_note(page_texts):
 
 
 def parse_text(page_texts):
-    """各页文本 → (明细行列表, 单号)。行内含 pzn/name/qty/aep/gesamt/reduced/page。贷项单据先停。"""
+    """各页文本 → (明细行列表, 单号)。行内含 pzn/name/qty/aep/gesamt/reduced/page。贷项单据先停。
+    有版式 B 表头就转给 parse_text_b。"""
+    if any(B_HEAD_RE.match(ln.strip()) for text in page_texts for ln in (text or "").splitlines()):
+        return parse_text_b(page_texts)
     refuse_credit_note(page_texts)
     lines, docs, foot, endsumme = [], set(), None, None
     for i, text in enumerate(page_texts, 1):
@@ -141,22 +222,7 @@ def parse_text(page_texts):
         raise StopError(f"页眉单号认不出或不唯一：{sorted(docs)}")
     if foot is None or endsumme is None:
         raise StopError("PDF 里找不到底部合计（Anz. Pos. / Warenwert / Endsumme）——版式不认识，不敢确定明细是否抽全。")
-    bad = [l for l in lines if l["aep"] * l["qty"] != l["gesamt"]]
-    if bad:
-        raise StopError("以下行 AEP × Menge ≠ Gesamt，解析可能错位，不出表：\n" + "\n".join(
-            f"  {l['pzn']} | {l['name']} | {l['aep']} × {l['qty']} ≠ {l['gesamt']}" for l in bad))
-    got = dict(npos=len(lines), nqty=sum(l["qty"] for l in lines),
-               full=sum((l["gesamt"] for l in lines if not l["reduced"]), Decimal(0)),
-               reduced=sum((l["gesamt"] for l in lines if l["reduced"]), Decimal(0)),
-               total=sum(l["gesamt"] for l in lines))
-    diff = {k: (got[k], foot[k]) for k in got if got[k] != foot[k]}
-    if foot["total"] != endsumme:
-        diff["endsumme"] = (foot["total"], endsumme)
-    if diff:
-        labels = dict(npos="行数", nqty="总件数", full="volle MwSt 税基", reduced="ermäß. MwSt 税基",
-                      total="Warenwert gesamt", endsumme="Warenwert gesamt vs Endsumme")
-        raise StopError("抽出的明细与 PDF 印的合计对不上（抽出 vs 印的），说明有行没抽到、抽错了或税码误读，不出表：\n"
-                        + "\n".join(f"  {labels[k]}：{a} vs {b}" for k, (a, b) in diff.items()))
+    check_totals(lines, dict(foot, endsumme=endsumme))
     return lines, docs.pop()
 
 
@@ -239,10 +305,11 @@ def odoo_existing(doc_no):
         "purchase.order", "search_read", [[["partner_ref", "=", doc_no]]], {"fields": ["name", "state"]})]
 
 
-def read_template(template):
-    """→ (workbook, 列名, 头信息{列名: 值}, colmap{角色: 列名})。缺列或第 2 行头信息不全就停。
+def read_template(template, po=None):
+    """→ (workbook, 列名, 头信息{列名: 值}, colmap{角色: 列名})。缺列或头信息不全就停。
 
     表头界面名（`Order Lines/Quantity`）与技术名（`order_line/product_qty`）都认，见 ALIASES。
+    头信息取第 2 行；模板含多张 PO（多行带 ID）时按 po（Order Reference）选行，多张而没给 po 就停。
     """
     wb = load_workbook(template)
     ws = wb.active
@@ -263,8 +330,17 @@ def read_template(template):
         missing.append(need("tax_id", "tax"))
     if missing:
         raise StopError(f"模板缺列 {missing}；表头实际是 {cols}。在 Odoo 导出时把这些字段勾上重导。")
-    head = {colmap[r]: ws.cell(2, cols.index(colmap[r]) + 1).value for r in ("id", "ref", "vendor")}
-    if not all(head.values()):
+    heads = [{colmap[r]: ws.cell(row, cols.index(colmap[r]) + 1).value for r in ("id", "ref", "vendor")}
+             for row in range(2, ws.max_row + 1) if ws.cell(row, cols.index(colmap["id"]) + 1).value]
+    refs = [h[colmap["ref"]] for h in heads]
+    if po:
+        heads = [h for h in heads if h[colmap["ref"]] == po]
+        if not heads:
+            raise StopError(f"--po {po} 不在模板里；模板里的 PO：{refs}")
+    elif len(heads) > 1:
+        raise StopError(f"模板里有 {len(heads)} 张 PO {refs}，用 --po 指定这张 PDF 写进哪张。")
+    head = heads[0] if heads else {}
+    if not head or not all(head.values()):
         raise StopError(f"模板第 2 行的 ID / Order Reference / Vendor 不全：{head}")
     return wb, cols, head, colmap
 
@@ -326,9 +402,9 @@ def report(lines, dropped):
           + (f"；剔除行合计 {sum(l['gesamt'] for l in dropped)}" if dropped else ""))
 
 
-def run(pdf, template, outdir=None, exclude=(), pick=None,
+def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
         candidates_fn=odoo_candidates, existing_fn=odoo_existing):
-    wb, cols, head, colmap = read_template(template)
+    wb, cols, head, colmap = read_template(template, po)
     lines, doc_no = parse_text(read_pdf(pdf))
     print(f"PDF 单号 {doc_no}，明细 {len(lines)} 行 / {sum(l['qty'] for l in lines)} 件"
           f"（页 {sorted({l['page'] for l in lines})}），合计 {sum(l['gesamt'] for l in lines)}")
@@ -361,7 +437,8 @@ def run(pdf, template, outdir=None, exclude=(), pick=None,
 def main():
     ap = argparse.ArgumentParser(description="供应商 Rechnung/Lieferschein PDF → Odoo 采购单导入表")
     ap.add_argument("pdf", help="供应商 Rechnung/Lieferschein PDF")
-    ap.add_argument("template", help="Odoo 导出的 purchase.order 模板 xlsx（第 2 行带 ID / Order Reference / Vendor）")
+    ap.add_argument("template", help="Odoo 导出的 purchase.order 模板 xlsx（第 2 行起带 ID / Order Reference / Vendor）")
+    ap.add_argument("--po", metavar="PO号", help="模板含多张 PO 时写进哪张（Order Reference，如 P12380）")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")
     ap.add_argument("--exclude", nargs="+", default=[], metavar="PZN", help="剔除这些 PZN 的行（用户裁决后用）")
     ap.add_argument("--pick", nargs="+", default=[], metavar="PZN=外部ID",
@@ -374,7 +451,7 @@ def main():
         k, v = kv.split("=", 1)
         pick[k.strip()] = v.strip()
     try:
-        run(a.pdf, a.template, a.outdir, a.exclude, pick)
+        run(a.pdf, a.template, a.outdir, a.exclude, pick, a.po)
     except StopError as e:
         print(f"\n✗ {e}", file=sys.stderr)
         sys.exit(2)
