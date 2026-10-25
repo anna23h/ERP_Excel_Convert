@@ -15,7 +15,7 @@
 
 用户裁决：MHD 只写月份 → 当月最后一天；合计 ≠ 应收只警告；产品名里的 MHD 与录入不符只警告；
 一个批次都没写 = 包装上本就没有批次，该产品跳过（核对清单里列为 NO LOT 供复查）。
-版式（R2）：单内按品名排序；第 1 个批次与产品同行，多批次同列往下续写；Σ / Status 只在屏幕上、不进打印区域。
+版式（R2）：单内按品名排序；入库单按供应商分组、换供应商另起一页（R10）；第 1 个批次与产品同行，多批次同列往下续写；Σ / Status 只在屏幕上、不进打印区域。
 """
 import calendar
 import os
@@ -28,6 +28,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.pagebreak import Break
 
 META_SHEET = "_meta"
 META_KIND = "lot_entry_v1"
@@ -236,6 +237,46 @@ def read_export(ws):
     return pickings
 
 
+# 录入表里供应商组的固定先后（用户 2026-10-25，ISSUES R10）：按 Contact 名开头单词认，不区分大小写。
+# 其余供应商排在这四家之后，按该供应商产品数合计从多到少。
+VENDOR_ORDER = ("phoenix", "otto", "gehe", "aep")
+
+
+def _first_word(partner):
+    m = re.match(r"\s*(\w+)", str(partner or ""))
+    return m.group(1).casefold() if m else ""
+
+
+def _ref_key(pk, pid):
+    """WH/IN/12492 → 按末尾数字排；没号的按文字排在后。"""
+    ref = str(pk["ref"] or pk["origin"] or pid)
+    m = re.search(r"(\d+)\D*$", ref)
+    return (0, int(m.group(1)), ref) if m else (1, 0, ref)
+
+
+def group_by_vendor(pickings):
+    """→ [[(pid, pk), …], …]：每个供应商一组，组序与组内顺序见 ISSUES R10。
+
+    组序：VENDOR_ORDER 四家在前 → 其余按组内产品数合计从多到少（同数按名称）→ 没有 Contact 的最后。
+    组内：入库单按产品数从多到少，同数按 WH/IN 号升序。
+    """
+    groups = OrderedDict()
+    for pid, pk in pickings.items():
+        w = _first_word(pk["partner"])
+        key = w if w in VENDOR_ORDER else str(pk["partner"] or "").strip()
+        groups.setdefault(key, []).append((pid, pk))
+
+    def rank(item):
+        key, items = item
+        if key in VENDOR_ORDER:
+            return (0, VENDOR_ORDER.index(key), 0, "")
+        total = sum(len(pk["moves"]) for _, pk in items)
+        return (2, 0, 0, "") if not key else (1, 0, -total, key.casefold())
+
+    return [sorted(items, key=lambda it: (-len(it[1]["moves"]), _ref_key(it[1], it[0])))
+            for _, items in sorted(groups.items(), key=rank)]
+
+
 # --------------------------------------------------------------------------
 # 2. 生成录入表
 # --------------------------------------------------------------------------
@@ -352,7 +393,17 @@ def build_entry(pickings, path):
     end = n_rows + 1  # END 标记行
     r = 2
     status_rows = []
-    for pid, pk in pickings.items():
+    # 按供应商分组；换供应商在单头行前插分页符，一页里不混两家（R10）
+    ordered = []
+    for g in group_by_vendor(pickings):
+        if ordered:
+            ordered.append(None)
+        ordered.extend(g)
+    for item in ordered:
+        if item is None:
+            ws.row_breaks.append(Break(id=r - 1))
+            continue
+        pid, pk = item
         ref = pk["ref"] or pk["origin"] or pid
         title = " · ".join(str(x) for x in (ref, pk["origin"] if pk["ref"] else None,
                                               pk["partner"]) if x)

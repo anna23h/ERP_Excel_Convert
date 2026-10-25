@@ -6,6 +6,7 @@
 import os
 import re
 import sys
+from collections import OrderedDict
 from datetime import date, datetime
 
 import pytest
@@ -170,13 +171,17 @@ def test_end_to_end(tmp_path):
     entry = files[0]
 
     ws = load_workbook(entry)["Erfassung"]
-    assert ws.cell(2, 1).value.startswith("WH/IN/1")
-    assert ws.cell(3, L.C_TECH0 + L.TECH.index("code")).value == "Rosu_1" and ws.cell(3, L.C_SOLL).value == 1000
-    assert ws.cell(3, L.C_NAME).value == "Rosuvastatin 100 St"
-    for r in (3, 4):                                             # 产品行本身 + 续行都可录
+    heads = [r for r in range(2, ws.max_row + 1) if ws.cell(r, L.C_TECH0).value == "H"]
+    # R10：三家各一组；Queisser 8 个产品排前，Hexal / X 都是 1 个、按名称；换供应商前分页
+    assert [ws.cell(r, 1).value.split(" · ")[0] for r in heads] == ["WH/IN/2", "WH/IN/1", "WH/IN/3"]
+    assert [b.id for b in ws.row_breaks.brk] == [r - 1 for r in heads[1:]]
+    p = heads[1] + 1
+    assert ws.cell(p, L.C_TECH0 + L.TECH.index("code")).value == "Rosu_1" and ws.cell(p, L.C_SOLL).value == 1000
+    assert ws.cell(p, L.C_NAME).value == "Rosuvastatin 100 St"
+    for r in (p, p + 1):                                         # 产品行本身 + 续行都可录
         assert ws.cell(r, L.C_LOT).number_format == "@"
         assert ws.cell(r, L.C_LOT).protection.locked is False
-    assert ws.cell(3, L.C_NAME).protection.locked is not False
+    assert ws.cell(p, L.C_NAME).protection.locked is not False
     assert ws.protection.sheet is True
     assert [ws.cell(1, c).value for c in (L.C_LOT, L.C_STAT)] == ["LOT", "Status"]
     assert ws.print_area == "'Erfassung'!$A$1:$F$%d" % (ws.max_row - 1)  # Σ / Status 不打印
@@ -195,8 +200,8 @@ def test_end_to_end(tmp_path):
             groups.append([])
         elif t == "P":
             groups[-1].append(ws.cell(r, L.C_NAME).value)
-    assert len(groups[1]) == 8
-    assert groups[1] == sorted(groups[1], key=str.casefold)
+    assert len(groups[0]) == 8
+    assert groups[0] == sorted(groups[0], key=str.casefold)
 
     _fill(entry)
     kind, files, summary = L.run(entry, str(tmp_path))
@@ -208,7 +213,7 @@ def test_end_to_end(tmp_path):
     body = rows[1:]
     by_lot = {r[4]: r for r in body if r[4]}
     pickings = [r[0] for r in body if r[0]]
-    assert pickings == [X("pk1"), X("pk2")]                            # 单 3 没人录 → 不出现
+    assert pickings == [X("pk2"), X("pk1")]                            # 顺序随录入表（R10）；单 3 没人录 → 不出现
 
     assert by_lot["25P039A"][1] == X("ml1") and by_lot["25P039A"][5] == 1000
     assert by_lot["25P039A"][9] == datetime(2027, 11, 30)
@@ -235,6 +240,29 @@ def test_end_to_end(tmp_path):
     assert ("ERROR", "Ome_6") in msgs and ("SKIP", "Ome_6") in msgs
     assert ("ERROR", "Elm_8") in msgs
     assert ("NO LOT", "Untouched_9") in msgs
+
+
+def _pk(partner, n, ref):
+    return {"ref": ref, "partner": partner, "origin": None, "moves": {i: None for i in range(n)}}
+
+
+def test_group_by_vendor():
+    """R10：四家固定在前（按名开头单词、不分大小写）→ 其余按组合计产品数 → 无 Contact 最后；组内按产品数、同数按 WH/IN 号。"""
+    pickings = OrderedDict([
+        ("a", _pk("Hexal AG (Sandoz)", 3, "WH/IN/20")),
+        ("b", _pk("AEP GmbH", 9, "WH/IN/21")),
+        ("c", _pk("Queisser Pharma", 2, "WH/IN/22")),
+        ("d", _pk("PHOENIX Pharmahandel GmbH & Co KG", 2, "WH/IN/30")),
+        ("e", _pk(None, 50, "WH/IN/23")),
+        ("f", _pk("Queisser Pharma", 2, "WH/IN/24")),
+        ("g", _pk("Otto Geilenkirchen GmbH & Co. KG", 1, "WH/IN/25")),
+        ("h", _pk("phoenix Pharmahandel", 5, "WH/IN/31")),
+        ("i", _pk("PHOENIX Pharmahandel GmbH & Co KG", 2, "WH/IN/9")),
+        ("j", _pk("Gehe-Otto Ltd", 1, "WH/IN/26")),        # 开头是 Gehe → 归 GEHE，不是 Otto
+        ("k", _pk("Pharma Otto Ltd", 4, "WH/IN/27")),      # 含 Otto 但不打头 → 其他；与 Queisser 合计同为 4，按名称排前
+    ])
+    got = [[pid for pid, _ in g] for g in L.group_by_vendor(pickings)]
+    assert got == [["h", "i", "d"], ["g"], ["j"], ["b"], ["k"], ["c", "f"], ["a"], ["e"]]
 
 
 def test_missing_column_is_reported(tmp_path):
