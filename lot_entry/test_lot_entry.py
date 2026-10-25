@@ -4,6 +4,7 @@
 列名用英文标签版，与 2026-10-11 用户实际导出 `stock.picking (9).xlsx` 同构。
 """
 import os
+import re
 import sys
 from datetime import date, datetime
 
@@ -180,6 +181,12 @@ def test_end_to_end(tmp_path):
     assert [ws.cell(1, c).value for c in (L.C_LOT, L.C_STAT)] == ["LOT", "Status"]
     assert ws.print_area == "'Erfassung'!$A$1:$F$%d" % (ws.max_row - 1)  # Σ / Status 不打印
     assert ws.cell(3, L.C_STAT).value.startswith("=IF(")
+    # 公式行锚点只许产品行本身与 END：写死 $I{row+1} 时，选中第 2 行插行会把它推下去、漏算插入行（R9）
+    end = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, L.C_TECH0).value == "END")
+    for r in range(2, end):
+        if ws.cell(r, L.C_TECH0).value == "P":
+            anchors = {int(n) for n in re.findall(r"[A-Z]\$?(\d+)", ws.cell(r, L.C_STAT).value)}
+            assert anchors == {r, end}, (r, anchors)
     # 单内按品名字母序（导出里是 Doppelherz, Cardio, Badesalz, Flohsamen, Omega, Hylo, Elmex, Nobody）
     groups = []
     for r in range(2, ws.max_row + 1):

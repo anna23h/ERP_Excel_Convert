@@ -263,9 +263,13 @@ def _status_formula(row, end):
 
     续行与操作员插的行类型列都为空，所以块的长度用 MATCH 现找，不写死区间：
     在块内任何位置插行（含紧贴下一产品的上方）都会被算进来。
+
+    查找起点必须是 `INDEX($I:$I,ROW()+1)`，不能写 `$I{row+1}`：操作员选中第 2 行插行（最顺手的插法）
+    时 Excel 会把 `$I{row+1}` 推到插入行之下，插入行被挤出统计（2026-10-22 实测，ISSUES R9）。
+    公式里只留产品行自身与 END 两个行锚点，插行时两者都由 Excel 正确平移。
     """
     t = ws_col(C_TECH0)
-    k = 'MATCH(TRUE,INDEX(${t}{n}:${t}${e}<>"",0),0)'.format(t=t, n=row + 1, e=end)
+    k = 'MATCH(TRUE,INDEX(INDEX(${t}:${t},ROW()+1):${t}${e}<>"",0),0)'.format(t=t, e=end)
     rng = lambda c: "{c}{r}:INDEX({c}:{c},ROW()+{k}-1)".format(c=ws_col(c), r=row, k=k)
     n, s, soll = "COUNTA(%s)" % rng(C_LOT), "SUM(%s)" % rng(C_QTY), "%s%d" % (ws_col(C_SOLL), row)
     return ('=IF({n}=0,"",IF(AND({n}=1,{s}=0),"✓ = Soll",'
