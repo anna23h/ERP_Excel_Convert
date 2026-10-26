@@ -189,7 +189,8 @@ class App:
         self._hint(t1, "ERP 导出可多选(VO/GW 各一份)。完整天猫导出必传。"
                        "采购单导出选填——无补货需求则跳过。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
-                  text="点「开始生成」自动生成：拣货表+面单 / 新订单获单清单 / 回传ERP上传表。"
+                  text="点「开始生成」自动生成：拣货表+面单 / LP清单(每 100 个一段，复制去天猫下载面单) / "
+                       "新订单获单清单 / 回传ERP上传表。"
                        "若填了采购单导出，再多一张补货预判清单。").pack(anchor="w", pady=(6, 10))
         self._action_row(t1, "▶  开始生成", self._run_stage1)
 

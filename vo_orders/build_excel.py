@@ -161,6 +161,18 @@ def build_scanlist(facesheet, ch):
     return df
 
 
+LP_CHUNK = 100   # 天猫批量下载面单一次最多 100 单
+
+
+def build_lp_text(facesheet, chunk=LP_CHUNK):
+    """LP 号清单（ISSUES: [拣货面单] M）：每行一个 VO Tracking No，顺序与面单 sheet 一致、每单一次
+    （取自 build_scanlist，与扫码清单同源同批）；每 chunk 个一段，段间空一行，供操作员整段复制去天猫下载。"""
+    lps = [str(t).strip() for t in build_scanlist(facesheet, "")["VO Tracking No"]
+           if pd.notna(t) and str(t).strip()]
+    parts = ["\n".join(lps[i:i + chunk]) for i in range(0, len(lps), chunk)]
+    return ("\n\n".join(parts) + "\n" if parts else ""), len(lps)
+
+
 # x 后跟数字 = 多件装（x2/x3/x4/x10…）；尾部可再挂店铺后缀（`x2_GW` / `x2_VO`）。
 # 2026-09-22：原规则写死 `x\d+$`，把 `Dolormin_02434139x2_GW` 这类漏成单件（实测历史产出里
 # 共 4 个 SKU / 25 行受影响），打包员看不到标色。
@@ -265,6 +277,18 @@ def _write_scanlist(facesheet, ch, outdir):
     path = unique_path(os.path.join(outdir, fname))
     df.to_csv(path, index=False, encoding="utf-8-sig")
     return path, len(df)
+
+
+def _write_lplist(facesheet, ch, outdir):
+    """产出 LP 号清单 `YYYY年MM月DD日{店}{n}单 LP清单.txt`（见 build_lp_text）。
+    UTF-8 无 BOM、LF 换行：BOM 会粘在第一个 LP 前面一起被复制进天猫。返回 (路径, 单数)。"""
+    text, n = build_lp_text(facesheet)
+    d = date.today()
+    fname = f"{d.year}年{d.month:02d}月{d.day:02d}日{ch}{n}单 LP清单.txt"
+    path = unique_path(os.path.join(outdir, fname))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    return path, n
 
 
 def _upload_terms(cat_df, idcol, terms):
@@ -379,6 +403,8 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
             sp, nscan = _write_scanlist(sub, ch, outdir)
             log.append(f"扫码清单[{ch}] 已生成: {sp}  ({nscan} 单)")
+            lp, nlp = _write_lplist(sub, ch, outdir)
+            log.append(f"LP清单[{ch}] 已生成: {lp}  ({nlp} 单，每 {LP_CHUNK} 个一段)")
 
     # ---- 新订单获单清单 (履约单状态=新订单 ∩ ERP；复制履约单号去天猫批量获单) ----
     d = date.today()
