@@ -5,6 +5,7 @@
 阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库。
 阶段二：选 销售ERP + 仓库返回文件(有货/无货) + 出库数据 → 生成 系统履约单号/发货表/账单/出库。
 两阶段在界面上各自独立输入，互不依赖；阶段二无需天猫数据。
+阶段一之后有「面单排序」：天猫下载的面单 PDF 按拣货表+面单顺序重排合并。
 另有「货代合并」「箱单」「入库批次」三个标签页，与拉单两阶段互不相干，各自独立使用。
 """
 import os
@@ -24,10 +25,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import build_excel  # noqa: E402
 import stage2       # noqa: E402
+import sort_labels  # noqa: E402
 from packing_list import packing_list  # noqa: E402
 from lot_entry import lot_entry  # noqa: E402
 
 EXCEL_TYPES = [("Excel / CSV", "*.xlsx *.xls *.csv"), ("所有文件", "*.*")]
+PDF_TYPES = [("PDF", "*.pdf"), ("所有文件", "*.*")]
 
 if getattr(sys, "frozen", False):           # 打包后
     BASE_DIR = os.path.dirname(sys.executable)
@@ -92,12 +95,15 @@ class App:
 
         self.lot = tk.StringVar()              # 入库批次：Odoo 入库单导出 或 填好的录入表
 
+        self.sl_xlsx = tk.StringVar()          # 面单排序：阶段一产出的拣货表+面单
+        self.sl_pdfs = tk.StringVar()          # 面单排序：天猫下载的面单 PDF(多份)
+
         self._build_ui()
 
     # ---------- UI ----------
     LABEL_W = 13   # 标签列统一宽度，左侧对齐
 
-    def _file_row(self, parent, label, var, optional=False, multi=False):
+    def _file_row(self, parent, label, var, optional=False, multi=False, types=EXCEL_TYPES):
         fr = ttk.Frame(parent)
         fr.pack(fill="x", pady=4)
         ttk.Label(fr, text=label, width=self.LABEL_W, anchor="e",
@@ -105,7 +111,7 @@ class App:
         ttk.Entry(fr, textvariable=var).pack(side="left", fill="x", expand=True, padx=6)
         pick = self._pick_files if multi else self._pick_file
         ttk.Button(fr, text="选择…", width=7,
-                   command=lambda: pick(var)).pack(side="left")
+                   command=lambda: pick(var, types)).pack(side="left")
         tag = "选填" if optional else "必选"
         ttk.Label(fr, text=tag, width=4, font=("", 9),
                   foreground="#9aa0a6" if optional else "#2563eb").pack(side="left", padx=(4, 0))
@@ -187,6 +193,17 @@ class App:
                        "若填了采购单导出，再多一张补货预判清单。").pack(anchor="w", pady=(6, 10))
         self._action_row(t1, "▶  开始生成", self._run_stage1)
 
+        # 面单排序标签(ISSUES: [拣货面单] L)：阶段一出表 → 去天猫按 LP 下载面单 → 这里排好再打印
+        t1b = ttk.Frame(nb, padding=14); nb.add(t1b, text="  面单排序  ")
+        self._file_row(t1b, "拣货表+面单:", self.sl_xlsx)
+        self._file_row(t1b, "面单 PDF:", self.sl_pdfs, multi=True, types=PDF_TYPES)
+        self._hint(t1b, "拣货表+面单 选阶段一产出的那份；面单 PDF 选天猫下载的全部文件(可多选，每份最多 100 页)。")
+        ttk.Label(t1b, style="Hint.TLabel", justify="left", wraplength=520,
+                  text="按拣货表『面单』页的顺序重排，合并成一份 PDF，直接打印。"
+                       "两边对不上(缺面单、多面单、同一单两页、同一份 PDF 选了两次)就不出文件，"
+                       "日志里列出是哪几单。").pack(anchor="w", pady=(6, 10))
+        self._action_row(t1b, "▶  排序合并", self._run_sort_labels)
+
         # 阶段二标签页(自带销售 ERP 输入，无需天猫，与阶段一完全独立)
         t2 = ttk.Frame(nb, padding=14); nb.add(t2, text="  阶段二 · 仓库返回后  ")
         self._file_row(t2, "销售ERP导出:", self.erp2, multi=True)
@@ -247,13 +264,13 @@ class App:
         self._action_row(t5, "▶  开始生成", self._run_lot_entry)
 
     # ---------- helpers ----------
-    def _pick_file(self, var):
-        p = filedialog.askopenfilename(filetypes=EXCEL_TYPES)
+    def _pick_file(self, var, types=EXCEL_TYPES):
+        p = filedialog.askopenfilename(filetypes=types)
         if p:
             var.set(p)
 
-    def _pick_files(self, var):
-        ps = filedialog.askopenfilenames(filetypes=EXCEL_TYPES)
+    def _pick_files(self, var, types=EXCEL_TYPES):
+        ps = filedialog.askopenfilenames(filetypes=types)
         if ps:
             var.set("; ".join(ps))
 
@@ -318,6 +335,29 @@ class App:
             log, _ = build_excel.build(erp, full, outdir=self.outdir.get(),
                                        po_path=self.po.get().strip() or None)
             return log
+        self._bg(work)
+
+    def _run_sort_labels(self):
+        xlsx = self.sl_xlsx.get().strip()
+        pdfs = [p.strip() for p in self.sl_pdfs.get().split(";") if p.strip()]
+        if not xlsx or not pdfs:
+            messagebox.showwarning("缺少文件", "请先选择 拣货表+面单 和 天猫下载的面单 PDF")
+            return
+        self._write("【面单排序】按拣货表+面单顺序重排面单 PDF…")
+        outdir = self.outdir.get()
+
+        def work():
+            try:
+                _, lines = sort_labels.run(xlsx, pdfs, outdir)
+            except sort_labels.MismatchError as e:
+                # 拣货表选错时缺单可能上百条：全文进日志，弹窗只放前几条
+                head = str(e).splitlines()
+                short = "\n".join(head[:6]) + (f"\n…共 {len(head) - 1} 条，详见日志" if len(head) > 6 else "")
+                if len(short) > 1500 or len(head) > 6:
+                    short = short[:1500]
+                    self.root.after(0, lambda m=str(e): self._write(m))
+                raise ValueError(short) from None
+            return lines
         self._bg(work)
 
     def _run_stage2(self):

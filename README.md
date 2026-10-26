@@ -31,7 +31,7 @@
 
 双击运行脚本一律留在**仓库根目录**（同事的使用习惯），内部指向各流水线入口。
 
-**依赖按受众分三份**（2026-08-15）：`requirements.txt` = `pandas`+`openpyxl`，**启动器给同事装的最小集**（上表各条流水线的三方依赖完全相同，仅此两项）；`requirements-dev.txt` = 最小集 + `pyinstaller`（打 exe，`build_exe.bat`/`build_reorder_exe.bat` 用）；`requirements-labels.txt` = `segno`/`reportlab`/`Pillow`（储位标签专用，按需单独装）。**别往 `requirements.txt` 加只有开发/个别工具才用的包**——启动器会替同事装，装不上就直接挡住他跑拉单。启动器另有两条兜底：`.venv` 每次**探活**（目录在但已坏则自动重建）、装依赖失败**只警告不阻断**（真缺包时 Python 报清楚的 ImportError，好过打不开）。
+**依赖按受众分三份**（2026-08-15）：`requirements.txt` = `pandas`+`openpyxl`+`pypdfium2`，**启动器给同事装的最小集**（上表各条流水线的三方依赖完全相同，即前两项；`pypdfium2` 是 2026-10-26 VOTool「面单排序」页加的，同事要用，惰性 import，装不上只挡这一页）；`requirements-dev.txt` = 最小集 + `pyinstaller`（打 exe，`build_exe.bat`/`build_reorder_exe.bat` 用）；`requirements-labels.txt` = `segno`/`reportlab`/`Pillow`（储位标签专用，按需单独装）。**别往 `requirements.txt` 加只有开发/个别工具才用的包**——启动器会替同事装，装不上就直接挡住他跑拉单。启动器另有两条兜底：`.venv` 每次**探活**（目录在但已坏则自动重建）、装依赖失败**只警告不阻断**（真缺包时 Python 报清楚的 ImportError，好过打不开）。
 `odoo_api/` **渠道口径必须显式给，这是最容易错且错了不报错的地方**。销量默认是全渠道；2026-08-23 实测
 B 端（`S0` 开头的订单）只占 378 行订单却占 **90% 的件数**（整箱走货），而安全库存是给天猫
 C 端维护的。同一窗口下「销量前 50 名里配了安全库存的」，全渠道口径算出来 3 个、
@@ -278,6 +278,7 @@ python3 dashboard/export_product_dict.py --include-unsellable
 |---|---|---|
 | `新订单获单清单[店].xlsx` | 系统履约单号（履约单状态=新订单 ∩ ERP）| 复制 → 天猫后台批量获单。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `YYYY年MM月DD日{店}{n}单 拣货表+面单.xlsx` | 发货+已补运单（含无货勾选页）| 打印交仓库 |
+| `YYYY年MM月DD日{店}{n}单 面单（按拣货表排序）.pdf` | 天猫下载的面单 PDF 按「面单」sheet 顺序重排合并（VOTool「面单排序」页 / `vo_orders/sort_labels.py`；两边对不上整份不出）| 打印，与拣货表+面单同序 |
 | `YYYY年MM月DD日{店}{n}单 扫码清单.csv` | 订单级白名单（序号 / Order Reference / VO Tracking No / 店），与拣货表+面单同源同批 | 载入扫码 HTML，走[运单扫码回流](#运单扫码回流替代纸质勾选--手工转录)（选用） |
 | `回传ERP销售上传表[店].xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
@@ -694,6 +695,7 @@ Python + pandas + openpyxl。
 - [x] **货代合并发货表**（`stage2.build_forwarder`）：N 份发货表去重 → `IHTCTGMBH+IH{日期}+{单数}.xlsx`，唯一跨店产出；**同时出第二份「天猫回执」**（发货单号后15位合并去重，上传天猫）。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
+- [x] **面单排序**（`vo_orders/sort_labels.py` + VOTool「面单排序」页，ISSUES [拣货面单] L）：天猫下载的面单 PDF（每份 ≤100 页）按每页 LP 号对上拣货表+面单「面单」sheet 的 `VO Tracking No`，重排合并成一份；某页无 LP/多 LP、同单两页、同一 PDF 选两次、缺单、多单任一出现就整份不出（CLI 退出码 2，GUI 弹窗 + 日志列全）。依赖 `pypdfium2`（进主 requirements）。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 白名单入库**刷新自动恢复**（红色「清空」键彻底清空白名单+存档，作载错清单的换清单逃生口）+ 30 天自动清理，导出**单个 zip**（内含 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`，规避 Chrome 多文件拦截，解压后投）；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
 - [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位；连接键 Product ID 优先（数字/External ID 归一互通）+ 逐行回退 PZN，绕开官方 PZN 空白/脏值。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
 - [x] **重构：按流水线拆目录**（`vo_orders/` / `reorder/` / `packing_list/`）+ 抽最小 `common/`（`xlsx` 排版 / `vendor` 供应商简称 / `po` 采购画像 / `remark` Supply Remark 分段）。

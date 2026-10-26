@@ -1,6 +1,9 @@
-# 运行时最小集 —— 同事双击运行装的就是这两个。
+# 运行时最小集 —— 同事双击运行装的就是这几个。
 # 七条流水线(common/vo_orders/reorder/packing_list/po_frequency/po_reconcile/
-# sales_insight)的三方依赖完全相同，仅此两项(tkinter 属标准库)。
+# sales_insight)的三方依赖完全相同：pandas + openpyxl(tkinter 属标准库)。
 # 别往这里加只有开发/个别工具才用的包：启动器会给同事装，装不上就是白挡人。
 pandas
 openpyxl
+# VOTool「面单排序」页(vo_orders/sort_labels.py)：同事要用，所以进最小集；
+# 用到时才 import，装不上只挡这一页
+pypdfium2
