@@ -62,6 +62,8 @@ python3 -m po_import.po_from_pdf L.pdf T.xlsx --exclude <PZN…> --pick <PZN=外
 
 - 不用品名做模糊匹配兜底；不替用户选多命中、不自行剔除行。
 - 不绕过护栏另写脚本出表。
-- 单价就是 AEP 净价，不乘 1.19 / 1.07；税只按 Code 的 `M` 分 7% / 19%。
+- 单价就是 AEP（C 家 Ek.Preis）净价，不乘 1.19 / 1.07；税按各版式自己的标记分 7% / 19%（见下）。
 - 认两家版式（A：`Code` 含 `M` = 7%；B：表头 `Menge Einheit Artikelbezeichnung PZN Symbol`，`Symbol` 含 `*` = 7%，
-  B 的 `M` 是 phonetischer Artikel、**不是**减税），脚本按表头自动分流。第三种版式先告诉用户，按项目规则立项后再扩展。
+  B 的 `M` 是 phonetischer Artikel、**不是**减税），脚本按表头自动分流；C：门户 Lieferschein 网页存的 `.html`（按后缀分流，
+  单价 = Ek.Preis，税看 MwSt 列 7% / 19%，`Kz` 与税无关；只给截图时请用户在页面 Ctrl+S 存 HTML，不靠识图转录）。
+  再有新版式先告诉用户，按项目规则立项后再扩展。

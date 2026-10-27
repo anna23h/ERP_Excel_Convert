@@ -307,3 +307,49 @@ def test_auto_po_skips_non_blank_and_stops_when_none(tmp_path, monkeypatch):
     st["__export__.purchase_order_2"] = ("purchase", 0, "")
     with pytest.raises(P.StopError, match="已有 2 行"):
         _run(tmp_path, monkeypatch, p, po_status_fn=lambda _: st)
+
+
+def _c_row(*cells):
+    return "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
+
+
+C_ROWS = [
+    _c_row("2 STK", "PRODUKT A          20 ML SPR 04", "12579962", "8,75&nbsp;�", "17,50&nbsp;�", "19%", ""),
+    _c_row("68 STK", "PRODUKT B          60 ST KTA 04", "12351236", "1,50&nbsp;�", "102,00&nbsp;�", "7%", ""),
+    _c_row("2 STK", "PRODUKT C          25 ST SUP 04", "19269288", "1.000,00&nbsp;�", "2.000,00&nbsp;�", "19%", "A"),
+    _c_row("3 STK", "PRODUKT C          25 ST SUP 04", "19269288", "1.000,00&nbsp;�", "3.000,00&nbsp;�", "19%", "R"),
+]
+C_PAGE = ('<p>Lieferschein-Nr:&nbsp;</p><p>2001234567</p><p>Lieferdatum:&nbsp;</p><p>26.10.2026</p><table>'
+          "<tr><th>Menge</th><th>Artikelbezeichnung</th><th>PZN</th><th>Ek.Preis</th><th>Zeilenwert</th>"
+          "<th>MwSt</th><th>Kz</th></tr>" + "".join(C_ROWS)
+          + _c_row("", "", "", "", "Gesamt (Netto)", "", "") + _c_row("", "", "", "", "5.119,50&nbsp;�", "", "")
+          + "</table>")
+
+
+def test_parse_c_lines_doc_tax_and_duplicate_pzn():
+    lines, doc = P.parse_html_c(C_PAGE)
+    assert doc == "2001234567"
+    assert [l["pzn"] for l in lines] == ["12579962", "12351236", "19269288", "19269288"]  # 同 PZN 照原样分行
+    assert [l["reduced"] for l in lines] == [False, True, False, False]                 # 只看 MwSt，Kz 不影响
+    assert [l["qty"] for l in lines] == [2, 68, 2, 3]
+    assert lines[2]["aep"] == Decimal("1000.00") and lines[0]["name"] == "PRODUKT A 20 ML SPR 04"
+
+
+@pytest.mark.parametrize("bad", [
+    C_PAGE.replace("5.119,50", "5.119,51"),                     # 总额对不上 = 漏行
+    C_PAGE.replace("102,00", "103,00"),                         # Menge×Ek.Preis≠Zeilenwert
+    C_PAGE.replace(">7%<", ">0%<"),                             # 税不是 7% / 19%
+    C_PAGE.replace("68 STK", "68 PCK"),                         # 单位不认识
+    C_PAGE.replace("<p>2001234567</p>", ""),                    # 无单号
+    C_PAGE.replace("Gesamt (Netto)", "Summe"),                  # 无合计
+    C_PAGE.replace("<th>MwSt</th>", "<th>USt</th>"),            # 表头不认识
+])
+def test_parse_c_refuses(bad):
+    with pytest.raises(P.StopError):
+        P.parse_html_c(bad)
+
+
+def test_read_source_dispatches_html(tmp_path):
+    p = tmp_path / "AEP Portal.html"
+    p.write_text(C_PAGE, encoding="utf-8")
+    assert P.read_source(str(p))[1] == "2001234567"

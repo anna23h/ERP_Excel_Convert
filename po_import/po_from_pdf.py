@@ -37,6 +37,10 @@ PDF 版式**只支持一家**（明细行 `PZN Menge Packung DarForm 名称 Code
 AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、`n Positionen m Stück`、`Gesamtsumme EUR 7% 19% 总` 全对上；
 页眉单据类型不是 LIEFERSCHEIN / RECHNUNG 就停。
 
+版式 C（批发商门户里的 Lieferschein 网页，浏览器 Ctrl+S 存成 .html 后当第一个参数传入）走 `parse_html_c`，
+见 ISSUES [PO 导入] G：表头 `Menge Artikelbezeichnung PZN Ek.Preis Zeilenwert MwSt Kz`，单价 = Ek.Preis，
+税看 MwSt 列（7% / 19%），`Kz` 不读；底部只有 Gesamt (Netto)，护栏是逐行算术 + 总额；同 PZN 多行照原样分行。
+
 模板含多张 PO（Odoo 一次导出多张空 PO）且没给 `--po` 时自动选空白 PO（Odoo 里 draft/sent、无行、无 Vendor Reference），
 按模板行序取；输出目录里已为别的 PDF 出过表的 PO 跳过，同一 PDF 重跑沿用原 PO（`choose_po`，ISSUES [PO 导入] F）。
 """
@@ -46,6 +50,7 @@ import os
 import re
 import sys
 from decimal import Decimal
+from html.parser import HTMLParser
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -112,6 +117,12 @@ B_DOC_RE = re.compile(r"^([A-Z][A-Z ]*?) [\d.]+ (\d{6,8}) \d{2}\.\d{2}\.\d{4}\b"
 B_TOTAL_RE = re.compile(rf"^Gesamtsumme EUR ({_NUM}) ({_NUM}) ({_NUM})$")
 B_COUNT_RE = re.compile(r"^(\d+) Positionen (\d+) St")
 
+#: 版式 C（门户 Lieferschein 网页另存的 HTML）：明细表头前 6 列；Menge 形如 `2 STK`；金额后的 € 存成什么都不管，只取数字
+C_HEAD = ("Menge", "Artikelbezeichnung", "PZN", "Ek.Preis", "Zeilenwert", "MwSt")
+C_QTY_RE = re.compile(r"^(\d+) STK$")
+C_NUM_RE = re.compile(rf"^({_NUM})\D*$")
+C_TAX = {"7%": True, "19%": False}
+
 
 def check_totals(lines, foot):
     """解析护栏（两个版式共用）：逐行 AEP × Menge = Gesamt；行数 / 件数 / 两档税基 / 总额与印的一致；
@@ -170,6 +181,86 @@ def parse_text_b(page_texts):
     check_totals(lines, dict(npos=count[0], nqty=count[1], reduced=total[0], full=total[1],
                              total=total[0] + total[1], endsumme=total[2]))
     return lines, docs.pop()
+
+
+class _HtmlCells(HTMLParser):
+    """HTML → (表格行列表（每行是各单元格文本）, 全部文本片段)。"""
+
+    def __init__(self):
+        super().__init__()
+        self.rows, self.texts, self._cell = [], [], None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.rows.append([])
+        elif tag in ("td", "th"):
+            self._cell = ""
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None:
+            if self.rows:
+                self.rows[-1].append(" ".join(self._cell.split()))
+            self._cell = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell += data
+        if data.strip():
+            self.texts.append(data.replace("\xa0", " ").strip())
+
+
+def parse_html_c(html):
+    """版式 C（门户 Lieferschein 网页 HTML）→ (明细行列表, 单号)，行结构同 parse_text。见 ISSUES [PO 导入] G：
+    税直接看 MwSt 列（7% / 19%，别的值就停）；`Kz`（A / R）与税无关不读。页面底部只印 Gesamt (Netto)，
+    护栏只有逐行 Menge × Ek.Preis = Zeilenwert 与 Σ = Gesamt (Netto)；同 PZN 多行照原样分行。"""
+    p = _HtmlCells()
+    p.feed(html)
+    docs = [p.texts[i + 1] for i, t in enumerate(p.texts[:-1]) if t == "Lieferschein-Nr:"]
+    if len(docs) != 1 or not docs[0].isdigit():
+        raise StopError(f"页面上的 Lieferschein-Nr 认不出或不唯一：{docs}（一次只存一张 Lieferschein 的页面）")
+    heads = [i for i, r in enumerate(p.rows) if tuple(r[:len(C_HEAD)]) == C_HEAD]
+    if len(heads) != 1:
+        raise StopError(f"页面里明细表头（{' '.join(C_HEAD)}）有 {len(heads)} 个——版式不认识。")
+    lines, total, odd = [], None, []
+    body = p.rows[heads[0] + 1:]
+    for k, r in enumerate(body):
+        if "Gesamt (Netto)" in r:
+            nxt = [c for c in (body[k + 1] if k + 1 < len(body) else []) if c]
+            m = C_NUM_RE.match(nxt[0]) if len(nxt) == 1 else None
+            if not m:
+                raise StopError(f"Gesamt (Netto) 下一行不是一个金额：{nxt}")
+            total = de_num(m[1])
+            break
+        q = C_QTY_RE.match(r[0]) if len(r) >= len(C_HEAD) else None
+        aep, gesamt = (C_NUM_RE.match(c) for c in r[3:5]) if q else (None, None)
+        if not (q and r[2].isdigit() and aep and gesamt and r[5] in C_TAX):
+            odd.append(r)
+            continue
+        lines.append(dict(page=1, pzn=pzn8(r[2]), qty=int(q[1]), name=r[1], code=r[5], reduced=C_TAX[r[5]],
+                          aep=de_num(aep[1]), gesamt=de_num(gesamt[1])))
+    if odd:
+        raise StopError("明细表里有认不出的行（单位不是 STK / 税不是 7%·19% / 金额格式不对），不出表：\n"
+                        + "\n".join(f"  {r}" for r in odd))
+    if not lines:
+        raise StopError("页面里没解析出任何明细行——版式不认识。")
+    if total is None:
+        raise StopError("页面里找不到 Gesamt (Netto)——不敢确定明细是否抽全。")
+    bad = [l for l in lines if l["aep"] * l["qty"] != l["gesamt"]]
+    if bad:
+        raise StopError("以下行 Menge × Ek.Preis ≠ Zeilenwert，不出表：\n" + "\n".join(
+            f"  {l['pzn']} | {l['name']} | {l['aep']} × {l['qty']} ≠ {l['gesamt']}" for l in bad))
+    got = sum(l["gesamt"] for l in lines)
+    if got != total:
+        raise StopError(f"明细 Zeilenwert 合计 {got} ≠ 印的 Gesamt (Netto) {total}，不出表。")
+    return lines, docs[0]
+
+
+def read_source(path):
+    """PDF → parse_text；门户另存的 .html / .htm → parse_html_c。"""
+    if path.lower().endswith((".html", ".htm")):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return parse_html_c(f.read())
+    return parse_text(read_pdf(path))
 
 
 def refuse_credit_note(page_texts):
@@ -458,7 +549,7 @@ def report(lines, dropped):
 def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
         candidates_fn=odoo_candidates, existing_fn=odoo_existing, po_status_fn=odoo_po_status):
     wb, cols, heads, colmap = read_template(template, po)
-    lines, doc_no = parse_text(read_pdf(pdf))
+    lines, doc_no = read_source(pdf)
     print(f"PDF 单号 {doc_no}，明细 {len(lines)} 行 / {sum(l['qty'] for l in lines)} 件"
           f"（页 {sorted({l['page'] for l in lines})}），合计 {sum(l['gesamt'] for l in lines)}")
     dup = existing_fn(doc_no)
@@ -490,7 +581,7 @@ def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
 
 def main():
     ap = argparse.ArgumentParser(description="供应商 Rechnung/Lieferschein PDF → Odoo 采购单导入表")
-    ap.add_argument("pdf", help="供应商 Rechnung/Lieferschein PDF")
+    ap.add_argument("pdf", help="供应商 Rechnung/Lieferschein PDF，或门户 Lieferschein 网页另存的 .html")
     ap.add_argument("template", help="Odoo 导出的 purchase.order 模板 xlsx（第 2 行起带 ID / Order Reference / Vendor）")
     ap.add_argument("--po", metavar="PO号", help="模板含多张 PO 时指定写进哪张（Order Reference，如 P12380）；不给就自动选空白 PO")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")

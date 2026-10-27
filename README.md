@@ -589,7 +589,11 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
   B 家 Lieferschein（2026-10-22 起，表头 `Menge Einheit Artikelbezeichnung PZN Symbol Lief./Pos. AVP AEP Wert`）：
   税按 Symbol 含 `*` 分 7%/19%（**此版式 `M` 是 phonetischer Artikel，不是减税**），AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、
   `n Positionen m Stück` = 行数 / 件数、`Gesamtsumme EUR <7%> <19%> <总>` 两档税基与总额全对上；页眉单据类型不是
-  LIEFERSCHEIN / RECHNUNG 就停。第 2 页 `NACHWEIS CHARGEN`（批号证明）不入明细。其他版式不认，依赖 `pdfplumber`（`requirements-pdf.txt`）。
+  LIEFERSCHEIN / RECHNUNG 就停。第 2 页 `NACHWEIS CHARGEN`（批号证明）不入明细。
+  C 家门户 Lieferschein（2026-10-27 起，**不是 PDF**：网页上 Ctrl+S 存成 `.html` 当第一个参数传，按后缀分流）：表头
+  `Menge Artikelbezeichnung PZN Ek.Preis Zeilenwert MwSt Kz`，单价 = Ek.Preis，税**直接看 MwSt 列** 7% / 19%（`Kz` 的 A / R 是药房 / 处方标记，与税无关）；
+  页面只印 `Gesamt (Netto)`，护栏只有逐行 Menge × Ek.Preis = Zeilenwert 与总额（无两档税基可核）；同 PZN 多行照原样分行。
+  其他版式不认，PDF 依赖 `pdfplumber`（`requirements-pdf.txt`）。
 - 模板里有**多张 PO**（Odoo 一次导出多张空 PO）时：不给 `--po` 就**自动写进空白 PO**（2026-10-22 用户定：空白 PO 之间没有区别）。
   空白 = Odoo 里 draft/sent、无订单行、Vendor Reference 为空（只读查）；按模板行序取第一张。分次跑同一模板的几张 PDF 时，
   输出目录里已为别的 PDF 出过表的 PO 视为已占用、跳过；同一 PDF 重跑沿用原 PO。没有可用的空白 PO 就停并列出原因。
