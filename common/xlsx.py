@@ -7,6 +7,7 @@ packing_list 干脆把样式代码复制了一份。两条新流水线会把这�
 没碰任何 pandas API。这样不产 DataFrame 的流水线（packing_list 等）不必背 pandas
 依赖，将来单独打包也不会把 pandas 塞进 exe。
 """
+import math
 import os
 import re
 
@@ -181,15 +182,38 @@ def unique_path(path):
     return f"{base}({i}){ext}"
 
 
+def _wrap_lines(s, width):
+    """15 号字下文本在 width 宽的列里自动换行后约占几行：ASCII 1.45、中文 2.8 单位每字，
+    留 2 单位边距；Excel 按词折行会比逐字估算多折，边距就是给它的余量。"""
+    usable = max(width - 2, 1)
+    return sum(max(1, math.ceil(sum(2.8 if ord(ch) > 0x2E80 else 1.45 for ch in seg) / usable))
+               for seg in str(s).split("\n"))
+
+
+def _fit_wrapped_rows(ws, widths, header_row=1):
+    """固定宽度列里放不下的内容会自动换行，但行高是写死的(style_sheet 只数 \\n)，
+    第二行起会被裁掉 → 按估算折行数放大数据行行高。"""
+    headers = [c.value for c in ws[header_row]]
+    cols = [(i + 1, widths[h]) for i, h in enumerate(headers) if h in widths]
+    for r in range(header_row + 1, ws.max_row + 1):
+        lines = max((_wrap_lines(v, w) for c, w in cols
+                     if (v := ws.cell(r, c).value) is not None), default=1)
+        if lines > 1:
+            ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or ROW_H, lines * 22)
+
+
 def write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None,
-                 header_height=None):
+                 header_height=None, wrap_rows=False):
     """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。
     left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。
-    header_height: 表头行高。列收窄后表头会折成多行，固定 ROW_H 只放得下两行；默认 None=不变。"""
+    header_height: 表头行高。列收窄后表头会折成多行，固定 ROW_H 只放得下两行；默认 None=不变。
+    wrap_rows: widths 里的列内容超宽会自动换行，按折行数放大行高（见 _fit_wrapped_rows）；默认 False=不变。"""
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     write_df(ws, out)
     style_sheet(ws, n_cols or len(out.columns), left_cols=left_cols, small_cols=small_cols,
                 widths=widths)
+    if wrap_rows and widths:
+        _fit_wrapped_rows(ws, widths)
     if header_height:
         ws.row_dimensions[1].height = header_height
     path = unique_path(os.path.join(outdir, fname))

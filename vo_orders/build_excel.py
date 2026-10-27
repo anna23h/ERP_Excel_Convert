@@ -124,8 +124,12 @@ def _barcode_vendor(fs):
 
 # 这几列按内容收窄(用户每次都手动拖窄)：宽度 = 内容最长者，但不窄于表头最长的单词——
 # 表头会换行，单词本身断不开(ISSUES 补货预判 C)。Name 挪到末尾、长文案，固定宽度换行。
-REORDER_FIT_COLS = ["PZN", "Quantity On Hand", "Safety Stock", "供应商(次数)", "最低价供应商"]
-REORDER_FIXED_W = {"Name": 30, "最近一次采购": 30}
+# 值 = 该列宽度上限：按最长值算会被一两条长文案撑开(整串供应商全名、长备注)，
+# 超过上限的换行显示，行高由 write_simple(wrap_rows=True) 按折行数放大(ISSUES 补货预判 D)。
+REORDER_FIT_COLS = {"PZN": 45, "Quantity On Hand": 45, "Safety Stock": 45,
+                    "FS": 18, "Supply Remark": 36, "供应商(次数)": 20, "最低价供应商": 16,
+                    "最近一次采购": 22, "Picking Name": 22}
+REORDER_FIXED_W = {"Name": 30}
 REORDER_HEADER_H = 60   # 收窄后表头最多折三行
 
 
@@ -147,7 +151,7 @@ def _fit_width(series, header, cap=45):
 
 def reorder_widths(df):
     out = dict(REORDER_FIXED_W)
-    out.update({c: _fit_width(df[c], c) for c in REORDER_FIT_COLS if c in df})
+    out.update({c: _fit_width(df[c], c, cap) for c, cap in REORDER_FIT_COLS.items() if c in df})
     return out
 
 
@@ -574,7 +578,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                                                 "Barcode", "Name", "FS", "Supply Remark",
                                                 "供应商(次数)", "最低价供应商", "最近一次采购"},
                                      widths=reorder_widths(sub),
-                                     header_height=REORDER_HEADER_H)
+                                     header_height=REORDER_HEADER_H, wrap_rows=True)
                 log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----

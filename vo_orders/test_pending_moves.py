@@ -95,6 +95,33 @@ def test_reorder_widths_fit_content_not_header():
     assert w["最低价供应商"] < 8                       # 中文表头可逐字折行，不再按六个字撑宽
 
 
+def test_reorder_widths_capped_by_long_outliers():
+    # 2026-10-27 实测：一条整串供应商全名 / 长备注就把 FS、供应商(次数) 等列撑到 45~96
+    long_name = "Sanopharm Arzneimittelvertriebsgesellschaft"
+    df = pd.DataFrame({"FS": ["DM", long_name + "/A"], "Supply Remark": ["", "备注" * 40],
+                       "供应商(次数)": ["DM×23\nRossmann×9", long_name + "×6"],
+                       "最低价供应商": ["DM", long_name],
+                       "最近一次采购": ["Rossmann @2.9\n2026-10-27", long_name + " @12.54"],
+                       "Picking Name": ["静脉曲张06472", "透明玻璃瓶Frische Deo 75ml 049544"]})
+    w = B.reorder_widths(df)
+    for c, cap in B.REORDER_FIT_COLS.items():
+        if c in df:
+            assert w[c] <= cap
+    assert w["FS"] <= 18 and w["Supply Remark"] <= 36 and w["最低价供应商"] <= 16
+
+
+def test_wrapped_rows_get_taller(tmp_path):
+    import openpyxl
+    from common.xlsx import write_simple, ROW_H
+    df = pd.DataFrame({"Supply Remark": ["短", "备注" * 40], "X": [1, 2]})
+    p, _ = write_simple(df, tmp_path, "t.xlsx", widths={"Supply Remark": 20}, wrap_rows=True)
+    ws = openpyxl.load_workbook(p).active
+    assert ws.row_dimensions[2].height == ROW_H              # 放得下的行不变
+    assert ws.row_dimensions[3].height > ROW_H * 3           # 80 个汉字在 20 宽里折十来行
+    p2, _ = write_simple(df, tmp_path, "t2.xlsx", widths={"Supply Remark": 20})
+    assert openpyxl.load_workbook(p2).active.row_dimensions[3].height == ROW_H   # 默认行为不变
+
+
 def test_pzn_width_fits_8_digits_one_line():
     w = B.reorder_widths(pd.DataFrame({"PZN": ["19623519", ""]}))["PZN"]
     assert w >= 8 * 1.4                                 # 2026-10-27 实测 9.8 宽时 8 位数字被拆成两行
