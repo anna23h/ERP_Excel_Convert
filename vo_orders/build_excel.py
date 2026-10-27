@@ -100,14 +100,68 @@ def _first_nonempty(s):
     return ""
 
 
-def build_reorder(erp, po_stats=None):
+PENDING_COLS = ["待出库", "在途", "预计可用", "预测缺口"]
+
+# PZN 变更后新 PZN 永远更新在 Name 里(最准)，写法杂：`(new PZN 19231788)` / `(PZN18487422)` /
+# `（NEW PZN 17867499)`。Picking Name 不可靠(`PZN：87422` 只写后 5 位)，不作提取源(ISSUES 补货预判 C)。
+NAME_PZN_RE = re.compile(r"PZN\s*[:：]?\s*(\d{7,8})(?!\d)", re.I)
+
+
+def _name_pzn(name):
+    m = NAME_PZN_RE.search(str(name or ""))
+    return m.group(1).zfill(8) if m else ""
+
+
+def _barcode_vendor(fs):
+    """Barcode 只在 DM / Rossmann 才用(去官网搜产品图发采购群)。FS 多家以 / 分隔，按段精确匹配，
+    Rossmann 实测有 ROSSMANN/Rossmann/ROSSMAN 三种拼法；DMS 之类不会误中。"""
+    for t in str(fs or "").split("/"):
+        t = t.strip().upper()
+        if t == "DM" or t.startswith("ROSSMAN"):
+            return True
+    return False
+
+
+# 这几列按内容收窄(用户每次都手动拖窄)：宽度 = 内容最长者，但不窄于表头最长的单词——
+# 表头会换行，单词本身断不开(ISSUES 补货预判 C)。Name 挪到末尾、长文案，固定宽度换行。
+REORDER_FIT_COLS = ["PZN", "Quantity On Hand", "Safety Stock", "供应商(次数)", "最低价供应商"]
+REORDER_FIXED_W = {"Name": 30, "最近一次采购": 30}
+REORDER_HEADER_H = 60   # 收窄后表头最多折三行
+
+
+def _text_w(s, ascii_w):
+    """15 号字下的 Excel 列宽单位(1 单位 ≈ 默认字体一个数字宽)：ASCII 约 1.4、中文约 2.8。"""
+    return sum(2.8 if ord(ch) > 0x2E80 else ascii_w for ch in str(s))
+
+
+def _fit_width(series, header, cap=45):
+    """内容要一行放下(单元格开着换行，窄了会把 8 位 PZN 拆成两行——2026-10-27 用户实测报出)；
+    表头只给**英文单词**保底(英文按词换行、断不开)，中文表头可逐字折行、不撑宽
+    (「最低价供应商」六个字曾把只装一两个字母的列撑到 12)。"""
+    vals = [str(v) for v in series if str(v) not in ("", "<NA>", "nan")]
+    w = max([_text_w(v, 1.45) for v in vals] or [0])
+    words = re.findall(r"[A-Za-z]+", str(header))
+    w = max(w, max([_text_w(t, 1.35) for t in words] or [0]), 2.8 * 2)   # 至少容两个汉字
+    return min(cap, round(w + 1.5, 1))
+
+
+def reorder_widths(df):
+    out = dict(REORDER_FIXED_W)
+    out.update({c: _fit_width(df[c], c) for c in REORDER_FIT_COLS if c in df})
+    return out
+
+
+def build_reorder(erp, po_stats=None, pending=None):
     """补货预判清单(Solo 作战清单·模式一 step 0 盘前预判)：
     把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
     列名与 ERP 原始字段保持一致(短名，同拣货表)，仅算出来的列(今日需求/缺口)用中文。
-    前两列 Internal Reference / Picking Name 与拣货表对齐、并按 Internal Reference 升序，
-    便于对照仓库反馈的拣货单逐行勾缺货。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。
+    按 Internal Reference 升序(与拣货表同序)。第 2 列 PZN 只取 Name 里写着的新 PZN(没变更留空)；
+    Barcode 只留 FS 含 DM/Rossmann 的行；Picking Name / Name 挪到末尾待实测定去留(ISSUES 补货预判 C)。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。
     po_stats(可选，load_po_stats 产出)：按基础 SKU 尾部追加采购画像列；无记录的 SKU
-    标"无采购记录"(信号：新品/长尾需人工找供应商)。缺口只能参考，补货数量始终人为定。"""
+    标"无采购记录"(信号：新品/长尾需人工找供应商)。缺口只能参考，补货数量始终人为定。
+    pending(可选，pending_moves.pull_pending 产出 {SKU: (待出库, 在途)})：On Hand 滞后于实物
+    (寄出未做出库、到货未做入库)，故在 缺口 后并列 待出库/在途/预计可用/预测缺口；
+    原 缺口 保留，两种口径对照看(ISSUES 补货预判 A)。"""
     if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
         return None
     g = erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**{
@@ -126,8 +180,18 @@ def build_reorder(erp, po_stats=None):
     # 按 Internal Reference 升序(大小写不敏感、stable)，与拣货表同序，便于逐行对照
     g = g.sort_values("Internal Reference", key=lambda s: s.astype(str).str.lower(),
                       kind="stable").reset_index(drop=True)
-    cols = ["Internal Reference", "Picking Name", "Barcode", "Name", "今日需求",
-            "Quantity On Hand", "缺口", "Safety Stock", "FS", "Supply Remark"]
+    g["PZN"] = g["Name"].map(_name_pzn)
+    g["Barcode"] = g["Barcode"].where(g["FS"].map(_barcode_vendor), "")
+    cols = ["Internal Reference", "PZN", "Barcode", "今日需求", "Quantity On Hand", "缺口"]
+    if pending is not None:
+        pm = g["Internal Reference"].astype(str).map(pending)
+        for i, c in enumerate(PENDING_COLS[:2]):
+            g[c] = pd.to_numeric(pm.map(lambda t, i=i: t[i] if isinstance(t, tuple) else 0),
+                                 errors="coerce").fillna(0).round().astype("Int64")
+        g["预计可用"] = g["Quantity On Hand"] - g["待出库"] + g["在途"]
+        g["预测缺口"] = g["今日需求"] - g["预计可用"]
+        cols += PENDING_COLS
+    cols += ["Safety Stock", "FS", "Supply Remark"]
     if po_stats is not None:
         m = (po_stats.set_index("_sku")
              .reindex(g["Internal Reference"].map(_po_base_sku)))
@@ -137,6 +201,7 @@ def build_reorder(erp, po_stats=None):
         g[PO_COLS] = g[PO_COLS].where(g[PO_COLS].notna(), "")
         g.loc[g["供应商(次数)"] == "", "供应商(次数)"] = "无采购记录"
         cols += PO_COLS
+    cols += ["Picking Name", "Name"]
     return g[cols]
 
 
@@ -475,7 +540,18 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             log.append(f"采购参考已加载: {po_info}")
         except Exception as e:
             log.append(f"⚠ 采购单导出读取失败，补货预判清单不带采购参考: {e}")
-        reorder = build_reorder(erp, po_stats)
+        # 待出库/在途：On Hand 滞后于实物，开工时用 Odoo 只读补上(ISSUES 补货预判 A)。
+        # 没配凭据/连不上就降级成只按在手算，不挡清单。
+        pending = None
+        try:
+            from pending_moves import pull_pending
+            pending, pinfo = pull_pending(erp[s4.ERP_INTERNAL].dropna().unique(),
+                                          erp[s4.ERP_ORDER_REF].dropna().astype(str).unique())
+            log.append(f"待出库/在途已拉取: {pinfo}")
+        except Exception as e:
+            log.append("⚠ 待出库/在途拉取失败，补货预判清单只按在手算(无 待出库/在途/预计可用/预测缺口 列): "
+                       + str(e).splitlines()[0][:120])
+        reorder = build_reorder(erp, po_stats, pending)
         if reorder is None:
             log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
                        "在 Odoo 订单导出模板勾上这 3 列即可生成)")
@@ -489,14 +565,16 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             for ch in sorted(reorder["_ch"].dropna().unique()):
                 sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
                 short = int((sub["缺口"] > 0).sum())
+                if "预测缺口" in sub:
+                    short = f"{short} 个，预测缺口>0 {int((sub['预测缺口'] > 0).sum())}"
                 # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
-                # 采购画像的长文本列固定宽度让 wrap 生效，否则供应商名单会把列撑得极宽
+                # 列宽见 reorder_widths：几列按内容收窄，长文案固定宽度换行
                 p, n = write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
-                                     left_cols={"Internal Reference", "Picking Name",
+                                     left_cols={"Internal Reference", "PZN", "Picking Name",
                                                 "Barcode", "Name", "FS", "Supply Remark",
                                                 "供应商(次数)", "最低价供应商", "最近一次采购"},
-                                     widths={"供应商(次数)": 45, "最低价供应商": 22,
-                                             "最近一次采购": 30})
+                                     widths=reorder_widths(sub),
+                                     header_height=REORDER_HEADER_H)
                 log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
 
     # ---- 异常上报(不静默) ----

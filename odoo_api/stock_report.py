@@ -226,8 +226,13 @@ def resolve_excluded_vendors(od, names):
     return [r["id"] for r in rows]
 
 
-def pull_in_transit(od, exclude_ids):
+def pull_in_transit(od, exclude_ids, since=None, exclude_origins=()):
     """未完成的进/出库 move → ({pid: 在途入库}, {pid: 待出库})。
+
+    since（'YYYY-MM-DD'，选填）：只认该日起创建的 move——老的残单/死单不算（补货预判用，
+    2026-10-27 实测未完成入库 88 张里 54 张超过 8 天、未完成出库最老到 2022 年）。
+    exclude_origins（选填）：待出库剔除这些 origin（= SO 名）——补货预判的今日批次
+    已算在「今日需求」里，不剔会重复计算。周报两者都不传，行为不变。
 
     ⚠ 必须能排除**不会真的收货的技术性采购单**（某些系统集成会用确认状态的 PO 建映射），
     否则这两列是垃圾：2026-08-23 实测全局 7460 条未完成入库里 **7350 条（98.5%）**
@@ -239,10 +244,14 @@ def pull_in_transit(od, exclude_ids):
     否则调拨/退货等非采购来源的 move 会被一并滤掉。
     """
     pending = [("state", "not in", ["done", "cancel", "draft"])]
+    if since:
+        pending.append(("create_date", ">=", since))
     inc = pending + [("location_id.usage", "in", ["supplier", "transit"]),
                      ("location_dest_id.usage", "=", "internal")]
     out = pending + [("location_id.usage", "=", "internal"),
                      ("location_dest_id.usage", "in", ["customer", "transit"])]
+    if exclude_origins:
+        out.append(("origin", "not in", list(exclude_origins)))
     skip = []
     if exclude_ids:
         n_all = od.count("stock.move", inc)
@@ -250,15 +259,22 @@ def pull_in_transit(od, exclude_ids):
         # 只有 origin 还写着被排除 PO 的单号（2026-08-23 实测 5 条 / 5 个产品 / 2100 件，
         # 都是几年前的旧单，链大概是历史迁移中断的）。所以两条路都要堵：
         #   链得到 PO 行 → 看它的供应商；链不到 → 拿 origin 对测试 PO 的单号表。
+        # 还有第三条路：有人往测试入库单上**手工加行**，新行既没 PO 行、自己的 origin 也是空的，
+        # 只有所在 picking 还挂着测试供应商（2026-10-27 实测 WH/IN/10779 上 3 行 310 件）。
+        # 所以再按 picking 整单排除：picking 的供应商或 origin 命中测试单的，单上所有行都不算。
         po_names = [o["name"] for o in od.search_read_all(
             "purchase.order", [("partner_id", "in", exclude_ids)], ["name"])]
-        skip = ["|",
+        bad_picks = od.execute("stock.picking", "search", [[
+            "|", ("partner_id", "in", exclude_ids), ("origin", "in", po_names or [""])]])
+        skip = [("picking_id", "not in", bad_picks),
+                "|",
                 "&", ("purchase_line_id", "!=", False),
                 ("purchase_line_id.order_id.partner_id", "not in", exclude_ids),
                 "&", ("purchase_line_id", "=", False),
                 "|", ("origin", "=", False), ("origin", "not in", po_names)]
         n_keep = od.count("stock.move", inc + skip)
-        say(f"  在途: 未完成入库 {n_all} 条，排除测试供应商（{len(po_names)} 张 PO）后剩 "
+        say(f"  在途: 未完成入库 {n_all} 条，排除测试供应商（{len(po_names)} 张 PO / "
+            f"{len(bad_picks)} 张入库单）后剩 "
             f"{n_keep} 条（滤掉 {n_all - n_keep} 条）")
         n_done = od.count("stock.move", [("state", "=", "done"),
                                          ("location_dest_id.usage", "=", "internal"),

@@ -283,7 +283,7 @@ python3 dashboard/export_product_dict.py --include-unsellable
 | `YYYY年MM月DD日{店}{n}单 扫码清单.csv` | 订单级白名单（序号 / Order Reference / VO Tracking No / 店），与拣货表+面单同源同批 | 载入扫码 HTML，走[运单扫码回流](#运单扫码回流替代纸质勾选--手工转录)（选用） |
 | `回传ERP销售上传表[店].xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
-| `{店}补货预判清单.xlsx` | 今日需求 / 在手 / 缺口 + `FS` + `Safety Stock` + 采购画像（**仅 GUI 有入口**：需在阶段一选填「采购单导出」；ERP 导出还须勾上 `FS`/`Safety Stock`/`Supply Remark` 三列）| 补货决策；读的 `Safety Stock` 正是 `sales_insight` 写回 ERP 的那个字段 |
+| `{店}补货预判清单.xlsx` | PZN（Name 里写的新 PZN，没变更留空）/ 今日需求 / 在手 / 缺口 + 待出库 / 在途 / 预计可用 / 预测缺口（Odoo 只读实时拉，近 7 天；本机没配 Odoo 凭据则这四列不出）+ `FS` + `Safety Stock` + 采购画像（**仅 GUI 有入口**：需在阶段一选填「采购单导出」；ERP 导出还须勾上 `FS`/`Safety Stock`/`Supply Remark` 三列）| 补货决策；读的 `Safety Stock` 正是 `sales_insight` 写回 ERP 的那个字段 |
 
 **阶段二（仓库反馈缺货后）：**
 

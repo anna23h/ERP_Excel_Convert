@@ -181,13 +181,17 @@ def unique_path(path):
     return f"{base}({i}){ext}"
 
 
-def write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None):
+def write_simple(out, outdir, fname, n_cols=None, left_cols=(), small_cols=(), widths=None,
+                 header_height=None):
     """把一张 DataFrame 写成单 sheet workbook(统一样式)。返回 (路径, 行数)。
-    left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。"""
+    left_cols/small_cols/widths 透传给 style_sheet（左对齐下沉/小字号/固定列宽），默认空=全居中自动宽。
+    header_height: 表头行高。列收窄后表头会折成多行，固定 ROW_H 只放得下两行；默认 None=不变。"""
     wb = Workbook(); ws = wb.active; ws.title = "Sheet1"
     write_df(ws, out)
     style_sheet(ws, n_cols or len(out.columns), left_cols=left_cols, small_cols=small_cols,
                 widths=widths)
+    if header_height:
+        ws.row_dimensions[1].height = header_height
     path = unique_path(os.path.join(outdir, fname))
     wb.save(path)
     return path, len(out)
