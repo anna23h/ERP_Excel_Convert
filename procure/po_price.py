@@ -1,4 +1,8 @@
-"""销售单驱动的采购价格收集表：一个产品一行，摊开它近 N 个月的每一笔采购。
+"""销售单驱动的采购价格收集表：一个产品一行，摊开它 SO 创建日前 N 个月的每一笔采购。
+
+窗口以 SO 创建日（`create_date`）为终点往前推 N 个月，当天的采购算在内：之后才下的采购
+不可能是这张单的成本来源，同一组单什么时候跑也不该变（2026-11-02 用户定）。
+一组单创建日不同时，整组共用最晚的那天。
 
 用法：
     python3 -m procure.po_price S04041 S04042
@@ -89,7 +93,8 @@ def num(v):
 # 取数
 # --------------------------------------------------------------------------
 def pull_products(od, so_names):
-    """目标销售单 → [{pid, 销售单, 产品代码, 产品名称, 销售数量, 分行}]，按单内原顺序去重。
+    """目标销售单 → ([{pid, 销售单, 产品代码, 产品名称, 销售数量, 分行}], 窗口截止日)，
+    产品按单内原顺序去重，截止日取这组单里最晚的创建日。
 
     同一产品会在一张单里出现多次——本库的 SO 用 `line_section` 按**客户的每张采购订单**
     分节，同一个产品在几张客户订单里各占一行（实测 S04042 的 Ferrum 是 5000 + 3200）。
@@ -101,13 +106,14 @@ def pull_products(od, so_names):
     人一眼看到「这行没采购记录」比它凭空消失要好。
     """
     orders = od.search_read_all("sale.order", [("name", "in", list(so_names))],
-                                ["name", "state", "partner_id", "date_order"])
+                                ["name", "state", "partner_id", "create_date"])
     missing = [n for n in so_names if n not in {o["name"] for o in orders}]
     if missing:
         raise OdooError(f"找不到销售单：{missing}（单号大小写敏感，确认没写错）")
     for o in sorted(orders, key=lambda o: o["name"]):
-        say(f"    {o['name']}  {o['date_order'][:10]}  state={o['state']}  "
+        say(f"    {o['name']}  创建 {o['create_date'][:10]}  state={o['state']}  "
             f"{m2o_name(o['partner_id'])}")
+    end = dt.date.fromisoformat(max(o["create_date"][:10] for o in orders))
 
     lines = od.search_read_all(
         "sale.order.line", [("order_id", "in", [o["id"] for o in orders])],
@@ -135,25 +141,25 @@ def pull_products(od, so_names):
         r["产品代码"] = p.get("default_code") or ""
         r["产品名称"] = p.get("name") or ""
     say(f"  目标单 {len(orders)} 张 / 明细 {len(lines)} 行 / 产品 {len(out)} 个（已按产品合并）")
-    return out
+    return out, end
 
 
-def pull_po(od, pids, months):
-    """近 N 个月的采购行 → {pid: [行]}（按日期升序）。
+def pull_po(od, pids, months, end):
+    """截止日 end 及之前 N 个月的采购行 → {pid: [行]}（按日期升序）。
 
     只认 `state ∈ {purchase, done}`：草稿/询价单还没成交，价格不作数。
     一张采购单里同一产品拆成几行的情况**逐行保留**（实测 P11255 的 20 件 + 120 件）——
     这是收集表，合并就等于替人做了判断。
     """
-    cut = (dt.date.today() - dt.timedelta(days=30 * months)).isoformat()
+    cut = (end - dt.timedelta(days=30 * months)).isoformat()
     rows = od.search_read_all(
         "purchase.order.line",
         [("product_id", "in", pids), ("state", "in", ["purchase", "done"]),
-         ("date_order", ">=", cut)],
+         ("date_order", ">=", cut), ("date_order", "<=", f"{end} 23:59:59")],
         ["product_id", "partner_id", "product_qty", "price_unit", "date_order",
          "order_id"], label="采购历史")
     kept = [r for r in rows if not is_noise_vendor(m2o_name(r["partner_id"]))]
-    say(f"  采购历史 {len(rows)} 行（{cut} 起），剔除退货/测试单 {len(rows) - len(kept)} 行")
+    say(f"  采购历史 {len(rows)} 行（{cut} ~ {end}），剔除退货/测试单 {len(rows) - len(kept)} 行")
     by_pid = defaultdict(list)
     for r in kept:
         by_pid[m2o_id(r["product_id"])].append(r)
@@ -178,7 +184,7 @@ def build_row(prod, rs, months):
     row = {"销售单": prod["销售单"], "产品代码": prod["产品代码"],
            "产品名称": prod["产品名称"], "销售数量": prod["销售数量"]}
     if not rs:
-        notes.append(f"近 {months} 个月无采购记录")
+        notes.append(f"SO 创建日前 {months} 个月无采购记录")
         row["采购笔数"] = 0
         row["备注"] = "；".join(notes)
         return row
@@ -217,7 +223,7 @@ def build_sheet(wb, rows):
     for r in range(2, ws.max_row + 1):
         for c in price_idx:
             ws.cell(r, c).number_format = "0.0000"
-    ws.freeze_panes = "D2"        # 产品代码/名称随滚动留在眼前
+    ws.freeze_panes = "F2"        # 产品代码/名称/销售数量/成本随滚动留在眼前
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLS))}{max(2, ws.max_row)}"
     # 「成本」不进 left_cols/small_cols：用户裁定它的样式与其余列一致，不做任何标记
     # （2026-09-02）。整列为空时 auto_align 判不出方向，跟着默认居中即可。
@@ -233,16 +239,16 @@ def run(so_names, months=3, outdir=None):
     outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
     od = Odoo.connect()
     say("· 目标销售单")
-    prods = pull_products(od, so_names)
+    prods, end = pull_products(od, so_names)
     if not prods:
         raise OdooError("目标单里没有产品行（可能整单都是分节/备注行）。")
-    by_pid, cut = pull_po(od, [p["pid"] for p in prods], months)
+    by_pid, cut = pull_po(od, [p["pid"] for p in prods], months, end)
     rows = [build_row(p, by_pid.get(p["pid"], []), months) for p in prods]
 
     wb = Workbook()
     build_sheet(wb, rows)
     say(f"· 产品 {len(rows)} 个 / 采购记录 {sum(r.get('采购笔数') or 0 for r in rows)} 笔"
-        f"（窗口 {cut} ~ {dt.date.today():%Y-%m-%d}）")
+        f"（窗口 {cut} ~ {end}，截止日取最晚的 SO 创建日）")
     for r in rows:
         n = r.get("采购笔数") or 0
         rng = (f"{num(r['最低价'])}~{num(r['最高价'])}" if n else "—")
@@ -250,7 +256,7 @@ def run(so_names, months=3, outdir=None):
             f"采购 {n:2d} 笔 / {num(r.get('采购总量')):>6s} 件 · {rng}")
     empty = [r["产品代码"] for r in rows if not r.get("采购笔数")]
     if empty:
-        say(f"  ⚠ 近 {months} 个月无采购记录：{'、'.join(empty)}（该行逐笔列为空，需人工另查）")
+        say(f"  ⚠ SO 创建日前 {months} 个月无采购记录：{'、'.join(empty)}（该行逐笔列为空，需人工另查）")
 
     os.makedirs(outdir, exist_ok=True)
     path = unique_path(os.path.join(
@@ -263,9 +269,9 @@ def run(so_names, months=3, outdir=None):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="销售单 → 近 N 个月采购价格收集表（一品一行，成本列人工填）")
+        description="销售单 → SO 创建日前 N 个月采购价格收集表（一品一行，成本列人工填）")
     ap.add_argument("orders", nargs="+", help="销售单号，如 S04041 S04042")
-    ap.add_argument("--months", type=int, default=3, help="采购历史回溯月数（默认 3）")
+    ap.add_argument("--months", type=int, default=3, help="从 SO 创建日往前回溯的月数（默认 3）")
     ap.add_argument("-o", "--outdir", help="输出目录（默认 output/YYYYMMDD）")
     a = ap.parse_args()
     try:

@@ -23,7 +23,7 @@
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
 | `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
-| `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它近 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
+| `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它 SO 创建日前 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
 | `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；认两家批发商版式；单价 AEP 净价、税按税码分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
 | `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
@@ -498,9 +498,12 @@ GUI 走共用输出目录，命令行则就地放在原文件旁边（操作员�
 
 ## 采购价格收集表（成本核算用）
 
-`procure/po_price.py`。给定若干销售单 → 一张单 sheet 的 xlsx，**一个产品一行**，把它近 N 个月
+`procure/po_price.py`。给定若干销售单 → 一张单 sheet 的 xlsx，**一个产品一行**，把它 SO 创建日前 N 个月
 （默认 3）在 ERP 里的**每一笔**采购摊在这一行上，供人工核算成本。跑法见
 [运行指令 · 十二](启动说明/运行指令.md)。
+
+**窗口以 SO 创建日（`create_date`）为终点往前推 N 个月，当天的采购算在内**（2026-11-02 用户定）：
+之后才下的采购不可能是这张单的成本来源，同一组单什么时候跑也不该变。一组单创建日不同时，整组共用最晚的那天。
 
 **这条流水线只收集整理，不做任何计算判断**（2026-09-02 用户用改过的样表定的口径）。
 表上「成本」列**脚本一个字都不写**，留空由人填。为什么不能算：同一产品在窗口内往往有好几个价，
