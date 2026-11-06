@@ -24,6 +24,7 @@
 | `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它 SO 创建日前 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
+| `procure/price_check.py` | **发票比价核对**（客户发票 / 销售单 → 逐行 SO 净价 × 开票净价 × 发票日前最近一张 PO 价 → 单件毛利与毛利率；**两边一律比去税净价**，首列 PZN；开票价 ≠ SO 价、税码不一致、毛利 ≤ 0 标 ⚠） | `python3 -m procure.price_check INV/2026/11/0069 S04094`（无 GUI，需 Odoo 凭据）；有 skill | [下方章节](#发票比价核对售价-vs-采购价) + 脚本 docstring | 在用（2026-11-06 起） |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
 | `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；认两家批发商版式；单价 AEP 净价、税按税码分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
 | `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
@@ -545,6 +546,35 @@ VO Test Order 是虚拟库存映射测试单，单价恒为 0，不剔会把最�
 故只按 `Alibaba` 子串匹配、不写全名。
 **一张采购单里同一产品拆成的几行逐行保留**（实测 P11255 的 20 件 + 120 件）——
 这是收集表，合并就等于替人做了判断。
+
+## 发票比价核对（售价 vs 采购价）
+
+`procure/price_check.py`。给定若干客户发票号（或 SO 号，取其下已过账的客户发票）→ 每张发票一张表，
+逐行对上 SO 价和最近一张采购价，确认售价、毛利是不是都对。聊天里打印 Markdown 表，同时落
+`output/YYYYMMDD/比价-<参数>-YYYYMMDD.xlsx`（每张发票一个 sheet，冻结 PZN + 品名）。跑法见
+[运行指令 · 十七](启动说明/运行指令.md)。
+
+**固定格式（2026-11-06 用户定）：**
+
+- **两边一律比去税后的净价。**本库销售税（19% / 7% Umsatzsteuer）是 `price_include=True`，
+  SO 与发票的 `price_unit` 是**含税价**；采购税（Vorsteuer）不含税。直接拿两个 `price_unit`
+  比会把毛利高估一截（当天第一版就这么错的：6% 算成 21%）。净单价按
+  `price_unit × (1 − 折扣) ÷ (1 + 含税税率)` 算，税率现查 `account.tax`；**不用
+  `price_subtotal ÷ 数量`**——行级先舍入到分，同一单价在不同数量上会差 1 分，SO 和发票数量不同就满表假 ⚠。
+- **第一列 PZN，第二列品名**，方便按 PZN 查。PZN 取产品的 `pzn` 字段，空了才取 default_code 末段数字。
+- 列：PZN / 产品 / 税率 / 数量 / SO 净价 / 开票净价 / 采购价（PO）/ 单件毛利 / 毛利率 / 采购单号 / 采购日期 / 备注，末行合计。
+
+**采购价取发票日当天或之前最近一张已确认的 PO**（`state ∈ {purchase, done}`，剔除
+`common/vendor.NOISE_VENDOR_PATS`）。不像采购价格收集表那样截到 SO 创建日：这类单常常先接单、后采购
+（当天两张实测单的货全是 SO 创建之后才进的）；也不「不限日期」，否则过几天重跑会取到之后的 PO。
+
+**⚠ 只标不判**：开票净价 ≠ SO 净价（容差 1 分）、SO 行与发票行税码不同、毛利 ≤ 0、发票日前无采购记录。
+税码单列一条是因为实测 S04094 有 6 行 SO 挂 19%、发票挂 7%——含税单价差约 10%，**净价一分不差**，
+只看含税价会误判成改了价。
+
+**护栏**：每张发票 Σ 产品行净额必须等于 `amount_untaxed`，对不上就停——有不带产品的金额行（运费、手工行）没进表。
+
+与采购价格收集表的分工：那张给人**手填成本**（逐笔摊开、不算）；这张是对已开发票**做核对**（取最近一张、算毛利）。
 
 ## SO 导入表（客户 Bestellung PDF → Odoo 销售单）
 
