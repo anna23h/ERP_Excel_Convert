@@ -24,6 +24,7 @@ ERP_ONHAND      = "Order Lines/Product/Quantity On Hand"
 TM_KEY          = "系统履约单号"
 TM_STATUS       = "履约单状态"
 TM_LABEL_STATUS = "面单申请状态"
+TM_LABEL_TIME   = "面单生成时间"   # 天猫判罚从面单完成起计时；阶段一据此排序/截单(ISSUES: [拣货面单] N)
 
 CANCEL_STATUSES = {"履约取消", "平台申请取消"}
 NEW_ORDER_STATUS = "新订单"   # 待批量获单(确认接单)的履约单状态
@@ -91,14 +92,19 @@ LABEL_DONE = "已完成"   # 面单申请状态=已完成 → 运单已就绪
 
 
 def load_full_tmall(path):
-    """完整天猫导出(全量、可跨多日) → DataFrame，索引=15位单号，含 履约单状态/面单申请状态。
+    """完整天猫导出(全量、可跨多日) → DataFrame，索引=15位单号，含 履约单状态/面单申请状态/面单生成时间
+    (后者转 datetime，缺列或解析不了为 NaT——只用于阶段一排序/截单，不参与分流)。
     这是阶段一/二唯一的天猫输入：既定发货范围，又给负集分桶(取消/无运单)。
     全量含历史多日，同一单号保留最后一条。无文件返回空 DataFrame。"""
     if not path:
-        return pd.DataFrame(columns=[TM_STATUS, TM_LABEL_STATUS])
-    df = _read_tmall_sheet(path, usecols=[TM_KEY, TM_STATUS, TM_LABEL_STATUS])
+        return pd.DataFrame(columns=[TM_STATUS, TM_LABEL_STATUS, TM_LABEL_TIME])
+    want = {TM_KEY, TM_STATUS, TM_LABEL_STATUS, TM_LABEL_TIME}
+    df = _read_tmall_sheet(path, usecols=lambda c: c in want)
+    if TM_LABEL_TIME not in df.columns:      # 旧版/精简导出没有这列：只影响阶段一排序，照常分流
+        df[TM_LABEL_TIME] = pd.NaT
+    df[TM_LABEL_TIME] = pd.to_datetime(df[TM_LABEL_TIME], errors="coerce")
     df = df.assign(_k=last15(df[TM_KEY])).drop_duplicates("_k", keep="last")
-    return df.set_index("_k")[[TM_STATUS, TM_LABEL_STATUS]]
+    return df.set_index("_k")[[TM_STATUS, TM_LABEL_STATUS, TM_LABEL_TIME]]
 
 
 def done_keys_from_full(full):

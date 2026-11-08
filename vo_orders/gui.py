@@ -75,6 +75,8 @@ class App:
         self.erp = tk.StringVar()          # 阶段一 ERP
         self.full = tk.StringVar()         # 阶段一 完整天猫导出
         self.po = tk.StringVar()           # 阶段一 采购单导出(选填，补货预判清单采购参考)
+        self.lim_vo = tk.StringVar()       # 阶段一 VO 当日处理单数(留空=全部；ISSUES: [拣货面单] N)
+        self.lim_gw = tk.StringVar()       # 阶段一 GW 当日处理单数
         self.erp2 = tk.StringVar()         # 阶段二 销售 ERP(与阶段一独立)
         # 默认按日期结构化归档：output/YYYYMMDD(运行当天)，免操作员每次手动改
         # 统一用英文 output/，与 CLI/build 默认一致(消除中英文分裂)
@@ -188,6 +190,18 @@ class App:
         self._file_row(t1, "采购单导出:", self.po, optional=True)
         self._hint(t1, "ERP 导出可多选(VO/GW 各一份)。完整天猫导出必传。"
                        "采购单导出选填——无补货需求则跳过。")
+        frl = ttk.Frame(t1); frl.pack(fill="x", pady=4)
+        ttk.Label(frl, text="当日处理单数:", width=self.LABEL_W, anchor="e",
+                  style="Field.TLabel").pack(side="left")
+        ttk.Label(frl, text="VO", style="Field.TLabel").pack(side="left", padx=(6, 2))
+        ttk.Entry(frl, textvariable=self.lim_vo, width=7).pack(side="left")
+        ttk.Label(frl, text="单    GW", style="Field.TLabel").pack(side="left", padx=(4, 2))
+        ttk.Entry(frl, textvariable=self.lim_gw, width=7).pack(side="left")
+        ttk.Label(frl, text="单", style="Field.TLabel").pack(side="left", padx=(4, 0))
+        ttk.Label(frl, text="选填", width=4, font=("", 9),
+                  foreground="#9aa0a6").pack(side="right", padx=(4, 0))
+        self._hint(t1, "留空 = 全部。填了只把面单生成时间最早的 N 单排进 拣货表+面单 / 扫码清单 / LP清单；"
+                       "新订单获单清单、回传ERP上传表、补货预判清单仍按全部订单出。")
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
                   text="点「开始生成」自动生成：拣货表+面单 / LP清单(每 100 个一段，复制去天猫下载面单) / "
                        "新订单获单清单 / 回传ERP上传表。"
@@ -328,13 +342,25 @@ class App:
         if not self.erp.get() or not self.full.get():
             messagebox.showwarning("缺少文件", "请先选择 ERP 导出 和 完整天猫导出")
             return
+        limits = {}
+        for ch, var in (("VO", self.lim_vo), ("GW", self.lim_gw)):
+            v = var.get().strip()
+            if not v:
+                continue
+            if not v.isdigit():
+                messagebox.showwarning("处理单数有误", f"{ch} 处理单数请填非负整数，或留空表示全部")
+                return
+            limits[ch] = int(v)
         self._write("【阶段一】分流 + 生成拣货表+面单 / 新订单获单清单 / 回传ERP销售上传表…")
+        if limits:
+            self._write("  当日处理单数上限: " + " / ".join(f"{k} {v} 单" for k, v in limits.items()))
         erp = self._erp_list()
         full = self.full.get() or None
 
         def work():
             log, _ = build_excel.build(erp, full, outdir=self.outdir.get(),
-                                       po_path=self.po.get().strip() or None)
+                                       po_path=self.po.get().strip() or None,
+                                       limits=limits)
             return log
         self._bg(work)
 

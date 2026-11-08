@@ -2,7 +2,7 @@
 """在 step4_merge 分流基础上生成「拣货表+面单」workbook (输出表 A)。
 
 用法:
-    python3 build_excel.py [erp] [tmall] [out.xlsx]
+    python3 build_excel.py <erp[,erp2]> <完整天猫导出> [out.xlsx] [--limit-vo N] [--limit-gw N]
 默认输出: output/拣货表+面单.xlsx
 """
 import sys, os, re
@@ -424,7 +424,33 @@ def _ch_suffix(ch_series):
     return chans[0] if len(chans) == 1 else ""
 
 
-def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None):
+def order_by_label_time(sub, label_time, limit=None):
+    """按天猫「面单生成时间」排序 + 按订单数截单（ISSUES: [拣货面单] N）。
+
+    sub: 一个店铺的发货行(SKU 明细，含 `_key`)；label_time: Series，索引 15 位单号 → datetime。
+    - 排列：面单生成时间**从晚到早**（最新在上、最老在底）。操作员习惯从表底往上打包，
+      实际打包即从早到晚。同一时间按原出现顺序；多品订单的行保持连续。
+      取不到时间的单视作最新：排最上、最后才被选中。
+    - 截单：limit 为正整数时只留**最早**的 limit 单（即表底的 limit 单），整单进出、不拆多品订单。
+      limit 为 None 或 ≥ 订单数时全留。
+    返回 (排好并截好的行, 总单数, 留下单数, 无时间单号列表)。"""
+    t = sub["_key"].map(label_time)
+    pos = pd.factorize(sub[s4.ERP_ORDER_REF])[0]
+    out = (sub.assign(_t=t.values, _pos=pos)
+           .sort_values(["_t", "_pos"], ascending=[False, True],
+                        na_position="first", kind="stable"))
+    orders = pd.unique(out[s4.ERP_ORDER_REF])
+    no_time = list(pd.unique(out.loc[out["_t"].isna(), s4.ERP_ORDER_REF]))
+    total = len(orders)
+    if limit is not None and 0 <= limit < total:
+        keep = set(orders[total - limit:]) if limit else set()
+        out = out[out[s4.ERP_ORDER_REF].isin(keep)]
+    out = out.drop(columns=["_t", "_pos"]).reset_index(drop=True)
+    return out, total, int(out[s4.ERP_ORDER_REF].nunique()), no_time
+
+
+def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None,
+          limits=None):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
     输入 ERP 导出（天猫两店混合，经 ∩ERP 收敛）+ 一份完整天猫导出：
@@ -433,6 +459,9 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     - 回传ERP销售上传表：取消/无运单/已补运单三类 Terms 写回**合并一张**(External ID 匹配键)。
     获单清单与上传表的去处与店无关 → **两店同批时合并成一份、文件名不带店**；
     单店批次仍带店名(见 `_ch_suffix`)。
+    limits: {"VO": 200, "GW": 100} 按店限定当日处理单数(ISSUES: [拣货面单] N)，缺省/None = 全部；
+    只约束 拣货表+面单 / 扫码清单 / LP清单，按面单生成时间取最早的 N 单，其余产出照旧全量。
+    拣货表+面单的排列一律按面单生成时间从晚到早(见 `order_by_label_time`)。
     完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
     负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
     os.makedirs(outdir, exist_ok=True)
@@ -458,9 +487,22 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         facesheet["_ch"] = (facesheet[s4.ERP_ORDER_REF].astype(str)
                             .str.split("_", n=1).str[0])
         chans = sorted(facesheet["_ch"].unique())
+        label_time = full[s4.TM_LABEL_TIME] if s4.TM_LABEL_TIME in full else pd.Series(dtype="datetime64[ns]")
         for ch in chans:
-            sub = (facesheet[facesheet["_ch"] == ch]
-                   .drop(columns="_ch").reset_index(drop=True))
+            sub = facesheet[facesheet["_ch"] == ch].drop(columns="_ch")
+            lim = (limits or {}).get(ch)
+            sub, total, kept, no_time = order_by_label_time(sub, label_time, lim)
+            if lim is not None and kept < total:
+                log.append(f"[{ch}] 发货 {total} 单，按上限取面单生成时间最早的 {kept} 单，"
+                           f"余 {total - kept} 单未排入(次日仍会进发货范围)")
+            elif lim is not None:
+                log.append(f"[{ch}] 发货 {total} 单，未超上限 {lim}，全部排入")
+            if no_time:
+                log.append(f"⚠ [{ch}] {len(no_time)} 单取不到面单生成时间，排在最上、最后才被选中: "
+                           + ", ".join(map(str, no_time[:10])) + (" …" if len(no_time) > 10 else ""))
+            if sub.empty:
+                log.append(f"[{ch}] 上限为 0，未生成拣货表+面单")
+                continue
             # 序号按订单计数(店内独立编号)：同一 Order Reference 的多行共享一个序号，
             # 按订单出现顺序 1,2,3… 密集连续。行已按订单连续(merge_multiproduct 依赖此前提)，
             # factorize 给同单相同码、按首次出现顺序递增，+1 转 1-based。
@@ -603,15 +645,21 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
 
 
 def main():
-    args = sys.argv[1:]
-    if len(args) < 2:
-        print("用法: python3 build_excel.py <erp[,erp2...]> <完整天猫导出> [out.xlsx]")
-        return
-    erp_paths = args[0].split(",")
-    full_tmall = args[1]
-    out_arg = args[2] if len(args) > 2 else None
-    outdir = os.path.dirname(out_arg) if out_arg else "output"
-    log, st = build(erp_paths, full_tmall, out_arg, outdir)
+    import argparse
+    ap = argparse.ArgumentParser(description="阶段一：ERP + 完整天猫导出 → 拣货表+面单 等")
+    ap.add_argument("erp", help="ERP 导出，多份用英文逗号分隔(VO/GW 各一份)")
+    ap.add_argument("full", help="完整天猫导出")
+    ap.add_argument("out", nargs="?", default=None, help="拣货表+面单输出路径(选填)")
+    ap.add_argument("--limit-vo", type=int, default=None,
+                    help="VO 当日处理单数上限(按面单生成时间取最早的 N 单)，缺省=全部")
+    ap.add_argument("--limit-gw", type=int, default=None, help="GW 当日处理单数上限，同上")
+    a = ap.parse_args()
+    for v in (a.limit_vo, a.limit_gw):
+        if v is not None and v < 0:
+            ap.error("处理单数上限不能为负")
+    limits = {k: v for k, v in (("VO", a.limit_vo), ("GW", a.limit_gw)) if v is not None}
+    outdir = os.path.dirname(a.out) if a.out else "output"
+    log, st = build(a.erp.split(","), a.full, a.out, outdir, limits=limits)
     for ln in log:
         print(ln)
 
