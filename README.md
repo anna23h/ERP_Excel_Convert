@@ -17,7 +17,9 @@
 | `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`（2026-10-19 起不再进 VOTool） | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
-| `odoo_api/` | **库存周报**（Odoo XML-RPC **只读**拉数：销量 × 在手库存 × 安全库存 三合一，周频 launchd 自动跑） | `python3 odoo_api/discover.py`（先跑，环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 代码就绪，**待真实 ERP 连通验证** |
+| `odoo_api/restock.py` | **备货汇总（每周三）**（Odoo **只读**：VO/GW 零售销量按 BoM 折回基础品 → 常销品的建议数量 / 最近一次与最低价供应商 / 询价单供应商，launchd 周三自动跑） | `python3 odoo_api/restock.py` | [下方章节](#备货汇总每周三odoo_apirestockpy--quote_fillpy) + [odoo_api/README.md](odoo_api/README.md) | 在用（2026-11-08 起） |
+| `odoo_api/quote_fill.py` | **询价单回填**（Anna 导出的空询价单 + 本周备货汇总 → 可导入的询价单表，只给「询价单供应商」用） | `python3 odoo_api/quote_fill.py <空询价单.xlsx>` | 同上 | 在用（2026-11-08 起，待首张真实询价单） |
+| `odoo_api/stock_report.py` | **库存周报**（销量 × 在手 × 安全库存 三合一）——**已搁置**，2026-11-08 起周频定时改跑 `restock.py`；拉数函数仍被它复用 | `python3 odoo_api/discover.py`（环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 搁置 |
 | `lot_entry/` | **入库批次录入**（Odoo 入库单导出 → 操作员录入表 → 批次/效期/数量导回 Odoo 的导入表 + 核对清单；一个入口按文件内容自动分流） | VO 拉单 GUI 的「入库批次」标签页；拖 xlsx 到 `Lot-Entry-Windows.bat` / 双击 `Lot-Entry-Mac.command`；或 `python3 lot_entry/lot_entry.py <xlsx>` | [lot_entry/README.md](lot_entry/README.md) | 建设中（2026-10-11 起，待仓库实测） |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐）；`--code128` 出 **Code128 条码贴纸**（条码在上、数字在下） | `python3 make_labels.py <储位.xlsx / codes.txt>`；`python3 make_labels.py --code128 <号码…>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
@@ -665,7 +667,41 @@ Claude 侧流程见 `.claude/skills/SAD水印归类/SKILL.md`。
 一旦出现「财务单已收 > 订购量」说明前提被破，脚本**拒绝生成回写导入表并以退出码 2 中止**——
 负的未到量在满足前提的数据上不可能发生，此时回写只会把错误写进 ERP。
 
-## 库存周报（`odoo_api/`，Odoo 只读拉数 + 天猫处罚数据驱动优先级）
+## 备货汇总（每周三，`odoo_api/restock.py` + `quote_fill.py`）
+
+ISSUES `[备货提醒] A`（2026-11-08）。每周三固定出一张备货汇总，每条提醒自带现成方案：
+**建议数量、供应商、上次采购价**。Odoo 对脚本**只读**：询价单由 Anna 在 Odoo 建好导出，
+脚本补行写数，Anna 核对后手动导入——ERP 数据不干净，写权限会增加复杂度且责任难界定。
+
+```bash
+python3 odoo_api/restock.py                          # → output/YYYYMMDD/备货汇总-YYYYMMDD.xlsx
+python3 odoo_api/quote_fill.py <空询价单.xlsx>       # → output/YYYYMMDD/<PO号>_询价单回填.xlsx
+```
+
+口径（逐条与用户对齐）：
+- **销量只算 VO / GW 开头的零售单**（`=like` 前缀匹配），SW / S0 批量单不算。
+- **组合装按 phantom BoM 折回基础品**（套件卖 1 件 = 组件 × BoM 数量）。2026-11-08 实测套件占零售件数 22%；
+  有后缀却没 BoM 的品不按后缀猜，列进「待核」。
+- 近 12 周（跨 13 个自然周）里 **≥6 周有销量**才进汇总；偶发长尾一律不进。实测 241 品占零售件数 90%。
+- **建议数量 = ⌈峰值周销量 × 备货周数 − 在手 − 在途⌉**。扣在途（近 60 天内创建的入库），否则会重订路上的货；
+  趋势（近 4 周 vs 之前）单列，不进公式。
+- **备货周数按采购形态**：近 12 个月里单张 PO >100 件的大单量占采购总量 ≥50% → 大批量（直接对厂家 /
+  wholesaler）**3 周**；其余 **1 周**。单张 >5000 件疑录错，不参与分档、列进「待核」。
+- 供应商：主列**最近一次**供应商 + 去税净价，并列**最低净价**那家。近 12 个月只出现过一家供应商的 →
+  **询价单供应商**（走 Odoo 询价单；其余产品在 A3000 比价下单，现阶段只看汇总表）。
+
+| 产出 | 内容 |
+|---|---|
+| `备货汇总-YYYYMMDD.xlsx` · `备货汇总` | 常销品一行一品，需补的在前（按可撑峰值周数升序）：档位 / SKU / 产品 / **建议数量** / 在手 / 在途 / 峰值周销量 / 备货周数 / 可撑峰值周数 / 周均 / 趋势 / 有销周数 / 12周销量 / **询价单供应商** / 最近一次供应商·净价·日期 / 最低价供应商·净价 / 供应商数 / 采购单数 / 大单量占比 / [缺货罚款EUR] / 备注 / 产品ID |
+| 同上 · `询价单供应商` | 每家一行：独家常销品数 / 本周需补品数 / 建议数量合计 / 需补 SKU |
+| 同上 · `待核` | 疑录错大单 / 有后缀无 BoM / 常销无采购记录 |
+| `<PO号>_询价单回填.xlsx` | 模板列序照抄，补该询价单供应商本周需补的行：产品外部 ID / 数量 / 上次净价 / 7%·19% 进项税 |
+
+旧「库存周报」的三张附表不再出：安全库存 A/B 不一致（补货规则基本没在用）、安全库存待配清单
+（Safety Stock 是静态值，没人维护就过时；动态维护另立 `[安全库存] A`）、缺货违规风险清单（改成主表
+`--violations` 时才有的一列）。
+
+## 库存周报（`odoo_api/stock_report.py`，**已搁置**，由上一节备货汇总取代）
 
 **这条流水线的目标（2026-08-23 明确）：让库存合理化以降低天猫端违规订单，
 至少不能因为库存问题挨罚。** 此前报表按销量排名、按安全库存算缺口，从未与实际罚款挂钩
@@ -704,7 +740,7 @@ Claude 侧流程见 `.claude/skills/SAD水印归类/SKILL.md`。
 上面三条回写吃的是**手工导出**的 Excel。周频跑一次，每次都要人进 ERP 点导出、
 还得记住筛选条件。`odoo_api/` 把这一步换成 XML-RPC 拉数：销量（`sale.report`，
 默认近 4 周）× 在手库存（`stock.quant`，内部库位汇总）× 安全库存（**两路并列**）
-合成一张周报，`launchd` 每周一自动跑。详见 [odoo_api/README.md](odoo_api/README.md)。
+合成一张周报。**2026-11-08 起搁置**，launchd 改为每周三跑 `restock.py`（上一节）。详见 [odoo_api/README.md](odoo_api/README.md)。
 
 **只读。** 本层不写 ERP——`Safety Stock` 回写继续走人工导入表，保留人工过目、出错能中断
 （沿用 SPEC「第二档 Odoo API 暂不自动化」的判断，本次只放开读）。写方法在客户端就被拦下，
@@ -758,5 +794,6 @@ Python + pandas + openpyxl。
 - [x] **储位标签生成**（`make_labels.py`）：储位编码 → 每码一页「QR + 人眼可读文字」标签 PDF，尺寸驱动、几何全部吸附打印头点阵（得力 DL720C 40×20mm@203dpi），QR 版本锁定 + 模块边长硬下限校验（低于扫描枪规格直接拒绝），可选退化回测 `--verify` 与 1-bit PNG `--png`。输入吃 Excel（默认 `储位编码` 列，`-c` 可改）或 txt（每行一个），去重保序；产出落 `output/labels/`（`储位标签_QR.pdf` + `储位编码.csv`）。依赖不在主 requirements 里，按需 `pip install -r requirements-labels.txt`。UTF-8 控制台兜底免去 Windows cp1252 崩溃。打印须选「实际大小 / 100%」，否则模块宽被缩放。早期 Code128 三变体版 `make_bin_labels.py` **已删除**（2026-08-15）：其 QR 变体是本脚本的劣化版（模块 0.375mm、位置不吸附点阵、无版本锁定/下限校验、文字按 7 位硬切），独有的 Code128 与 20×40 竖版现场未采用；将来若要，做成本脚本的开关复用同一套点阵吸附与校验，不再另起脚本。
 - [x] **Code128 条码贴纸**（`make_labels.py --code128`，2026-10-26，ISSUES [标签] L1）：照上条约定做成开关而非新脚本。位置参数可多个，**已存在的文件**照旧读（txt / Excel + `-c`），**否则当字面编码**（形如 `.txt/.csv/.xlsx` 但不存在的直接报错，防打错路径被印成条码）。reportlab 自带 Code128（自动 C/B 子集，奇数位数字自动切 B），不加依赖。模块宽 = 放得下「条码 + 两侧各 ≥10 模块静区」的最大整数 dot，低于 0.25mm（2 dot）拒绝；40mm 宽下 12 位数字 25.3mm、15 位 33.5mm，都是 2 dot。条高 11.5mm、数字 Helvetica-Bold 居中在条下，PDF 为矢量矩形且坐标吸附点阵。产出 `output/labels/条码标签_Code128.pdf`（每码一页），`--png` 另出 `png/<编码>.png`；不写 `储位编码.csv`。`--verify` 需 numpy + opencv（可选 pyzbar），不在就跳过。
 - [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。
-- [ ] **库存周报**（`odoo_api/`）：XML-RPC **只读**拉数替掉三份手工导出——`sale.report` 自定义窗口销量（默认近 4 周，不用周期写死 12 个月的 `sales_count`）× `stock.quant` 内部库位在手 × 安全库存两路并列（产品自定义字段 vs `orderpoint.product_min_qty`，后者已滤 `trigger=manual` 临时建议）→ `库存周报.xlsx/.csv` + `安全库存不一致.csv`；产品范围取并集（`sale_ok` ∪ 有销量 ∪ 有库存 ∪ 有规则），避免漏掉已下架但仍在卖的货；`discover.py` 环境探针先跑、`test_stock_report.py` 构造数据 21 项断言通过；`launchd` 周一 08:30。**代码就绪，待用真实凭据跑通并与手工导出逐列对拍**。
+- [x] **备货汇总 + 询价单回填**（`odoo_api/restock.py` / `quote_fill.py`，2026-11-08，ISSUES [备货提醒] A）：VO/GW 前缀零售销量按 phantom BoM 折回基础品 → 常销品（≥6/13 周有销）建议数量 = ⌈峰值周 × 备货周数 − 在手 − 在途⌉，备货周数按大单量占比分 3 / 1 周；最近一次 + 最低价供应商（去税净价）；单一供应商 → 询价单供应商，`quote_fill.py` 往 Anna 导出的空询价单补行。launchd 改为周三跑它。单测 11；实跑 241 品 / 需补 173 / 询价单供应商 7 家，7 家回填均跑通（合成模板）。
+- [ ] **库存周报**（`odoo_api/stock_report.py`，**2026-11-08 起搁置**，由备货汇总取代）：XML-RPC **只读**拉数替掉三份手工导出——`sale.report` 自定义窗口销量（默认近 4 周，不用周期写死 12 个月的 `sales_count`）× `stock.quant` 内部库位在手 × 安全库存两路并列（产品自定义字段 vs `orderpoint.product_min_qty`，后者已滤 `trigger=manual` 临时建议）→ `库存周报.xlsx/.csv` + `安全库存不一致.csv`；产品范围取并集（`sale_ok` ∪ 有销量 ∪ 有库存 ∪ 有规则），避免漏掉已下架但仍在卖的货；`discover.py` 环境探针先跑、`test_stock_report.py` 构造数据 21 项断言通过；`launchd` 周一 08:30。**代码就绪，待用真实凭据跑通并与手工导出逐列对拍**。
 - [ ] **采购缺口 + 报价比较**（`procure/gap_report.py`）：销售单 → 缺口（需求 − max(0, 在手 − 他单占用)，四个中间量各占一列可复核）× 采购历史（3 个月内每家的次数/最近日期/单价/数量，窗口为空回落历史最近一次并标灰）→ 汇总对账 + 每单一张备货进度 + 询价录入（长表，一行一个「产品×供应商」，**唯一录入口**，可自己加行问新供应商）+ 报价比较（3+N 列**只读派生**，SUMIFS 从长表实时取）+ 缺口明细，共 6 张 sheet；汇总对账另有 已报价家数/最低报价（从长表实时取）与 未下单/剩余 两条口径不同的差额列（一家一张的「询价-x」底稿 2026-08-30 删除）。走 `odoo_api` 只读。重跑按 `产品代码 (+供应商)` 回收上一版六类手填内容（报价/可供/保质期/交期、分给本单、已下单量），`--fresh` 关掉。**已下单量刻意不从 Odoo PO 取**——本库 PO 是到货后才建的（2026-08-27 实测近 90 天 707 张 PO，95% 已 done、86% 的行全额收货），当下单进度用滞后一个采购周期。**S04018+S04029 实测跑通（2026-08-30 复跑：23 产品 / 17 有缺口 / 询价录入 33 行 / 6 家供应商），等实际询价一轮后再校准。**

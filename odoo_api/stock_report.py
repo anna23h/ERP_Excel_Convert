@@ -1,5 +1,9 @@
 """销量 / 在手库存 / 安全库存 三合一周报（Odoo XML-RPC 只读拉数）。
 
+**2026-11-08 起搁置**：周频定时改跑 `odoo_api/restock.py`（每周三备货汇总，ISSUES [备货提醒] A），
+它复用本文件的拉数函数（pull_qty_available / pull_in_transit / resolve_excluded_vendors / read_violations），
+改这些函数时两边都要回归。本 CLI 仍可手动跑。
+
     python3 odoo_api/stock_report.py                    # 近 4 周，默认口径
     python3 odoo_api/stock_report.py --weeks 12         # 换窗口
     python3 odoo_api/stock_report.py --since 2026-06-01 --until 2026-08-23

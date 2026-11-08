@@ -4,6 +4,31 @@
 保留人工过目、出错能中断（沿用 SPEC「第二档 Odoo API 暂不自动化」的判断，本次只放开读）。
 写操作在 `odoo_client.Odoo.ALLOWED_METHODS` 里被客户端直接拦下，不指望服务端权限兜底。
 
+## 2026-11-08 起：周频入口是 `restock.py`（备货汇总），`stock_report.py` 搁置
+
+ISSUES `[备货提醒] A`。库存周报搁置后合并改造成**每周三的备货汇总**：只算 VO/GW 前缀零售单、
+组合装按 phantom BoM 折回基础品、≥6/13 周有销的常销品才进，给出
+**建议数量 = ⌈峰值周 × 备货周数 − 在手 − 在途⌉**（大单量占比 ≥50% 的大批量品 3 周、其余 1 周）、
+最近一次与最低价供应商（去税净价）、单一供应商即「询价单供应商」。`quote_fill.py` 把它写进
+Anna 从 Odoo 导出的空询价单。跑法与口径见根 README「备货汇总（每周三）」与 `启动说明/运行指令.md` 十八。
+
+| 入口 | 用途 |
+|---|---|
+| `restock.py` | 备货汇总（launchd 周三 08:30） |
+| `quote_fill.py` | 空询价单 + 备货汇总 → 可导入的询价单表 |
+| `stock_report.py` | 旧三合一库存周报，搁置；`restock.py` 复用它的 `pull_qty_available` / `pull_in_transit` / `resolve_excluded_vendors` / `read_violations` |
+| `discover.py` | 环境探针 |
+
+与 `stock_report` 口径**刻意不同**的两处：
+- **渠道过滤是前缀**（`=like 'VO%'`）。`stock_report --ref-contains` 是子串 `like`，会命中名字中间含 VO 的单。
+- **建议数量扣在途**。`stock_report` 的派生指标不扣在途，问的是「此刻会不会挨罚」；下单要问「还要再订多少」，
+  不扣会把路上的货再订一遍。在途只认近 60 天内创建的入库 move（2026-11-08 实测排除测试供应商后
+  109 条未完成入库里 38 条超过 60 天，多是残单）。
+- 采购行同样剔除 `ODOO_EXCLUDE_VENDORS`：2026-11-08 实测技术性映射供应商近 12 个月有 479 行「采购」，
+  不剔会污染分档与供应商数。
+
+以下为库存周报（`stock_report.py`）时期的记录，口径结论多数仍成立（尖峰型需求、在手 vs 预测、套件 qty_available 等）。
+
 ## 这条流水线到底要干什么（2026-08-23 明确）
 
 **让库存合理化，以降低天猫端的违规订单，至少不能因为库存问题挨罚。**
@@ -256,7 +281,11 @@ launchctl unload ~/Library/LaunchAgents/com.ihtct.stockreport.plist
 ```
 
 `run_weekly.sh` 固定 cwd 到仓库根、优先用 `.venv/bin/python`、把每次运行追加进
-`output/odoo_api.log`（`output/` 已 gitignore）。plist 里 `--weeks 4` 之后的参数原样传给脚本。
+`output/odoo_api.log`（`output/` 已 gitignore）。plist 里 `run_weekly.sh` 之后的参数原样传给脚本。
+
+**2026-11-08 起 `run_weekly.sh` 跑的是 `restock.py`，plist 改为每周三 08:30、不带参数**（口径都是默认值）。
+周三而不是周一：周频供应商周二到货，周三跑时在手已含这批。Label / 文件名沿用旧的 `com.ihtct.stockreport`；
+已装过旧版的机器先 `launchctl unload`，再按上面三行重新 cp + load。
 
 放本机 Mac 还是自托管服务器：本机够用，且产出直接落进已经在走 Syncthing 的 `output/`。
 放服务器要多解决凭据分发和产出回传，本次没有收益。

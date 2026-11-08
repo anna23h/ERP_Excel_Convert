@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 样例：每周一 08:30 跑一次库存周报。
+<!-- 样例：每周三 08:30 跑一次备货汇总（odoo_api/restock.py，经 run_weekly.sh）。
+     周三而不是周一：周频供应商周二到货，周三跑时在手已含这批（ISSUES [备货提醒] A，2026-11-08 用户定）。
+     Label / 文件名沿用旧库存周报的，已装过的机器 unload 后重新 cp + load 即可。
      安装：改下面两处路径 → cp 到 ~/Library/LaunchAgents/ → launchctl load。
      具体步骤见 odoo_api/README.md「部署」一节。 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -9,14 +11,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Users/CHANGEME/projects/erp_excel_convert/odoo_api/run_weekly.sh</string>
-    <string>--weeks</string><string>4</string>
-    <!-- 只算天猫 C 端（VO/GW）。不加这条则销量是全渠道口径，会被 B 端整箱单主导：
-         2026-08-23 实测 B 端只占 378 行订单却占 90% 的件数。 -->
-    <string>--ref-contains</string><string>VO,GW</string>
+    <!-- 口径（VO/GW 前缀、12 周、≥6 周有销、3/1 周备货）都是 restock.py 的默认值，不用再传参数。 -->
   </array>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key><integer>1</integer>
+    <key>Weekday</key><integer>3</integer>
     <key>Hour</key><integer>8</integer>
     <key>Minute</key><integer>30</integer>
   </dict>
