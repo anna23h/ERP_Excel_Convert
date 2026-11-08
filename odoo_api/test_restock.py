@@ -30,10 +30,19 @@ def test_roll_sales_folds_kits_into_base():
 
 
 def test_sales_stats_peak_weeks_trend():
-    st = R.sales_stats({"W1": 10, "W2": 0, "W3": 30, "W4": 20}, recent_qty=20, n_weeks=8, recent_weeks=4)
+    st = R.sales_stats({"W1": 10, "W2": 0, "W3": 30, "W4": 20}, recent_qty=20, n_days=56, recent_days=28)
     assert st["峰值周销量"] == 30 and st["有销周数"] == 3 and st["销量"] == 60
-    assert st["趋势"] == pytest.approx((20 / 4) / (40 / 4) - 1)      # −50%
-    assert R.sales_stats({"W1": 5}, recent_qty=5, n_weeks=8)["趋势"] is None   # 之前没卖过 = 新起量
+    assert st["周均销量"] == pytest.approx(60 / 8) and st["近4周周均"] == pytest.approx(5)
+    assert st["趋势"] == pytest.approx(5 / 10 - 1)                    # −50%
+    assert R.sales_stats({"W1": 5}, recent_qty=5, n_days=56)["趋势"] is None   # 之前没卖过 = 新起量
+
+
+def test_demand_base_low_drop_default():
+    # 2026-11-08 用户定：近 4 周周均 ×1.2；近 7 天 < 12 周周均一半 → 近 4 周周均；近 4 周周均 < 3 → 有单再补
+    assert R.demand_base(10, 9, 10) == (pytest.approx(12), "近4周周均×1.2")
+    assert R.demand_base(10, 4, 10) == (10, "近期下降·近4周周均")
+    assert R.demand_base(2.9, 0, 10) == (0.0, "低量·有单再补")        # 低量优先于下降
+    assert R.demand_base(5, 0, 0) == (pytest.approx(6), "近4周周均×1.2")   # 无 12 周均值不判下降
 
 
 def test_classify_share_threshold_and_suspect():
@@ -52,6 +61,7 @@ def test_suggest_qty_subtracts_onhand_and_transit():
     assert R.suggest_qty(30, 3, 20, 10) == 60
     assert R.suggest_qty(10.2, 1, 0, 0) == 11          # 向上取整
     assert R.suggest_qty(10, 1, 8, 5) == 0              # 在途已够，不出负数
+    assert R.suggest_qty(0, 3, -2, 0) == 0              # 低量基数 0：负在手也不出数
 
 
 def test_vendor_profile_last_lowest_and_sole():
@@ -66,7 +76,7 @@ def test_vendor_profile_last_lowest_and_sole():
 
 
 def _build(**kw):
-    weeks = {f"W{i}": 10 for i in range(7)}
+    weeks = {f"W{i}": 10 for i in range(7)}                                  # 7 周 × 10 = 70 件 / 70 天 → 周均 7
     sales = {1: weeks, 2: dict(weeks, W0=50), 3: {"W1": 5, "W2": 5}}       # 3 只有 2 周有销 → 不进
     po = {1: [{"date": "2026-01-01", "vendor": "Solo", "qty": 500, "net": 2.0, "po": "P1"},
               {"date": "2026-02-01", "vendor": "Solo", "qty": 20, "net": 2.1, "po": "P2"}],
@@ -74,24 +84,35 @@ def _build(**kw):
               {"date": "2026-01-02", "vendor": "Y", "qty": 10, "net": 2.5, "po": "P4"}]}
     prods = {1: {"code": "A_1", "name": "大批量独家"}, 2: {"code": "B_2", "name": "常规多家"},
              3: {"code": "C_3", "name": "偶发"}}
-    return R.build_rows({1, 2, 3}, sales, {1: 40, 2: 40}, 13, po, {1: 5, 2: 60}, {1: 0, 2: 0}, prods, **kw)
+    kw.setdefault("last7", {1: 10, 2: 10})
+    return R.build_rows({1, 2, 3}, sales, {1: 40, 2: 40}, 70, po, {1: 5, 2: 60}, {1: 0, 2: 0}, prods, **kw)
 
 
 def test_build_rows_tiers_filter_and_sort():
     df, checks = _build()
     assert df["SKU"].tolist() == ["A_1", "B_2"]          # 偶发品不进；需补的在前
     a, b = df.iloc[0], df.iloc[1]
-    assert a["档位"] == "大批量·3周" and a[R.COL_SUGGEST] == 10 * 3 - 5 and a[R.COL_QUOTE_VENDOR] == "Solo"
+    # 近 4 周 40 件 → 周均 10，×1.2 = 12；大批量 3 周：12×3 − 5 = 31
+    assert a["档位"] == "大批量·3周" and a[R.COL_SUGGEST] == 31 and a[R.COL_QUOTE_VENDOR] == "Solo"
+    assert a["基数口径"] == "近4周周均×1.2"
     assert b["档位"] == "常规·1周" and b[R.COL_SUGGEST] == 0 and b["最低价供应商"] == "Y"
     assert checks == []
     qv = R.quote_vendors(df)
     assert qv.iloc[0].to_dict()["需补 SKU"] == "A_1"
 
 
+def test_build_rows_drop_and_low_volume():
+    df, _ = _build(last7={1: 2, 2: 10})                    # 1 近 7 天 2 件 < 周均 7 的一半 → 近期下降
+    a = df.set_index("SKU").loc["A_1"]
+    assert a["基数口径"] == "近期下降·近4周周均" and a[R.COL_SUGGEST] == 10 * 3 - 5
+    df, _ = _build(min_recent_avg=11)                       # 近 4 周周均 10 < 11 → 低量
+    assert set(df["基数口径"]) == {"低量·有单再补"} and df[R.COL_SUGGEST].sum() == 0
+
+
 def test_build_rows_flags_unrolled_and_no_purchase():
     df, checks = _build(unrolled={2})
     assert "有后缀无 BoM" in df.set_index("SKU").loc["B_2", "备注"]
-    df, checks = R.build_rows({9}, {9: {f"W{i}": 1 for i in range(6)}}, {}, 13, {}, {}, {},
+    df, checks = R.build_rows({9}, {9: {f"W{i}": 1 for i in range(6)}}, {}, 84, {}, {}, {},
                               {9: {"code": "Z_9", "name": "无采购"}})
     assert checks[0]["类型"] == "常销无采购记录" and df.loc[0, "供应商数"] == 0
 

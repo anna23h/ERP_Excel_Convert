@@ -13,8 +13,11 @@
   - **组合装按 phantom BoM 折回基础品**：套件卖 1 件 = 组件 × BoM 数量。2026-11-08 实测套件占
     零售件数 22%，不折算会把基础品的需求低估、并把同一实物拆成几行。有后缀却没 BoM 的品不猜，列进「待核」。
   - 窗口近 12 周（跨 13 个自然周）。**有销周数 ≥ 6 才进汇总**（常销品）；偶发长尾一律不进，缺货也不列。
-  - 建议数量 = ⌈峰值周销量 × 备货周数 − 在手 − 在途⌉，不足 0 记 0。
-    · 峰值而非周均：零售需求是尖峰型（峰值/周均中位 2.4×，见 odoo_api/README）。
+  - 建议数量 = ⌈备货基数 × 备货周数 − 在手 − 在途⌉，不足 0 记 0。备货基数（ISSUES [备货提醒] B，2026-11-08 用户定）：
+    · 默认 = 近 4 周周均 × `--avg-factor`（1.2）。最初用 12 周峰值周，峰值/周均中位 3.3×，需补 173/241 偏高被否。
+    · 近 7 天 < 12 周周均 × `--drop-ratio`（50%）→ 「近期下降」，基数 = 近 4 周周均（不乘系数）。
+      **不看在手**：在手 0 ≠ 断货——天猫链接靠虚拟库存在线、有单 48h 内采购发出，零销多因下架。
+    · 近 4 周周均 < `--min-recent-avg`（3 件）→ 「低量·有单再补」，建议 0（不稳定品业务上有单再补）。
     · **扣在途**：下单若不扣路上的货会重复订（与 stock_report「派生指标不扣在途」口径不同、不冲突——
       那边判断的是此刻会不会挨罚）。在途只认近 `--transit-days` 天内创建的入库 move，老残单不算。
     · 趋势（近 4 周周均 vs 之前周均）单列一栏供判断，**不进公式**。
@@ -50,7 +53,8 @@ from odoo_api.stock_report import (pull_in_transit, pull_qty_available,  # noqa:
 SOLD_STATES = ["sale", "done"]
 PO_STATES = ["purchase", "done"]
 PREFIXES = ("VO", "GW")
-RECENT_WEEKS = 4                 # 趋势：近 4 周 vs 窗口内之前的周
+RECENT_DAYS = 28                 # 近 4 周（基数、趋势）
+LAST_DAYS = 7                    # 近 7 天（下降判定）
 
 MAIN_SHEET, QUOTE_SHEET, CHECK_SHEET = "备货汇总", "询价单供应商", "待核"
 COL_QUOTE_VENDOR = "询价单供应商"
@@ -75,19 +79,30 @@ def roll_sales(rows, kit_map):
     return out
 
 
-def sales_stats(weeks_qty, recent_qty, n_weeks, recent_weeks=RECENT_WEEKS):
-    """单个基础品 → dict(销量, 峰值周销量, 有销周数, 周均销量, 趋势)。
+def sales_stats(weeks_qty, recent_qty, n_days, recent_days=RECENT_DAYS):
+    """单个基础品 → dict(销量, 峰值周销量, 有销周数, 周均销量, 近4周周均, 趋势)。
 
-    趋势 = 近 recent_weeks 周的周均 ÷ 窗口内其余周的周均 − 1；之前没卖过记 None（新起量，没法比）。
+    周均按窗口实际天数折周（12 周窗口跨 13 个周标签，按标签数除会低估）。
+    趋势 = 近 4 周周均 ÷ 窗口内其余天的周均 − 1；之前没卖过记 None（新起量，没法比）。
     """
     total = sum(weeks_qty.values())
     peak = max(weeks_qty.values(), default=0.0)
     active = sum(1 for q in weeks_qty.values() if q > 0)
-    prev_weeks = n_weeks - recent_weeks
-    prev_avg = (total - recent_qty) / prev_weeks if prev_weeks > 0 else 0
-    trend = (recent_qty / recent_weeks) / prev_avg - 1 if prev_avg > 0 else None
+    prev_days = n_days - recent_days
+    prev_avg = (total - recent_qty) / prev_days * 7 if prev_days > 0 else 0
+    recent_avg = recent_qty / recent_days * 7
+    trend = recent_avg / prev_avg - 1 if prev_avg > 0 else None
     return {"销量": total, "峰值周销量": peak, "有销周数": active,
-            "周均销量": total / n_weeks if n_weeks else 0, "趋势": trend}
+            "周均销量": total / n_days * 7 if n_days else 0, "近4周周均": recent_avg, "趋势": trend}
+
+
+def demand_base(recent_avg, last7, avg12, avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3):
+    """→ (备货基数（件/周）, 口径说明)。顺序：低量 → 近期下降 → 默认。"""
+    if recent_avg < min_recent_avg:
+        return 0.0, "低量·有单再补"
+    if avg12 > 0 and last7 < avg12 * drop_ratio:
+        return recent_avg, "近期下降·近4周周均"
+    return recent_avg * avg_factor, f"近4周周均×{avg_factor:g}"
 
 
 def classify(po_qty, bulk_qty=100, bulk_share=0.5, suspect_qty=5000):
@@ -104,9 +119,11 @@ def classify(po_qty, bulk_qty=100, bulk_share=0.5, suspect_qty=5000):
     return share >= bulk_share, share, suspect
 
 
-def suggest_qty(peak, cover_weeks, onhand, incoming):
-    """⌈峰值周 × 备货周数 − 在手 − 在途⌉，不足 0 记 0。"""
-    need = peak * cover_weeks - (onhand or 0) - (incoming or 0)
+def suggest_qty(base, cover_weeks, onhand, incoming):
+    """⌈备货基数 × 备货周数 − 在手 − 在途⌉，不足 0 记 0；基数 0（低量）直接 0。"""
+    if base <= 0:
+        return 0
+    need = base * cover_weeks - (onhand or 0) - (incoming or 0)
     return max(0, math.ceil(need - 1e-9))
 
 
@@ -133,18 +150,21 @@ def vendor_profile(lines):
     }
 
 
-def build_rows(bases, sales, recent, n_weeks, po_lines, onhand, incoming, products,
+def build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, products,
                min_weeks=6, bulk_qty=100, bulk_share=0.5, suspect_qty=5000,
-               cover_bulk=3, cover_regular=1, fines=None, unrolled=()):
+               cover_bulk=3, cover_regular=1, fines=None, unrolled=(), last7=None,
+               avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3):
     """合并成汇总 DataFrame + 待核行。只出有销周数 ≥ min_weeks 的基础品。
 
-    sales: {基础品: {周: 件}}；recent: {基础品: 近期件数}；po_lines: {基础品: [采购行 dict]}；
+    sales: {基础品: {周: 件}}；recent: {基础品: 近 4 周件数}；last7: {基础品: 近 7 天件数}；po_lines: {基础品: [采购行 dict]}；
     products: {id: dict(code, name)}；fines: {基础品: EUR} 或 None；
     unrolled: 有后缀却没 BoM 的产品 id（销量没折回基础品，备注里点名）。
     """
     rows, checks = [], []
     for b in bases:
-        st = sales_stats(sales.get(b, {}), recent.get(b, 0.0), n_weeks)
+        st = sales_stats(sales.get(b, {}), recent.get(b, 0.0), n_days)
+        l7 = (last7 or {}).get(b, 0.0)
+        base, basis = demand_base(st["近4周周均"], l7, st["周均销量"], avg_factor, drop_ratio, min_recent_avg)
         if st["有销周数"] < min_weeks:
             continue
         lines = po_lines.get(b, [])
@@ -168,13 +188,17 @@ def build_rows(bases, sales, recent, n_weeks, po_lines, onhand, incoming, produc
             "档位": f"大批量·{cover:g}周" if bulk else f"常规·{cover:g}周",
             "SKU": p.get("code", ""),
             "产品": p.get("name", ""),
-            COL_SUGGEST: suggest_qty(st["峰值周销量"], cover, oh, inc),
+            COL_SUGGEST: suggest_qty(base, cover, oh, inc),
+            "基数口径": basis,
             "在手": oh,
             "在途": inc,
-            "峰值周销量": round(st["峰值周销量"], 1),
+            "备货基数/周": round(base, 1),
             "备货周数": cover,
-            "可撑峰值周数": round(oh / st["峰值周销量"], 1) if st["峰值周销量"] else None,
-            "周均销量": round(st["周均销量"], 1),
+            "可撑周数": round(oh / base, 1) if base else None,
+            "近7天": round(l7),
+            "近4周周均": round(st["近4周周均"], 1),
+            "12周周均": round(st["周均销量"], 1),
+            "峰值周销量": round(st["峰值周销量"], 1),
             "趋势": (f"{st['趋势']:+.0%}" if st["趋势"] is not None else "新起量"),
             "有销周数": st["有销周数"],
             "12周销量": round(st["销量"]),
@@ -192,8 +216,8 @@ def build_rows(bases, sales, recent, n_weeks, po_lines, onhand, incoming, produc
     df = pd.DataFrame(rows)
     if not df.empty:
         df["_need"] = df[COL_SUGGEST] > 0
-        df = (df.sort_values(["_need", "可撑峰值周数", "12周销量"], ascending=[False, True, False],
-                             na_position="first")
+        df = (df.sort_values(["_need", "可撑周数", "12周销量"], ascending=[False, True, False],
+                             na_position="last")
               .drop(columns="_need").reset_index(drop=True))
         for c in (COL_QUOTE_VENDOR, "最近一次供应商", "最近一次采购日", "最低价供应商"):
             df[c] = df[c].fillna("")
@@ -253,19 +277,21 @@ def pull_kit_map(od):
     return out
 
 
-def pull_retail_sales(od, since, until, recent_since):
-    """VO/GW 零售销量 → ([(pid, 周, 件)], {pid: 近期件数})。"""
+def pull_retail_sales(od, since, until, recent_since, last_since):
+    """VO/GW 零售销量 → ([(pid, 周, 件)], {pid: 近 4 周件数}, {pid: 近 7 天件数})。"""
     dom = [("date", ">=", since), ("date", "<=", until), ("state", "in", SOLD_STATES)] + prefix_domain()
     rows = od.read_group_all("sale.report", dom, ["product_uom_qty:sum"], ["product_id", "date:week"])
     weekly = [(m2o_id(r["product_id"]), r["date:week"], r.get("product_uom_qty") or 0)
               for r in rows if m2o_id(r.get("product_id")) is not None]
-    dom_r = [("date", ">=", recent_since), ("date", "<=", until), ("state", "in", SOLD_STATES)] + prefix_domain()
-    recent = {m2o_id(r["product_id"]): r.get("product_uom_qty") or 0
-              for r in od.read_group_all("sale.report", dom_r, ["product_uom_qty:sum"], ["product_id"])
-              if m2o_id(r.get("product_id")) is not None}
+    def by_product(start):
+        dom = [("date", ">=", start), ("date", "<=", until), ("state", "in", SOLD_STATES)] + prefix_domain()
+        return {m2o_id(r["product_id"]): r.get("product_uom_qty") or 0
+                for r in od.read_group_all("sale.report", dom, ["product_uom_qty:sum"], ["product_id"])
+                if m2o_id(r.get("product_id")) is not None}
+    recent, last = by_product(recent_since), by_product(last_since)
     say(f"  VO/GW 零售销量: {len({w[0] for w in weekly})} 个产品有成交，"
         f"合计 {sum(w[2] for w in weekly):,.0f} 件（折算前）")
-    return weekly, recent
+    return weekly, recent, last
 
 
 def pull_purchases(od, since, until, exclude_ids, kit_map):
@@ -350,24 +376,31 @@ def write_book(path, sheets, left_cols):
 
 def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5,
         suspect_qty=5000, cover_bulk=3, cover_regular=1, transit_days=60,
-        violations=None, exclude_vendors=None, outdir=None, timeout=180):
+        violations=None, exclude_vendors=None, outdir=None, timeout=180,
+        avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3):
     since = (date.fromisoformat(until) - timedelta(weeks=weeks)).isoformat()
-    recent_since = (date.fromisoformat(until) - timedelta(weeks=RECENT_WEEKS)).isoformat()
+    n_days = (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
+    recent_since = (date.fromisoformat(until) - timedelta(days=RECENT_DAYS - 1)).isoformat()
+    last_since = (date.fromisoformat(until) - timedelta(days=LAST_DAYS - 1)).isoformat()
     po_since = (date.fromisoformat(until) - timedelta(days=round(30.4 * po_months))).isoformat()
     transit_since = (date.fromisoformat(until) - timedelta(days=transit_days)).isoformat()
     od = Odoo.connect(timeout=timeout)
     say(f"销量窗口 {since} ~ {until}（{weeks} 周，VO/GW 前缀）  采购窗口 {po_since} 起  "
         f"在途只认 {transit_since} 起创建的入库")
     kit_map = pull_kit_map(od)
-    weekly, recent_raw = pull_retail_sales(od, since, until, recent_since)
+    weekly, recent_raw, last_raw = pull_retail_sales(od, since, until, recent_since, last_since)
     sales = roll_sales(weekly, kit_map)
-    recent = defaultdict(float)
-    for pid, q in recent_raw.items():
-        for base, k in explode(pid, kit_map):
-            recent[base] += q * k
+
+    def fold(raw):
+        out = defaultdict(float)
+        for pid, q in raw.items():
+            for base, k in explode(pid, kit_map):
+                out[base] += q * k
+        return out
+    recent, last7 = fold(recent_raw), fold(last_raw)
     vend_ids = resolve_excluded_vendors(od, exclude_vendors)
     po_lines = pull_purchases(od, po_since, until, vend_ids, kit_map)
-    n_weeks = max(len({w[1] for w in weekly}), 1)    # 窗口跨几个自然周（12 周 → 通常 13）
+    n_weeks = max(len({w[1] for w in weekly}), 1)    # 窗口跨几个自然周（12 周 → 通常 13），只用于报告有销周数
     bases = set(sales)
     onhand = pull_qty_available(od, bases)
     incoming, _ = pull_in_transit(od, vend_ids, since=transit_since)
@@ -381,9 +414,9 @@ def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5
     unrolled = sorted(pid for pid in sold_pids if pid not in kit_map
                       and products.get(pid, {}).get("code")
                       and _po_base_sku(products[pid]["code"]) != products[pid]["code"])
-    df, checks = build_rows(bases, sales, recent, n_weeks, po_lines, onhand, incoming, products,
+    df, checks = build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, products,
                             min_weeks, bulk_qty, bulk_share, suspect_qty, cover_bulk, cover_regular, fines,
-                            set(unrolled))
+                            set(unrolled), last7, avg_factor, drop_ratio, min_recent_avg)
     for pid in unrolled:
         q = sum(sales.get(pid, {}).values())
         checks.append({"类型": "有后缀无 BoM", "SKU": products[pid]["code"], "产品": products[pid]["name"],
@@ -404,6 +437,8 @@ def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5
         f"{(df['12周销量'].sum() / total * 100 if total else 0):.0f}%；本周需补 {len(need)} 个")
     if not df.empty:
         say("  档位: " + "  ".join(f"{k} {v}" for k, v in df["档位"].value_counts().sort_index().items()))
+        say("  基数口径: " + "  ".join(f"{k} {v}" for k, v in df["基数口径"].value_counts().items())
+            + f"；建议数量合计 {int(df[COL_SUGGEST].sum()):,} 件")
     say(f"  询价单供应商 {len(qv)} 家；待核 {len(chk)} 条"
         + (f"（{'、'.join(f'{k} {v}' for k, v in chk['类型'].value_counts().items())}）" if len(chk) else ""))
     say(f"  RPC 调用 {od.call_count} 次")
@@ -424,6 +459,12 @@ def main():
                     help="单张 PO 超过几件视为疑录错、不参与分档（默认 5000）")
     ap.add_argument("--cover-bulk", type=float, default=3, help="大批量品备几个峰值周（默认 3）")
     ap.add_argument("--cover-regular", type=float, default=1, help="其余常销品备几个峰值周（默认 1）")
+    ap.add_argument("--avg-factor", type=float, default=1.2,
+                    help="备货基数 = 近 4 周周均 × 该系数（默认 1.2）")
+    ap.add_argument("--drop-ratio", type=float, default=0.5,
+                    help="近 7 天 < 12 周周均 × 该比例算近期下降，基数改用近 4 周周均（默认 0.5）")
+    ap.add_argument("--min-recent-avg", type=float, default=3,
+                    help="近 4 周周均低于几件算低量品，有单再补、建议 0（默认 3）")
     ap.add_argument("--transit-days", type=int, default=60,
                     help="在途只认近几天内创建的入库 move（默认 60；更老的多是残单）")
     ap.add_argument("--violations", help="天猫「供应商违规数据」导出（选填），多出一列 缺货罚款EUR")
@@ -440,7 +481,8 @@ def main():
     try:
         run(a.until or date.today().isoformat(), a.weeks, a.min_weeks, a.po_months, a.bulk_qty,
             a.bulk_share, a.suspect_qty, a.cover_bulk, a.cover_regular, a.transit_days,
-            a.violations, exclude_vendors, a.outdir, a.timeout)
+            a.violations, exclude_vendors, a.outdir, a.timeout,
+            a.avg_factor, a.drop_ratio, a.min_recent_avg)
     except OdooError as e:
         raise SystemExit(f"✗ {e}")
 
