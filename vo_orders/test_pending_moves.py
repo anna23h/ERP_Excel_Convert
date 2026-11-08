@@ -61,7 +61,8 @@ def test_build_reorder_sku_missing_in_odoo_counts_zero():
 
 def test_build_reorder_without_pending_unchanged():
     g = B.build_reorder(erp())
-    assert "预测缺口" not in g.columns and list(g.columns[5:7]) == ["缺口", "Safety Stock"]
+    assert "预测缺口" not in g.columns and list(g.columns[5:7]) == ["缺口", "FS"]
+    assert "Safety Stock" not in g.columns          # 静态字段不再读(ISSUES 安全库存 A)
 
 
 def test_layout_pzn_barcode_tail_cols():
@@ -86,10 +87,10 @@ def test_barcode_vendor():
 
 
 def test_reorder_widths_fit_content_not_header():
-    df = pd.DataFrame({"Quantity On Hand": [5, 128], "Safety Stock": [0, 60],
+    df = pd.DataFrame({"Quantity On Hand": [5, 128], "安全库存(2周)": [0, 60],
                        "供应商(次数)": ["P(5)、G(2)", "无采购记录"], "最低价供应商": ["P", ""]})
     w = B.reorder_widths(df)
-    assert w["Quantity On Hand"] < 14 and w["Safety Stock"] < 12      # 原来被表头撑到 26 / 20
+    assert w["Quantity On Hand"] < 14 and w["安全库存(2周)"] < 12      # 原来被表头撑到 26 / 20
     assert w["供应商(次数)"] < 25 and w["最低价供应商"] < 15            # 原来固定 45 / 22
     assert w["Name"] == 30
     assert w["最低价供应商"] < 8                       # 中文表头可逐字折行，不再按六个字撑宽

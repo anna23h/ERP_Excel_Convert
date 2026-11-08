@@ -292,7 +292,7 @@ python3 dashboard/export_product_dict.py --include-unsellable
 | `YYYY年MM月DD日{店}{n}单 扫码清单.csv` | 订单级白名单（序号 / Order Reference / VO Tracking No / 店），与拣货表+面单同源同批 | 载入扫码 HTML，走[运单扫码回流](#运单扫码回流替代纸质勾选--手工转录)（选用） |
 | `回传ERP销售上传表[店].xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
-| `{店}补货预判清单.xlsx` | PZN（Name 里写的新 PZN，没变更留空）/ 今日需求 / 在手 / 缺口 + 待出库 / 在途 / 预计可用 / 预测缺口（Odoo 只读实时拉，近 7 天；本机没配 Odoo 凭据则这四列不出）+ `FS` + `Safety Stock` + 采购画像（**仅 GUI 有入口**：需在阶段一选填「采购单导出」；ERP 导出还须勾上 `FS`/`Safety Stock`/`Supply Remark` 三列）| 补货决策；读的 `Safety Stock` 正是 `sales_insight` 写回 ERP 的那个字段 |
+| `{店}补货预判清单.xlsx` | PZN（Name 里写的新 PZN，没变更留空）/ 今日需求 / 在手 / 缺口 + 待出库 / 在途 / 预计可用 / 预测缺口（Odoo 只读实时拉，近 7 天；本机没配 Odoo 凭据则这四列不出）+ `周均(12周)` / `安全库存(2周)`（Odoo 只读现拉：12 周 VO/GW 零售周均 × 2，周均 < 10 留空；**不再读 ERP 的静态 `Safety Stock`**）+ `FS` + 采购画像 + `含套件`（组合装并进基础品一行，今日需求按 BoM 折算）（**仅 GUI 有入口**：需在阶段一选填「采购单导出」；ERP 导出还须勾上 `FS`/`Supply Remark` 两列）| 补货决策 |
 
 **阶段二（仓库反馈缺货后）：**
 
@@ -752,7 +752,7 @@ python3 odoo_api/quote_fill.py <空询价单.xlsx>       # → output/YYYYMMDD/<
 不指望服务端权限兜底。
 
 **安全库存两路并列是刻意的**：A = 产品主数据上的自定义 `Safety Stock` 字段
-（`sales_insight` 回写、补货预判清单读的就是它），B = `stock.warehouse.orderpoint.product_min_qty`
+（`sales_insight` 回写；补货预判清单 2026-11-08 起不再读它），B = `stock.warehouse.orderpoint.product_min_qty`
 （Odoo 标准补货规则，须滤掉 `trigger=manual` 的临时建议——该字段 Odoo 14 就有，2026-08-23 实测 5 条里 4 条正是 manual）。**2026-08-23 首测已给出答案：A 侧 152 个、B 侧 1 个，补货规则基本没在用**，所以「不一致」只报真冲突（都有但不等 / 只有 B），「只有 A」是常态、只报计数——所以并列成两列 + 单出一张
 `安全库存不一致.csv`，先看清楚再谈以谁为准。缺口暂按 A 算，A 空退回 B。
 
@@ -789,7 +789,8 @@ Python + pandas + openpyxl。
 - [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 预填 SO 订购量 + P 列 `=箱规×箱数` 对拍、J5 写 SO 号（2026-08-29）；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
   - 2026-10-16：也吃出库单 `stock.picking` 详细操作导出（按表头自动认），批次号 / 保质期（`MM.YYYY`）由 ERP 预留批次带出、一个批次一行；SO 读法产出逐格不变。
   - 2026-10-16：出库单改用「箱单」导出模板（`Stock Moves` 往下导）：数量取 `Demand`，没预留的 SO 行不再漏，预留 ≠ 订购标黄；S04097+4098 十个产品数量与仓库成品箱单逐个相等。
-- [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。回写的 `Safety Stock` 被阶段一「补货预判清单」读走——两条流水线在此接上。
+- [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。~~回写的 `Safety Stock` 被阶段一「补货预判清单」读走~~——2026-11-08 起补货预判清单改用 Odoo 现拉的动态安全库存、不再读该字段（ISSUES 安全库存 A）。
+- [x] **补货预判清单 动态安全库存 + 套件并入基础品**（`vo_orders/safety_dynamic.py`，2026-11-08，ISSUES 安全库存 A）：ERP 静态 `Safety Stock` 不再读；出表时 Odoo 只读现拉 12 周 VO/GW 零售周均（BoM 折算），安全库存 = 周均 × 2、周均 < 10 不设；组合装并进基础品一行（今日需求按 BoM 系数、在手取基础品、`含套件` 列注明）；拉不到则降级。单测 6。
 - [x] **安全库存直写**（`sales_insight/safety_writeback.py`，2026-09-22）：运营的表 + 产品主数据 → `Safety Stock` 回写表，**不需要销售数据**；以安全库存表为 SKU 全集（`sales_insight` 是以销售导出为全集，表里有、导出里没有的会被丢掉）。**不写 `Supply Remark`**——源表没有备注列，列整个不出现 Odoo 就不碰该字段。四条「宁可报错也不出表」：值为 0/空/负数/小数、源表重复 SKU、产品主数据同 SKU 多行、值列命中多个口径。构造数据测试 28 项。
 - [x] **FS 回写**（`vo_orders/fs_writeback.py`）：采购画像 → 供应商**代号**写回产品主数据 `FS`；`--sample N` 按覆盖面挑试水样本；人写的采购判断整行跳过；滤掉测试单与费用类 SKU；**只写 FS，不碰 `Supply Remark`**（那字段属于运营）。
 - [x] **ERP 回写 GUI**（`erp_writeback_gui.py`）：销售分析 / 安全库存直写 / FS 回写三页，个人月频维护用。**与 VOTool 刻意分开**——同事界面里没有任何 ERP 回写入口就不会误触（2026-07-08 决定，2026-08-01 复核维持）；只在 Mac 跑源码，不打包 exe。

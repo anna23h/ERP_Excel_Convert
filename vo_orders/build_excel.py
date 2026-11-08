@@ -20,6 +20,7 @@ from common.vendor import short_vendor, vendor_map  # noqa: E402
 from common.po import (PO_COLS, PO_NOISE_PATS,  # noqa: E402,F401
                        _po_base_sku, load_po_stats)
 import step4_merge as s4  # noqa: E402
+import safety_dynamic as SD  # noqa: E402
 
 # 面单列（顺序即 A..F），末尾加空白「仓库备注」
 FACE_COLS = [
@@ -74,7 +75,7 @@ def build_picking(facesheet):
 ERP_NAME = "Order Lines/Product/Name"
 # 订货预判用字段(员工在 ERP 订单导出时勾上这 3 个产品级列；缺则跳过订货清单)
 ERP_FS     = "Order Lines/Product/FS"            # 供应商(去谁家订)
-ERP_SAFETY = "Order Lines/Product/Safety Stock"  # 安全库存
+ERP_SAFETY = "Order Lines/Product/Safety Stock"  # 静态安全库存，2026-11-08 起不再读(ISSUES 安全库存 A)
 ERP_REMARK = "Order Lines/Product/Supply Remark" # 备注(可能过期，仅背景)
 
 
@@ -126,7 +127,7 @@ def _barcode_vendor(fs):
 # 表头会换行，单词本身断不开(ISSUES 补货预判 C)。Name 挪到末尾、长文案，固定宽度换行。
 # 值 = 该列宽度上限：按最长值算会被一两条长文案撑开(整串供应商全名、长备注)，
 # 超过上限的换行显示，行高由 write_simple(wrap_rows=True) 按折行数放大(ISSUES 补货预判 D)。
-REORDER_FIT_COLS = {"PZN": 45, "Quantity On Hand": 45, "Safety Stock": 45,
+REORDER_FIT_COLS = {"PZN": 45, "Quantity On Hand": 45, SD.COL_AVG: 45, SD.COL_SAFETY: 45, SD.COL_KITS: 22,
                     "FS": 18, "Supply Remark": 36, "供应商(次数)": 20, "最低价供应商": 16,
                     "最近一次采购": 22, "Picking Name": 22}
 REORDER_FIXED_W = {"Name": 30}
@@ -155,30 +156,63 @@ def reorder_widths(df):
     return out
 
 
-def build_reorder(erp, po_stats=None, pending=None):
+def merge_kits(erp, kits, onhand):
+    """套件行并进基础品(ISSUES 安全库存 A)：Internal Reference 换成基础品、Quantity × BoM 系数、
+    On Hand 换成基础品在手(Odoo 现拉；拉不到留空，由同组基础品行的导出值顶上)。
+    基础品行排在前面，Name/FS/Barcode 等文本列取 _first_nonempty 时优先用基础品自己的。
+    新增 `_kit` 列记来源(如 `A_GW×1`)，聚合成「含套件」。"""
+    e = erp.copy()
+    ref = e[s4.ERP_INTERNAL].astype(str).str.strip()
+    hit = ref.map(kits)
+    is_kit = hit.notna()
+    e["_kit"] = ""
+    if is_kit.any():
+        base = hit[is_kit].map(lambda t: t[0])
+        k = hit[is_kit].map(lambda t: t[1])
+        e.loc[is_kit, "_kit"] = [f"{r}×{v:g}" for r, v in zip(ref[is_kit], k)]
+        e.loc[is_kit, s4.ERP_QTY] = pd.to_numeric(e.loc[is_kit, s4.ERP_QTY], errors="coerce") * k
+        e.loc[is_kit, s4.ERP_ONHAND] = base.map(onhand).astype(float)
+        e.loc[is_kit, s4.ERP_INTERNAL] = base
+    e["_is_kit"] = is_kit
+    return e.sort_values("_is_kit", kind="stable").drop(columns="_is_kit")
+
+
+def _join_kits(s):
+    return "、".join(dict.fromkeys(v for v in s if v))
+
+
+def build_reorder(erp, po_stats=None, pending=None, safety=None):
     """补货预判清单(Solo 作战清单·模式一 step 0 盘前预判)：
     把整份 ERP 订单导出按 Internal Reference 聚合，Quantity 求和=今日需求，与 On Hand 比。
     列名与 ERP 原始字段保持一致(短名，同拣货表)，仅算出来的列(今日需求/缺口)用中文。
     按 Internal Reference 升序(与拣货表同序)。第 2 列 PZN 只取 Name 里写着的新 PZN(没变更留空)；
-    Barcode 只留 FS 含 DM/Rossmann 的行；Picking Name / Name 挪到末尾待实测定去留(ISSUES 补货预判 C)。需 ERP 导出含 FS/Safety Stock/Supply Remark 三列，缺则返回 None。
+    Barcode 只留 FS 含 DM/Rossmann 的行；Picking Name / Name 挪到末尾待实测定去留(ISSUES 补货预判 C)。需 ERP 导出含 FS/Supply Remark 两列，缺则返回 None。
     po_stats(可选，load_po_stats 产出)：按基础 SKU 尾部追加采购画像列；无记录的 SKU
     标"无采购记录"(信号：新品/长尾需人工找供应商)。缺口只能参考，补货数量始终人为定。
     pending(可选，pending_moves.pull_pending 产出 {SKU: (待出库, 在途)})：On Hand 滞后于实物
     (寄出未做出库、到货未做入库)，故在 缺口 后并列 待出库/在途/预计可用/预测缺口；
-    原 缺口 保留，两种口径对照看(ISSUES 补货预判 A)。"""
-    if not all(c in erp.columns for c in (ERP_FS, ERP_SAFETY, ERP_REMARK)):
+    原 缺口 保留，两种口径对照看(ISSUES 补货预判 A)。
+    safety(可选，safety_dynamic.pull_safety 产出)：套件并进基础品一行，并按 12 周 VO/GW 零售周均
+    出 周均 / 安全库存(2周均，周均<10 不设) 两列，取代 ERP 的静态 Safety Stock(ISSUES 安全库存 A)；
+    不传则套件不并、两列不出。ERP 的 Safety Stock 列不再读。"""
+    if not all(c in erp.columns for c in (ERP_FS, ERP_REMARK)):
         return None
-    g = erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**{
+    if safety is not None:
+        erp = merge_kits(erp, safety["kits"], safety["onhand"])
+    aggs = {
         "Picking Name":     (s4.ERP_PICKING, _first_nonempty),
         "Barcode":          (s4.ERP_BARCODE, _first_nonempty),
         "Name":             (ERP_NAME,       _first_nonempty),
         "今日需求":          (s4.ERP_QTY,     "sum"),
         "Quantity On Hand": (s4.ERP_ONHAND,  "max"),
-        "Safety Stock":     (ERP_SAFETY,     "max"),
         "FS":               (ERP_FS,         _first_nonempty),
         "Supply Remark":    (ERP_REMARK,     _first_nonempty),
-    }).reset_index().rename(columns={s4.ERP_INTERNAL: "Internal Reference"})
-    for c in ("今日需求", "Quantity On Hand", "Safety Stock"):
+    }
+    if safety is not None:
+        aggs[SD.COL_KITS] = ("_kit", _join_kits)
+    g = (erp.groupby(s4.ERP_INTERNAL, sort=False).agg(**aggs)
+         .reset_index().rename(columns={s4.ERP_INTERNAL: "Internal Reference"}))
+    for c in ("今日需求", "Quantity On Hand"):
         g[c] = pd.to_numeric(g[c], errors="coerce").round().astype("Int64")
     g["缺口"] = g["今日需求"] - g["Quantity On Hand"]
     # 按 Internal Reference 升序(大小写不敏感、stable)，与拣货表同序，便于逐行对照
@@ -195,7 +229,13 @@ def build_reorder(erp, po_stats=None, pending=None):
         g["预计可用"] = g["Quantity On Hand"] - g["待出库"] + g["在途"]
         g["预测缺口"] = g["今日需求"] - g["预计可用"]
         cols += PENDING_COLS
-    cols += ["Safety Stock", "FS", "Supply Remark"]
+    if safety is not None:
+        av = g["Internal Reference"].astype(str).map(safety["avg"])
+        g[SD.COL_AVG] = av.map(lambda v: round(v, 1) if pd.notna(v) else "")
+        g[SD.COL_SAFETY] = av.map(lambda v: SD.safety_of(v) if pd.notna(v) else None)
+        g[SD.COL_SAFETY] = g[SD.COL_SAFETY].map(lambda v: "" if v is None or pd.isna(v) else int(v))
+        cols += [SD.COL_AVG, SD.COL_SAFETY]
+    cols += ["FS", "Supply Remark"]
     if po_stats is not None:
         m = (po_stats.set_index("_sku")
              .reindex(g["Internal Reference"].map(_po_base_sku)))
@@ -205,6 +245,8 @@ def build_reorder(erp, po_stats=None, pending=None):
         g[PO_COLS] = g[PO_COLS].where(g[PO_COLS].notna(), "")
         g.loc[g["供应商(次数)"] == "", "供应商(次数)"] = "无采购记录"
         cols += PO_COLS
+    if safety is not None:
+        cols.append(SD.COL_KITS)
     cols += ["Picking Name", "Name"]
     return g[cols]
 
@@ -574,7 +616,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                              left_cols={"系统履约单号", "Order Reference"})
         log.append(f"取消订单清单 已生成: {p}  ({n} 单；后到的取消单请手工补录后喂阶段二)")
 
-    # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Safety/Remark) ----
+    # ---- 补货预判清单 (Solo 作战清单·模式一 step 0；需 ERP 含 FS/Remark) ----
     # 只在传了采购单导出时才产出：不带真实采购参考的补货预判清单信息滞后、无参考意义，
     # 未传采购单导出则整张跳过，仅出其余 3 份(拣货表+面单/新订单获单/回传ERP上传表)。
     if not po_path:
@@ -588,37 +630,50 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             log.append(f"⚠ 采购单导出读取失败，补货预判清单不带采购参考: {e}")
         # 待出库/在途：On Hand 滞后于实物，开工时用 Odoo 只读补上(ISSUES 补货预判 A)。
         # 没配凭据/连不上就降级成只按在手算，不挡清单。
+        # 动态安全库存 + 套件并入基础品(ISSUES 安全库存 A)：Odoo 只读；拉不到就不并、不出两列。
+        safety = None
+        try:
+            safety = SD.pull_safety(erp[s4.ERP_INTERNAL].dropna().unique())
+            log.append(f"动态安全库存已拉取: {safety['info']}")
+        except Exception as e:
+            log.append("⚠ 动态安全库存拉取失败，补货预判清单套件不并入基础品、无 周均/安全库存 列: "
+                       + str(e).splitlines()[0][:120])
+        kits = safety["kits"] if safety else {}
+        refs = erp[s4.ERP_INTERNAL].dropna().astype(str).str.strip()
+        refs = refs.map(lambda r: kits[r][0] if r in kits else r)   # 并入后待出库/在途按基础品拉
         pending = None
         try:
             from pending_moves import pull_pending
-            pending, pinfo = pull_pending(erp[s4.ERP_INTERNAL].dropna().unique(),
+            pending, pinfo = pull_pending(refs.unique(),
                                           erp[s4.ERP_ORDER_REF].dropna().astype(str).unique())
             log.append(f"待出库/在途已拉取: {pinfo}")
         except Exception as e:
             log.append("⚠ 待出库/在途拉取失败，补货预判清单只按在手算(无 待出库/在途/预计可用/预测缺口 列): "
                        + str(e).splitlines()[0][:120])
-        reorder = build_reorder(erp, po_stats, pending)
+        reorder = build_reorder(erp, po_stats, pending, safety)
         if reorder is None:
-            log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Safety Stock/Supply Remark 列；"
-                       "在 Odoo 订单导出模板勾上这 3 列即可生成)")
+            log.append("补货预判清单: 跳过 (ERP 订单导出未含 FS/Supply Remark 列；"
+                       "在 Odoo 订单导出模板勾上这 2 列即可生成)")
         elif reorder.empty:
             log.append("补货预判清单: 0 SKU")
         else:
-            reorder["_ch"] = (erp.drop_duplicates(s4.ERP_INTERNAL)
-                              .set_index(s4.ERP_INTERNAL)[s4.ERP_ORDER_REF]
-                              .reindex(reorder["Internal Reference"]).astype(str)
+            # 店 = 该 SKU 首次出现的订单号前缀；套件并入后按基础品归(首个贡献行的店)
+            chs = (pd.DataFrame({"r": refs, "o": erp.loc[refs.index, s4.ERP_ORDER_REF]})
+                   .drop_duplicates("r").set_index("r")["o"])
+            reorder["_ch"] = (chs.reindex(reorder["Internal Reference"].astype(str)).astype(str)
                               .str.split("_", n=1).str[0].values)
             for ch in sorted(reorder["_ch"].dropna().unique()):
                 sub = reorder[reorder["_ch"] == ch].drop(columns="_ch")
                 short = int((sub["缺口"] > 0).sum())
                 if "预测缺口" in sub:
                     short = f"{short} 个，预测缺口>0 {int((sub['预测缺口'] > 0).sum())}"
-                # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/Safety Stock/最低价/采购总量)保持居中
+                # 非数字列左对齐+下沉；数字列(今日需求/On Hand/缺口/周均/安全库存/最低价/采购总量)保持居中
                 # 列宽见 reorder_widths：几列按内容收窄，长文案固定宽度换行
                 p, n = write_simple(sub, outdir, f"{ch}补货预判清单.xlsx",
                                      left_cols={"Internal Reference", "PZN", "Picking Name",
                                                 "Barcode", "Name", "FS", "Supply Remark",
-                                                "供应商(次数)", "最低价供应商", "最近一次采购"},
+                                                "供应商(次数)", "最低价供应商", "最近一次采购",
+                                                SD.COL_KITS},
                                      widths=reorder_widths(sub),
                                      header_height=REORDER_HEADER_H, wrap_rows=True)
                 log.append(f"{ch}补货预判清单 已生成: {p}  ({n} SKU，其中缺口>0 {short} 个)")
