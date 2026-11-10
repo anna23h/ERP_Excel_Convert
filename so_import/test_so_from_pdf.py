@@ -46,6 +46,28 @@ def test_parse_refuses_unknown_layout(text):
         S.parse_text([text])
 
 
+def test_parse_recovers_4dp_price():
+    """S04152 形态：印 3 位，Nettosumme ÷ Anz. 整除到 4 位 → 用真实价；整除且相等的行不动。"""
+    text = ("01163023 PRODUKT D 100ST 38,865 € 900 34.978,05 €\n"
+            "18300412 PRODUKT E 100ST 16,245 € 600 9.747,00 €\n"
+            "Summe 44.725,05 €")
+    lines, _ = S.parse_text([text])
+    assert lines[0]["netto"] == Decimal("38.8645") and lines[0]["printed"] == Decimal("38.865")
+    assert lines[1]["netto"] == Decimal("16.245") and "printed" not in lines[1]
+
+
+def test_parse_keeps_price_when_line_rounded():
+    """S04151 形态：对方按行先舍入，Nettosumme ÷ Anz. 除不尽 → 照旧用印的价。"""
+    lines, _ = S.parse_text(["12579956 PRODUKT F 20ML 8,224 € 504 4.144,90 €\nSumme 4.144,90 €"])
+    assert lines[0]["netto"] == Decimal("8.224") and "printed" not in lines[0]
+
+
+def test_parse_contradiction_stops():
+    """整除到 4 位却舍入不回印的价 → PDF 自相矛盾，停。"""
+    with pytest.raises(S.StopError, match="自相矛盾"):
+        S.parse_text(["01163023 PRODUKT D 100ST 38,865 € 900 34.900,20 €\nSumme 34.900,20 €"])
+
+
 def _lines():
     return S.parse_text([PAGE1])[0]
 

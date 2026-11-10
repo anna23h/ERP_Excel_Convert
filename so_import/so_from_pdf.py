@@ -23,7 +23,8 @@ BoM**（套件），或内部编码带渠道 / 组合装后缀（`_VO`/`_GW`/`xN
     Order Lines/Product/ID                 ← 匹配到的外部 ID
     Order Lines/Product/Internal Reference ← 留空（已有 ID，第二把匹配键冗余且易报错）
     Order Lines/Quantity                   ← PDF `Anz.`
-    Order Lines/Unit Price                 ← PDF `Netto` × (1 + 产品销项税率)，全精度不四舍五入
+    Order Lines/Unit Price                 ← PDF `Netto` × (1 + 产品销项税率)，全精度不四舍五入；
+                                             印的 3 位价是 4 位真实价舍入来的，改用 Nettosumme ÷ Anz.（见 true_netto）
 列名列序照抄模板；第一行带模板第 2 行的 ID / Order Reference / Customer，其余行这三列留空。
 
 税率现查、不写死（2026-11-10 `[SO 导入] B`，此前写死 × 1.19）：按模板 `Order Reference` 找到 SO
@@ -40,7 +41,7 @@ import datetime as dt
 import os
 import re
 import sys
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 # Windows 控制台默认 cp936/cp1252，打印 × ✓ 这类符号会 UnicodeEncodeError 直接崩，强制 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
@@ -99,7 +100,25 @@ def parse_text(page_texts):
     if printed != summe:
         raise StopError(f"抽出的 {len(lines)} 行 Nettosumme 合计 {printed} ≠ 印的 Summe {summe}，"
                         "说明有行没抽到或抽错了，不出表。")
+    for l in lines:
+        true_netto(l)
     return lines, summe
+
+
+def true_netto(l):
+    """PDF 单价印成 3 位、客户系统真实价是 4 位时，按 Nettosumme ÷ Anz. 反推（2026-11-10 `[SO 导入] D`）。
+
+    S04152 实测：印 38,865 € × 900 = 34.978,05 €，34978.05 ÷ 900 = 38.8645 整除，HALF_UP 到 3 位 = 38.865。
+    商恰好 ≤ 4 位、≠ 印的价、且舍入回去等于印的价 → 净价改用商，印的价记进 l["printed"]。
+    商除不尽 = 对方按行先舍入（S04151 那种），照旧用印的价。商整除却舍入不回印的价 = PDF 自相矛盾，停。
+    """
+    q = l["nsum"] / l["qty"]
+    if q != q.quantize(Decimal("0.0001")) or q == l["netto"]:
+        return
+    if q.quantize(Decimal(1).scaleb(l["netto"].as_tuple().exponent), ROUND_HALF_UP) != l["netto"]:
+        raise StopError(f"{l['pzn']} {l['name']}：Nettosumme {l['nsum']} ÷ {l['qty']} = {q.normalize()}，"
+                        f"与印的单价 {l['netto']} 对不上，PDF 自相矛盾，不出表。")
+    l["printed"], l["netto"] = l["netto"], q.normalize()
 
 
 def read_pdf(path):
@@ -288,7 +307,8 @@ def report(lines, dropped, summe):
     for k, l in enumerate(lines, 1):
         flag = "" if l["active"] else "  ⚠ 已归档"
         rate = f"{l['rate'].normalize()}%" + ("" if l["rate"] == STD_RATE else " ⚠非19%")
-        print(f"{k:>3} | {l['pzn']} | {l['name']} | {l['qty']} | {l['netto']} | {rate} | {l['price'].normalize()} | "
+        netto = f"{l['netto']}" + (f" ↺按Nettosumme反推（PDF印{l['printed']}）" if l.get("printed") else "")
+        print(f"{k:>3} | {l['pzn']} | {l['name']} | {l['qty']} | {netto} | {rate} | {l['price'].normalize()} | "
               f"{l['erp_name']} | {'✓' if l['sale_ok'] else '✗'}{flag}")
     auto = [l for l in lines if l.get("excluded")]
     if auto:
@@ -303,7 +323,7 @@ def report(lines, dropped, summe):
     full = sum(l["netto"] * l["qty"] for l in lines)
     dsum = sum(l["nsum"] for l in dropped)
     target = summe - dsum
-    print(f"\n合计核对：出表行 三位净价×数量 全精度 {full}；PDF Summe {summe}"
+    print(f"\n合计核对：出表行 净价×数量 全精度 {full}；PDF Summe {summe}"
           + (f" − 剔除行 {dsum} = {target}" if dropped else "") + f"；差 {target - full}")
     for l in lines:
         diff = l["nsum"] - l["netto"] * l["qty"]
