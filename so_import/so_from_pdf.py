@@ -11,6 +11,11 @@
 任何一行匹配不到或命中多个产品，**整张表不出**、退出码 2、把这些行列出来——
 剔除哪行（`--exclude`）、多个里选哪个（`--pick`）是用户的决定，脚本不猜不跳。
 
+**SO 只用基础品**（2026-11-10 用户定，`[SO 导入] C`）：命中里先排除非基础品——挂着**有组件的 phantom
+BoM**（套件），或内部编码带渠道 / 组合装后缀（`_VO`/`_GW`/`xN`/`*N`，复用 `common/po._po_base_sku`，
+同 PO 导入口径）。空 BoM / normal BoM 不算套件（实测有基础品挂空 normal BoM，按「有 BoM」会误排）。
+排除后剩 1 个才自动用；剩 0 个或多个照样停。`--pick` 不能选被排除的产品。
+
 为什么只用 Odoo API、不用产品主数据 xlsx：2026-10-13 实测 0730 的主数据快照
 13 个 PZN 里查不到 10 个，API 找回其中 8 个（新建的 `Temp_` 临时品）。快照必然过期。
 
@@ -18,8 +23,13 @@
     Order Lines/Product/ID                 ← 匹配到的外部 ID
     Order Lines/Product/Internal Reference ← 留空（已有 ID，第二把匹配键冗余且易报错）
     Order Lines/Quantity                   ← PDF `Anz.`
-    Order Lines/Unit Price                 ← PDF `Netto` × 1.19，全精度不四舍五入
+    Order Lines/Unit Price                 ← PDF `Netto` × (1 + 产品销项税率)，全精度不四舍五入
 列名列序照抄模板；第一行带模板第 2 行的 ID / Order Reference / Customer，其余行这三列留空。
+
+税率现查、不写死（2026-11-10 `[SO 导入] B`，此前写死 × 1.19）：按模板 `Order Reference` 找到 SO
+（公司、财政位置），取产品 `taxes_id` 里属于该公司的税。恰好 1 个、百分比、含税口径、且不被财政位置
+映射，才按它算；其余（0 个 / 多个税、不含税口径、非百分比、被财政位置替换）整表不出、退出码 2。
+非 19% 的单税照算（如 7% → × 1.07），核对表打 ⚠。
 
 PDF 版式**只支持一家**（明细行 `PZN 名称 Netto € Anz. Nettosumme €`，`Summe` 收尾）。
 解析的护栏：抽出的行 Nettosumme 合计必须等于印的 Summe，否则视为版式不认识、拒绝出表——
@@ -39,9 +49,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 from openpyxl import load_workbook
 
+from common.po import _po_base_sku
 from common.xlsx import unique_path
 
-VAT = Decimal("1.19")
+STD_RATE = Decimal("19")   # 只用于核对表提示「非标准税率」，不参与计价
 HEAD_COLS = ("ID", "Order Reference", "Customer")
 COL_PID = "Order Lines/Product/ID"
 COL_IREF = "Order Lines/Product/Internal Reference"
@@ -110,10 +121,21 @@ def apply_exclude(lines, exclude):
             [l for l in lines if l["pzn"] in exclude])
 
 
-def match(lines, candidates, pick):
-    """candidates: pzn → [(外部ID, 品名, sale_ok, active)]。pick: pzn → 外部ID。
+def not_base(hit):
+    """非基础品的原因（None = 基础品）。hit = (外部ID, 品名, sale_ok, active, 内部编码, 是否套件)。"""
+    code = (hit[4] or "").strip()
+    if hit[5]:
+        return "套件（有组件的 phantom BoM）"
+    if _po_base_sku(code) != code:
+        return f"渠道 / 组合装副本（编码 {code}）"
+    return None
 
-    命中恰好 1 个才填进行里；否则收进 problems 原样返回，不猜。
+
+def match(lines, candidates, pick):
+    """candidates: pzn → [(外部ID, 品名, sale_ok, active, 内部编码, 是否套件)]。pick: pzn → 外部ID。
+
+    先排除非基础品（`not_base`），剩恰好 1 个基础品才填进行里，被排除的记在 `l["excluded"]` 供核对表留痕；
+    剩 0 个或多个收进 problems（附全部命中）原样返回，不猜、也不退回去用套件 / 副本。
     """
     pick = {pzn8(k): v for k, v in pick.items()}
     unknown = set(pick) - {l["pzn"] for l in lines}
@@ -122,25 +144,38 @@ def match(lines, candidates, pick):
     problems = []
     for l in lines:
         hits = candidates.get(l["pzn"], [])
+        base = [h for h in hits if not not_base(h)]
+        l["excluded"] = [(h, not_base(h)) for h in hits if not_base(h)]
         if l["pzn"] in pick:
-            chosen = [h for h in hits if h[0] == pick[l["pzn"]]]
+            if pick[l["pzn"]] in {h[0] for h, _ in l["excluded"]}:
+                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这是非基础品（套件 / 副本），SO 只用基础品。")
+            chosen = [h for h in base if h[0] == pick[l["pzn"]]]
             if not chosen:
-                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这个外部 ID 不在该 PZN 的命中里 "
-                                f"{[h[0] for h in hits]}")
-            hits = chosen
-        if len(hits) == 1:
-            l["xmlid"], l["erp_name"], l["sale_ok"], l["active"] = hits[0]
+                raise StopError(f"--pick {l['pzn']}={pick[l['pzn']]}：这个外部 ID 不在该 PZN 的基础品命中里 "
+                                f"{[h[0] for h in base]}")
+            base = chosen
+        if len(base) == 1:
+            l["xmlid"], l["erp_name"], l["sale_ok"], l["active"] = base[0][:4]
         else:
             problems.append((l, hits))
     return problems
 
 
 def odoo_candidates(pzns):
-    """Odoo 只读：pzn → [(__export__ 外部 ID, 品名, sale_ok, active)]，含已归档品。"""
+    """Odoo 只读：pzn → [(__export__ 外部 ID, 品名, sale_ok, active, 内部编码, 是否套件)]，含已归档品。
+
+    套件 = 产品（或其模板上不限变体）挂着生效中的、至少一个组件的 phantom BoM。
+    """
     from odoo_api.odoo_client import Odoo
     od = Odoo.connect(context={"active_test": False}, verbose=False)
     prods = od.execute("product.product", "search_read", [[["pzn", "in", sorted(pzns)]]],
-                       {"fields": ["id", "name", "pzn", "sale_ok", "active"]})
+                       {"fields": ["id", "name", "pzn", "sale_ok", "active", "default_code", "product_tmpl_id"]})
+    boms = od.execute("mrp.bom", "search_read",
+                      [[["active", "=", True], ["type", "=", "phantom"], ["bom_line_ids", "!=", False],
+                        ["product_tmpl_id", "in", sorted({p["product_tmpl_id"][0] for p in prods})]]],
+                      {"fields": ["product_tmpl_id", "product_id"]}) if prods else []
+    kit_tmpl = {b["product_tmpl_id"][0] for b in boms if not b["product_id"]}
+    kit_var = {b["product_id"][0] for b in boms if b["product_id"]}
     xids = od.execute("ir.model.data", "search_read",
                       [[["model", "=", "product.product"], ["module", "=", "__export__"],
                         ["res_id", "in", [p["id"] for p in prods]]]],
@@ -155,8 +190,70 @@ def odoo_candidates(pzns):
             # 没有或有多个导出 ID：模板要的是外部 ID，这种产品没法安全写进表
             raise StopError(f"产品 {p['id']}（PZN {p['pzn']}，{p['name'].strip()}）的 __export__ 外部 ID 有 "
                             f"{len(ids)} 个，没法确定写哪个。先在 Odoo 里导出一次该产品生成外部 ID。")
-        out.setdefault(pzn8(p["pzn"]), []).append((ids[0], (p["name"] or "").strip(), p["sale_ok"], p["active"]))
+        kit = p["id"] in kit_var or p["product_tmpl_id"][0] in kit_tmpl
+        out.setdefault(pzn8(p["pzn"]), []).append((ids[0], (p["name"] or "").strip(), p["sale_ok"], p["active"],
+                                                   p["default_code"] or "", kit))
     return out
+
+
+def tax_problem(l, taxes, fp_src, fp_name):
+    """taxes: 该产品在 SO 公司下的销项税 [dict(id,name,amount,amount_type,price_include)]。
+
+    能确定税率就写进 l["rate"]（Decimal 百分数）返回 None；否则返回原因（不猜、不默认 19%）。
+    """
+    if len(taxes) != 1:
+        return f"产品挂了 {len(taxes)} 个销项税 {[t['name'] for t in taxes]}，不知按哪个算"
+    t = taxes[0]
+    if t["id"] in fp_src:
+        return f"税「{t['name']}」会被 SO 财政位置「{fp_name}」替换，脚本不推算替换后的税"
+    if t.get("amount_type", "percent") != "percent":
+        return f"税「{t['name']}」不是百分比税（{t.get('amount_type')}）"
+    if not t["price_include"]:
+        return f"税「{t['name']}」是不含税口径，Unit Price 该填净价还是含税价待定（ISSUES [SO 导入] B）"
+    l["rate"] = Decimal(str(t["amount"]))
+    return None
+
+
+def odoo_tax_info(xmlids, order_ref):
+    """Odoo 只读：→ (财政位置名或 None, 财政位置映射的源税 id 集合, {外部ID: [该 SO 公司的销项税]})。"""
+    from odoo_api.odoo_client import Odoo
+    od = Odoo.connect(context={"active_test": False}, verbose=False)
+    so = od.execute("sale.order", "search_read", [[["name", "=", order_ref]]],
+                    {"fields": ["company_id", "fiscal_position_id"]})
+    if len(so) != 1:
+        raise StopError(f"Odoo 里按 Order Reference「{order_ref}」找到 {len(so)} 张 SO，没法确定税的公司与财政位置。")
+    company, fp = so[0]["company_id"][0], so[0]["fiscal_position_id"]
+    fp_src = set()
+    if fp:
+        for m in od.execute("account.fiscal.position.tax", "search_read", [[["position_id", "=", fp[0]]]],
+                            {"fields": ["tax_src_id"]}):
+            if m["tax_src_id"]:
+                fp_src.add(m["tax_src_id"][0])
+    names = {x.split(".", 1)[1]: x for x in xmlids}
+    xd = od.execute("ir.model.data", "search_read",
+                    [[["model", "=", "product.product"], ["module", "=", "__export__"], ["name", "in", list(names)]]],
+                    {"fields": ["name", "res_id"]})
+    by_res = {x["res_id"]: names[x["name"]] for x in xd}
+    prods = od.execute("product.product", "read", [list(by_res), ["taxes_id"]])
+    tids = sorted({t for p in prods for t in p["taxes_id"]})
+    taxes = {t["id"]: t for t in od.execute(
+        "account.tax", "read", [tids, ["name", "amount", "amount_type", "price_include", "company_id"]])} if tids else {}
+    out = {by_res[p["id"]]: [taxes[t] for t in p["taxes_id"] if taxes[t]["company_id"][0] == company]
+           for p in prods}
+    return (fp[1] if fp else None), fp_src, out
+
+
+def apply_taxes(lines, tax_info):
+    """逐行定税率；有拿不准的行就整表停。"""
+    fp_name, fp_src, by_xmlid = tax_info
+    problems = []
+    for l in lines:
+        why = tax_problem(l, by_xmlid.get(l["xmlid"], []), fp_src, fp_name)
+        if why:
+            problems.append(f"  {l['pzn']} | {l['name']} | {l['erp_name']}：{why}")
+    if problems:
+        raise StopError("以下行的销项税拿不准，未出表（请在 Odoo 里核对产品税 / SO 财政位置后重跑）：\n"
+                        + "\n".join(problems))
 
 
 def read_template(template):
@@ -178,7 +275,7 @@ def build(wb, cols, head, lines, out_path):
     ws = wb.active
     ws.delete_rows(2, ws.max_row)
     for k, l in enumerate(lines):
-        l["price"] = l["netto"] * VAT
+        l["price"] = l["netto"] * (1 + l["rate"] / 100)
         vals = {COL_PID: l["xmlid"], COL_IREF: None, COL_QTY: l["qty"], COL_PRICE: float(l["price"])}
         if k == 0:
             vals.update(head)
@@ -187,11 +284,18 @@ def build(wb, cols, head, lines, out_path):
 
 
 def report(lines, dropped, summe):
-    print("\n核对表（PZN / PDF 名称 / 数量 / 净价 / ×1.19 / ERP 品名 / 可销售）")
+    print("\n核对表（PZN / PDF 名称 / 数量 / 净价 / 税率 / 含税价 / ERP 品名 / 可销售）")
     for k, l in enumerate(lines, 1):
         flag = "" if l["active"] else "  ⚠ 已归档"
-        print(f"{k:>3} | {l['pzn']} | {l['name']} | {l['qty']} | {l['netto']} | {l['price'].normalize()} | "
+        rate = f"{l['rate'].normalize()}%" + ("" if l["rate"] == STD_RATE else " ⚠非19%")
+        print(f"{k:>3} | {l['pzn']} | {l['name']} | {l['qty']} | {l['netto']} | {rate} | {l['price'].normalize()} | "
               f"{l['erp_name']} | {'✓' if l['sale_ok'] else '✗'}{flag}")
+    auto = [l for l in lines if l.get("excluded")]
+    if auto:
+        print("\n自动排除的非基础品（SO 只用基础品）：")
+        for l in auto:
+            for h, why in l["excluded"]:
+                print(f"    {l['pzn']} | {h[0]}  {h[1]} | {why}")
     if dropped:
         print("\n已剔除：")
         for l in dropped:
@@ -212,18 +316,24 @@ def report(lines, dropped, summe):
               f"在 SO 界面手动选产品时搜不到它们：{', '.join(l['pzn'] for l in no_sale)}")
 
 
-def run(pdf, template, outdir=None, exclude=(), pick=None, candidates_fn=odoo_candidates):
+def run(pdf, template, outdir=None, exclude=(), pick=None, candidates_fn=odoo_candidates,
+        tax_fn=odoo_tax_info):
     wb, cols, head = read_template(template)
     lines, summe = parse_text(read_pdf(pdf))
     print(f"PDF 明细 {len(lines)} 行（页 {sorted({l['page'] for l in lines})}），Summe {summe}")
     lines, dropped = apply_exclude(lines, exclude)
     problems = match(lines, candidates_fn({l["pzn"] for l in lines}), pick or {})
     if problems:
-        msg = ["以下行匹配异常，未出表（剔除用 --exclude PZN，多选一用 --pick PZN=外部ID）："]
+        msg = ["以下行匹配异常，未出表（剔除用 --exclude PZN，基础品多选一用 --pick PZN=外部ID）："]
         for l, hits in problems:
-            msg.append(f"  {l['pzn']} | {l['name']} | 数量 {l['qty']} | 命中 {len(hits)} 个")
-            msg += [f"      {h[0]}  {h[1]}  sale_ok={h[2]}{'' if h[3] else '  已归档'}" for h in hits]
+            nb = sum(1 for h in hits if not not_base(h))
+            msg.append(f"  {l['pzn']} | {l['name']} | 数量 {l['qty']} | 命中 {len(hits)} 个，其中基础品 {nb} 个")
+            for h in hits:
+                why = not_base(h)
+                msg.append(f"      {h[0]}  {h[1]}  [{h[4]}]  sale_ok={h[2]}{'' if h[3] else '  已归档'}"
+                           + (f"  ✗ 已排除：{why}" if why else ""))
         raise StopError("\n".join(msg))
+    apply_taxes(lines, tax_fn([l["xmlid"] for l in lines], head["Order Reference"]))
     outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
     os.makedirs(outdir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(pdf))[0]

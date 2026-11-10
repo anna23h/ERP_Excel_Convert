@@ -50,10 +50,15 @@ def _lines():
     return S.parse_text([PAGE1])[0]
 
 
+def _h(xid, code, kit=False, name="X"):
+    """候选元组：(外部ID, 品名, sale_ok, active, 内部编码, 是否套件)。"""
+    return (xid, name, True, True, code, kit)
+
+
 def test_match_unique_none_multi():
     lines = _lines()
-    cands = {"00427796": [("__export__.p_1", "B", False, True)],
-             "05561513": [("__export__.p_2", "C", True, True), ("__export__.p_3", "C 2er", True, True)]}
+    cands = {"00427796": [("__export__.p_1", "B", False, True, "B_00427796", False)],
+             "05561513": [_h("__export__.p_2", "C_05561513"), _h("__export__.p_3", "Temp_C_05561513")]}
     problems = S.match(lines, cands, {})
     assert lines[1]["xmlid"] == "__export__.p_1"
     assert [(l["pzn"], len(h)) for l, h in problems] == [("17604759", 0), ("05561513", 2)]
@@ -61,16 +66,48 @@ def test_match_unique_none_multi():
 
 def test_match_pick_resolves_multi():
     lines = _lines()[2:]
-    cands = {"05561513": [("__export__.p_2", "C", True, True), ("__export__.p_3", "C 2er", True, True)]}
+    cands = {"05561513": [_h("__export__.p_2", "C_05561513"), _h("__export__.p_3", "Temp_C_05561513")]}
     assert S.match(lines, cands, {"5561513": "__export__.p_2"}) == []
     assert lines[0]["xmlid"] == "__export__.p_2"
 
 
 def test_match_pick_must_be_a_hit():
     lines = _lines()[2:]
-    cands = {"05561513": [("__export__.p_2", "C", True, True)]}
+    cands = {"05561513": [_h("__export__.p_2", "C_05561513")]}
     with pytest.raises(S.StopError):
         S.match(lines, cands, {"05561513": "__export__.p_9"})
+
+
+@pytest.mark.parametrize("other", [
+    _h("__export__.k", "C_05561513x2_GW", kit=True),     # [2 Packs] 套件（后缀 + BoM）
+    _h("__export__.k", "C_05561513_GW", kit=True),       # 同名 _GW 套件（S04151 的 Compeed 形态）
+    _h("__export__.k", "C_05561513_VO"),                 # 渠道副本，没有 BoM 也排
+    _h("__export__.k", "C_99999999", kit=True),          # 基础编码但挂有组件的 phantom（旧 PZN 转向套件）
+])
+def test_match_auto_excludes_non_base(other):
+    lines = _lines()[2:]
+    assert S.match(lines, {"05561513": [_h("__export__.base", "C_05561513"), other]}, {}) == []
+    assert lines[0]["xmlid"] == "__export__.base"
+    assert [h[0] for h, _ in lines[0]["excluded"]] == ["__export__.k"]
+
+
+def test_match_only_non_base_stops():
+    """只有套件 / 副本（含只命中 1 个且是套件）→ 停，不退回去用。"""
+    lines = _lines()[2:]
+    problems = S.match(lines, {"05561513": [_h("__export__.k", "C_05561513", kit=True)]}, {})
+    assert len(problems) == 1 and "xmlid" not in lines[0]
+
+
+def test_match_pick_non_base_refused():
+    lines = _lines()[2:]
+    cands = {"05561513": [_h("__export__.base", "C_05561513"), _h("__export__.k", "C_05561513_GW", kit=True)]}
+    with pytest.raises(S.StopError, match="非基础品"):
+        S.match(lines, cands, {"05561513": "__export__.k"})
+
+
+def test_not_base_ignores_non_kit_bom():
+    """空 BoM / normal BoM 在 odoo_candidates 里就不算套件（kit=False）；基础编码 → 基础品。"""
+    assert S.not_base(_h("__export__.o", "Orthomol_10551706")) is None
 
 
 def test_exclude_unknown_pzn_stops():
@@ -94,6 +131,7 @@ def test_build_follows_template(tmp_path):
     lines = _lines()
     for i, l in enumerate(lines):
         l["xmlid"] = f"__export__.p_{i}"
+        l["rate"] = Decimal("7") if i == 1 else Decimal("19.0")
     wb, cols, head = S.read_template(tpl)
     S.build(wb, cols, head, lines, out)
     rows = list(load_workbook(out).active.iter_rows(values_only=True))
@@ -104,6 +142,43 @@ def test_build_follows_template(tmp_path):
     assert rows[1][5] == 192
     assert rows[1][6] == pytest.approx(14.02296)    # 11,784 × 1.19 全精度
     assert lines[2]["price"] == Decimal("13.12808")
+    assert lines[1]["price"] == Decimal("8.02928")  # 7,504 × 1.07：按产品真实税率，不写死 1.19
+
+
+def _tax(id=1, name="19% Umsatzsteuer", amount=19.0, price_include=True, amount_type="percent"):
+    return dict(id=id, name=name, amount=amount, price_include=price_include, amount_type=amount_type)
+
+
+@pytest.mark.parametrize("taxes,fp_src,rate", [
+    ([_tax()], set(), Decimal("19")),
+    ([_tax(amount=7.0, name="7% Umsatzsteuer")], set(), Decimal("7")),
+    ([_tax()], {99}, Decimal("19")),                          # 财政位置映射的是别的税，不碍事
+])
+def test_tax_resolves(taxes, fp_src, rate):
+    l = {}
+    assert S.tax_problem(l, taxes, fp_src, "Inland") is None
+    assert l["rate"] == rate
+
+
+@pytest.mark.parametrize("taxes,fp_src", [
+    ([], set()),                                               # 没挂税
+    ([_tax(), _tax(id=2, amount=7.0)], set()),                 # 多个税
+    ([_tax(price_include=False)], set()),                      # 不含税口径
+    ([_tax(amount_type="fixed")], set()),                      # 非百分比
+    ([_tax()], {1}),                                           # 被财政位置替换
+])
+def test_tax_ambiguous_stops(taxes, fp_src):
+    l = {}
+    assert S.tax_problem(l, taxes, fp_src, "EU") and "rate" not in l
+
+
+def test_apply_taxes_stops_whole_table():
+    lines = _lines()
+    for i, l in enumerate(lines):
+        l["xmlid"], l["erp_name"] = f"__export__.p_{i}", "X"
+    info = (None, set(), {"__export__.p_0": [_tax()], "__export__.p_1": [_tax()], "__export__.p_2": []})
+    with pytest.raises(S.StopError, match="05561513"):
+        S.apply_taxes(lines, info)
 
 
 def test_template_missing_head_stops(tmp_path):
