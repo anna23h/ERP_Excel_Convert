@@ -26,6 +26,9 @@
     单张 PO 超过 `--suspect-qty`（5000）件疑录错：不参与分档、在「待核」点名。
   - 供应商：主列最近一次采购的供应商 + 去税净价；并列窗口内最低净价那家。
     近 12 个月只出现过一家供应商的 → 「询价单供应商」（该供应商走 Odoo 询价单下单，`quote_fill.py` 用它）。
+    另算近 `--low-months`（3）个月的最低净价那家 →「近期最低价供应商」+ 该家窗口内最近一次净价；
+    本周需补的品也进这家的询价单（ISSUES [备货提醒] D，2026-11-12 用户定，对所有供应商通用；
+    多家并列最低价则留空，回 A3000 比价）。
   - 采购行剔除 `common/vendor.is_noise_vendor` 与 config `ODOO_EXCLUDE_VENDORS`（技术性映射单）。
 
 产出（默认 output/YYYYMMDD/）：
@@ -60,6 +63,9 @@ MAIN_SHEET, QUOTE_SHEET, CHECK_SHEET = "备货汇总", "询价单供应商", "�
 COL_QUOTE_VENDOR = "询价单供应商"
 COL_SUGGEST = "建议数量"
 COL_LAST_NET = "最近一次净价"
+COL_LOW_VENDOR = "近期最低价供应商"      # 近 --low-months 个月最低净价那家（并列则空）
+COL_LOW_NET = "近期最低净价"
+COL_LOW_LAST = "近期该家最近净价"        # 该家窗口内最近一次净价：放宽进询价单的品用它当单价
 
 
 # --------------------------------------------------------------------------
@@ -127,10 +133,29 @@ def suggest_qty(base, cover_weeks, onhand, incoming):
     return max(0, math.ceil(need - 1e-9))
 
 
-def vendor_profile(lines):
+def low_profile(lines, since=None):
+    """近期（date ≥ since）净价 > 0 的行里最低净价那家 + 该家窗口内最近一次净价。
+
+    按 2 位小数比价；最低价由多家并列 → 供应商留空（不替人选，回 A3000 比价）。
+    单价不用最低那笔而用该家最近一次（2026-11-12 用户定：避开一次性低价）。
+    """
+    win = [l for l in lines if (l["net"] or 0) > 0 and (since is None or str(l["date"])[:10] >= since)]
+    if not win:
+        return {COL_LOW_VENDOR: "", COL_LOW_NET: None, COL_LOW_LAST: None}
+    low = min(round(l["net"], 2) for l in win)
+    who = {l["vendor"] for l in win if round(l["net"], 2) == low}
+    if len(who) != 1:
+        return {COL_LOW_VENDOR: "", COL_LOW_NET: low, COL_LOW_LAST: None}
+    v = next(iter(who))
+    last = max((l for l in win if l["vendor"] == v), key=lambda l: (l["date"], l["po"]))
+    return {COL_LOW_VENDOR: v, COL_LOW_NET: low, COL_LOW_LAST: round(last["net"], 2)}
+
+
+def vendor_profile(lines, low_since=None):
     """单个基础品的采购行 [dict(date, vendor, net, po)] → 供应商画像 dict。
 
     最近一次：按 (日期, PO) 取最晚；最低价：净价 > 0 的行里最低（0 元行是赠品 / 返利）。
+    近期最低价（low_since 起）见 low_profile。
     """
     if not lines:
         return {"供应商数": 0}
@@ -147,13 +172,14 @@ def vendor_profile(lines):
         "最低价供应商": low["vendor"] if low else "",
         "最低净价": round(low["net"], 2) if low else None,
         "采购单数": len({l["po"] for l in lines}),
+        **low_profile(lines, low_since),
     }
 
 
 def build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, products,
                min_weeks=6, bulk_qty=100, bulk_share=0.5, suspect_qty=5000,
                cover_bulk=3, cover_regular=1, fines=None, unrolled=(), last7=None,
-               avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3):
+               avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3, low_since=None):
     """合并成汇总 DataFrame + 待核行。只出有销周数 ≥ min_weeks 的基础品。
 
     sales: {基础品: {周: 件}}；recent: {基础品: 近 4 周件数}；last7: {基础品: 近 7 天件数}；po_lines: {基础品: [采购行 dict]}；
@@ -203,9 +229,10 @@ def build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, product
             "有销周数": st["有销周数"],
             "12周销量": round(st["销量"]),
         }
-        prof = vendor_profile(lines)
+        prof = vendor_profile(lines, low_since)
         row.update({k: prof.get(k) for k in (COL_QUOTE_VENDOR, "最近一次供应商", COL_LAST_NET,
                                              "最近一次采购日", "最低价供应商", "最低净价",
+                                             COL_LOW_VENDOR, COL_LOW_NET, COL_LOW_LAST,
                                              "供应商数", "采购单数")})
         row["大单量占比"] = f"{share:.0%}" if share is not None else ""
         if fines is not None:
@@ -219,23 +246,52 @@ def build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, product
         df = (df.sort_values(["_need", "可撑周数", "12周销量"], ascending=[False, True, False],
                              na_position="last")
               .drop(columns="_need").reset_index(drop=True))
-        for c in (COL_QUOTE_VENDOR, "最近一次供应商", "最近一次采购日", "最低价供应商"):
+        for c in (COL_QUOTE_VENDOR, "最近一次供应商", "最近一次采购日", "最低价供应商", COL_LOW_VENDOR):
             df[c] = df[c].fillna("")
     return df, checks
 
 
+def quote_rows(df, vendor):
+    """该家询价单要补的行：建议数量 > 0 且（独家 = 该家 或 近期最低价 = 该家）。
+
+    返回 (DataFrame, 单价 Series, 来源 Series)：独家品用「最近一次净价」（单一供应商即该家上次价），
+    放宽进来的品用「近期该家最近净价」（ISSUES [备货提醒] D）。
+    """
+    if df.empty:
+        return df, pd.Series(dtype=float), pd.Series(dtype=str)
+    low = df[COL_LOW_VENDOR] if COL_LOW_VENDOR in df else pd.Series("", index=df.index)
+    sole = df[COL_QUOTE_VENDOR] == vendor
+    take = (df[COL_SUGGEST] > 0) & (sole | (low == vendor))
+    sub = df[take]
+    lowlast = sub[COL_LOW_LAST] if COL_LOW_LAST in sub else pd.Series(None, index=sub.index, dtype=float)
+    price = sub[COL_LAST_NET].where(sole[take], lowlast)
+    src = sole[take].map({True: "独家", False: "近期最低价"})
+    return sub, price, src
+
+
+def rfq_vendors(df):
+    """能出询价单的供应商：独家品的供应商 ∪ 本周需补品的近期最低价供应商。"""
+    if df.empty:
+        return []
+    vs = set(df[COL_QUOTE_VENDOR])
+    if COL_LOW_VENDOR in df:
+        vs |= set(df.loc[df[COL_SUGGEST] > 0, COL_LOW_VENDOR])
+    return sorted(v for v in vs if isinstance(v, str) and v)
+
+
 def quote_vendors(df):
-    """汇总里的询价单供应商 → 每家一行：独家品数 / 本周需补品数 / 建议数量合计。"""
-    q = df[df[COL_QUOTE_VENDOR] != ""] if not df.empty else df
-    if q.empty:
-        return pd.DataFrame(columns=[COL_QUOTE_VENDOR, "独家常销品数", "本周需补品数", "建议数量合计", "需补 SKU"])
+    """能出询价单的供应商 → 每家一行：独家品数 / 本周需补（独家 + 近期最低价）/ 建议数量合计。"""
+    cols = [COL_QUOTE_VENDOR, "独家常销品数", "本周需补品数", "其中近期最低价", "建议数量合计", "需补 SKU"]
     out = []
-    for v, g in q.groupby(COL_QUOTE_VENDOR):
-        need = g[g[COL_SUGGEST] > 0]
-        out.append({COL_QUOTE_VENDOR: v, "独家常销品数": len(g), "本周需补品数": len(need),
+    for v in rfq_vendors(df):
+        need, _, src = quote_rows(df, v)
+        out.append({COL_QUOTE_VENDOR: v, "独家常销品数": int((df[COL_QUOTE_VENDOR] == v).sum()),
+                    "本周需补品数": len(need), "其中近期最低价": int((src == "近期最低价").sum()),
                     "建议数量合计": int(need[COL_SUGGEST].sum()),
                     "需补 SKU": "、".join(need["SKU"])})
-    return pd.DataFrame(out).sort_values(["本周需补品数", "独家常销品数"], ascending=False)
+    if not out:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(out, columns=cols).sort_values(["本周需补品数", "独家常销品数"], ascending=False)
 
 
 # --------------------------------------------------------------------------
@@ -377,16 +433,18 @@ def write_book(path, sheets, left_cols):
 def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5,
         suspect_qty=5000, cover_bulk=3, cover_regular=1, transit_days=60,
         violations=None, exclude_vendors=None, outdir=None, timeout=180,
-        avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3):
+        avg_factor=1.2, drop_ratio=0.5, min_recent_avg=3, low_months=3):
     since = (date.fromisoformat(until) - timedelta(weeks=weeks)).isoformat()
     n_days = (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
     recent_since = (date.fromisoformat(until) - timedelta(days=RECENT_DAYS - 1)).isoformat()
     last_since = (date.fromisoformat(until) - timedelta(days=LAST_DAYS - 1)).isoformat()
     po_since = (date.fromisoformat(until) - timedelta(days=round(30.4 * po_months))).isoformat()
     transit_since = (date.fromisoformat(until) - timedelta(days=transit_days)).isoformat()
+    low_since = (date.fromisoformat(until) - timedelta(days=round(30.4 * low_months))).isoformat()
     od = Odoo.connect(timeout=timeout)
     say(f"销量窗口 {since} ~ {until}（{weeks} 周，VO/GW 前缀）  采购窗口 {po_since} 起  "
-        f"在途只认 {transit_since} 起创建的入库")
+        f"在途只认 {transit_since} 起创建的入库  "
+        f"近期最低价窗口 {low_since} 起")
     kit_map = pull_kit_map(od)
     weekly, recent_raw, last_raw = pull_retail_sales(od, since, until, recent_since, last_since)
     sales = roll_sales(weekly, kit_map)
@@ -416,7 +474,7 @@ def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5
                       and _po_base_sku(products[pid]["code"]) != products[pid]["code"])
     df, checks = build_rows(bases, sales, recent, n_days, po_lines, onhand, incoming, products,
                             min_weeks, bulk_qty, bulk_share, suspect_qty, cover_bulk, cover_regular, fines,
-                            set(unrolled), last7, avg_factor, drop_ratio, min_recent_avg)
+                            set(unrolled), last7, avg_factor, drop_ratio, min_recent_avg, low_since)
     for pid in unrolled:
         q = sum(sales.get(pid, {}).values())
         checks.append({"类型": "有后缀无 BoM", "SKU": products[pid]["code"], "产品": products[pid]["name"],
@@ -429,7 +487,7 @@ def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5
     path = write_book(os.path.join(outdir, f"备货汇总-{until.replace('-', '')}.xlsx"),
                       [(MAIN_SHEET, df), (QUOTE_SHEET, qv), (CHECK_SHEET, chk)],
                       left_cols={"SKU", "产品", "备注", "说明", "需补 SKU", COL_QUOTE_VENDOR,
-                                 "最近一次供应商", "最低价供应商"})
+                                 "最近一次供应商", "最低价供应商", COL_LOW_VENDOR})
     total = sum(sum(v.values()) for v in sales.values())
     need = df[df[COL_SUGGEST] > 0] if not df.empty else df
     say(f"\n✓ {path}")
@@ -439,7 +497,8 @@ def run(until, weeks=12, min_weeks=6, po_months=12, bulk_qty=100, bulk_share=0.5
         say("  档位: " + "  ".join(f"{k} {v}" for k, v in df["档位"].value_counts().sort_index().items()))
         say("  基数口径: " + "  ".join(f"{k} {v}" for k, v in df["基数口径"].value_counts().items())
             + f"；建议数量合计 {int(df[COL_SUGGEST].sum()):,} 件")
-    say(f"  询价单供应商 {len(qv)} 家；待核 {len(chk)} 条"
+    say(f"  询价单供应商 {len(qv)} 家（本周需补 {int(qv['本周需补品数'].sum())} 品，"
+        f"其中近期最低价放宽进来 {int(qv['其中近期最低价'].sum())} 品）；待核 {len(chk)} 条"
         + (f"（{'、'.join(f'{k} {v}' for k, v in chk['类型'].value_counts().items())}）" if len(chk) else ""))
     say(f"  RPC 调用 {od.call_count} 次")
     return path, df, qv, chk
@@ -452,6 +511,8 @@ def main():
     ap.add_argument("--min-weeks", type=int, default=6,
                     help="有销周数达到几周才进汇总（默认 6；12 周窗口通常跨 13 个自然周）")
     ap.add_argument("--po-months", type=int, default=12, help="采购记录窗口月数（默认 12）")
+    ap.add_argument("--low-months", type=int, default=3,
+                    help="近期最低价窗口月数（默认 3）：需补品近期最低净价那家也进它的询价单")
     ap.add_argument("--bulk-qty", type=float, default=100, help="单张 PO 超过几件算大单（默认 100）")
     ap.add_argument("--bulk-share", type=float, default=0.5,
                     help="大单量占采购总量达到多少算大批量（默认 0.5）")
@@ -482,7 +543,7 @@ def main():
         run(a.until or date.today().isoformat(), a.weeks, a.min_weeks, a.po_months, a.bulk_qty,
             a.bulk_share, a.suspect_qty, a.cover_bulk, a.cover_regular, a.transit_days,
             a.violations, exclude_vendors, a.outdir, a.timeout,
-            a.avg_factor, a.drop_ratio, a.min_recent_avg)
+            a.avg_factor, a.drop_ratio, a.min_recent_avg, a.low_months)
     except OdooError as e:
         raise SystemExit(f"✗ {e}")
 

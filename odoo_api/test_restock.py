@@ -75,6 +75,42 @@ def test_vendor_profile_last_lowest_and_sole():
     assert R.vendor_profile(lines[:1])[R.COL_QUOTE_VENDOR] == "A"
 
 
+def test_low_profile_window_last_price_and_tie():
+    # 2026-11-12 用户定（[备货提醒] D）：近期窗口内最低净价那家；单价取该家窗口内最近一次；并列不算
+    lines = [{"date": "2025-12-01 10:00:00", "vendor": "Old", "qty": 1, "net": 1.0, "po": "P0"},   # 窗口外
+             {"date": "2026-10-13 09:00:00", "vendor": "B", "qty": 1, "net": 8.25, "po": "P1"},   # 一次性低价
+             {"date": "2026-11-03 09:00:00", "vendor": "B", "qty": 1, "net": 14.56, "po": "P2"},
+             {"date": "2026-11-01 09:00:00", "vendor": "A", "qty": 1, "net": 14.50, "po": "P3"},
+             {"date": "2026-11-02 09:00:00", "vendor": "A", "qty": 1, "net": 0.0, "po": "P4"}]    # 赠品
+    p = R.low_profile(lines, "2026-08-12")
+    assert (p[R.COL_LOW_VENDOR], p[R.COL_LOW_NET], p[R.COL_LOW_LAST]) == ("B", 8.25, 14.56)
+    assert R.vendor_profile(lines, "2026-08-12")[R.COL_LOW_VENDOR] == "B"
+    assert R.low_profile(lines)[R.COL_LOW_VENDOR] == "Old"                      # 不给窗口 = 全部
+    tie = lines[2:4] + [{"date": "2026-11-04", "vendor": "C", "qty": 1, "net": 14.504, "po": "P5"}]
+    assert R.low_profile(tie, "2026-08-12")[R.COL_LOW_VENDOR] == ""             # A 与 C 两位小数并列
+    assert R.low_profile(lines, "2026-12-01")[R.COL_LOW_VENDOR] == ""           # 窗口内无采购
+
+
+def test_quote_rows_sole_plus_recent_lowest():
+    df = pd.DataFrame([
+        {"SKU": "S", R.COL_SUGGEST: 3, R.COL_QUOTE_VENDOR: "B", R.COL_LAST_NET: 2.0,
+         R.COL_LOW_VENDOR: "B", R.COL_LOW_LAST: 2.0},
+        {"SKU": "L", R.COL_SUGGEST: 5, R.COL_QUOTE_VENDOR: "", R.COL_LAST_NET: 9.0,       # 最近一次是别家价
+         R.COL_LOW_VENDOR: "B", R.COL_LOW_LAST: 7.5},
+        {"SKU": "Z", R.COL_SUGGEST: 0, R.COL_QUOTE_VENDOR: "", R.COL_LAST_NET: 1.0,       # 不需补
+         R.COL_LOW_VENDOR: "B", R.COL_LOW_LAST: 1.0},
+        {"SKU": "G", R.COL_SUGGEST: 4, R.COL_QUOTE_VENDOR: "", R.COL_LAST_NET: 1.0,
+         R.COL_LOW_VENDOR: "G", R.COL_LOW_LAST: 1.0},
+    ])
+    sub, price, src = R.quote_rows(df, "B")
+    assert sub["SKU"].tolist() == ["S", "L"]
+    assert price.tolist() == [2.0, 7.5] and src.tolist() == ["独家", "近期最低价"]
+    assert R.rfq_vendors(df) == ["B", "G"]
+    qv = R.quote_vendors(df).set_index(R.COL_QUOTE_VENDOR)
+    assert qv.loc["B", "本周需补品数"] == 2 and qv.loc["B", "其中近期最低价"] == 1
+    assert qv.loc["B", "建议数量合计"] == 8 and qv.loc["G", "独家常销品数"] == 0
+
+
 def _build(**kw):
     weeks = {f"W{i}": 10 for i in range(7)}                                  # 7 周 × 10 = 70 件 / 70 天 → 周均 7
     sales = {1: weeks, 2: dict(weeks, W0=50), 3: {"W1": 5, "W2": 5}}       # 3 只有 2 周有销 → 不进
@@ -161,6 +197,29 @@ def test_quote_fill_writes_only_vendor_rows_with_need(tmp_path):
     assert len(rows) == 2                                 # 表头 + A_1；A_2 不需补、B_1 不是这家
     assert rows[1] == ("__export__.po_1", "P00001", "solo gmbh", "__export__.product_product_1", 12, 2.5,
                        "l10n_de_skr03.1_tax_vst_19_skr03")
+
+
+def test_quote_fill_adds_recent_lowest_rows(tmp_path):
+    df = pd.DataFrame([
+        {"SKU": "A_1", "产品": "a", R.COL_SUGGEST: 12, R.COL_LAST_NET: 2.5, R.COL_QUOTE_VENDOR: "Solo GmbH",
+         R.COL_LOW_VENDOR: "Solo GmbH", R.COL_LOW_LAST: 2.5, "产品ID": 1},
+        {"SKU": "B_1", "产品": "c", R.COL_SUGGEST: 5, R.COL_LAST_NET: 9.0, R.COL_QUOTE_VENDOR: "",
+         R.COL_LOW_VENDOR: "Solo GmbH", R.COL_LOW_LAST: 7.25, "产品ID": 3},
+        {"SKU": "C_1", "产品": "d", R.COL_SUGGEST: 5, R.COL_LAST_NET: 1.0, R.COL_QUOTE_VENDOR: "",
+         R.COL_LOW_VENDOR: None, R.COL_LOW_LAST: None, "产品ID": 4},
+    ])
+    p = tmp_path / "备货汇总-20261112.xlsx"
+    with pd.ExcelWriter(p) as w:
+        df.to_excel(w, sheet_name=R.MAIN_SHEET, index=False)
+    out, lines = Q.run(_template(tmp_path), str(p), outdir=str(tmp_path / "o"),
+                       status_fn=_blank, products_fn=_prods())
+    assert [(l["sku"], l["price"], l["src"]) for l in lines] == [("A_1", 2.5, "独家"), ("B_1", 7.25, "近期最低价")]
+    rows = list(load_workbook(out).active.iter_rows(values_only=True))
+    assert len(rows) == 3 and rows[2][3:6] == ("__export__.product_product_1", 5, 7.25)
+    # 只有近期最低价品、没有独家品的供应商也能出询价单
+    out, lines = Q.run(_template(tmp_path, "Solo"), str(p), outdir=str(tmp_path / "o2"),
+                       status_fn=_blank, products_fn=_prods())
+    assert len(lines) == 2
 
 
 def test_quote_fill_stops(tmp_path):

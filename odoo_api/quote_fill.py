@@ -9,13 +9,18 @@
 ① Anna 在 Odoo 建询价单、选好供应商、不加行，导出 Excel → ② 本脚本按汇总补产品行、填数量与单价 →
 ③ Anna 核对后手动导入 Odoo。
 
-只服务「询价单供应商」：近 12 个月采购记录里只有一家供应商的常销品，那家就是它的询价单供应商
-（`restock.py` 现算，见汇总的「询价单供应商」sheet）。其余产品在 A3000 比价下单，不走这里。
+收哪些行（`restock.py` 现算，见汇总的「询价单供应商」sheet）——建议数量 > 0，且满足其一：
+  · 独家：近 12 个月采购记录里只有这一家供应商（ISSUES [备货提醒] A）；
+  · 近期最低价：近 `--low-months`（3）个月最低净价那家是这一家，多家并列不算
+    （ISSUES [备货提醒] D，2026-11-12 用户定，对所有供应商通用）。
+其余产品在 A3000 比价下单，不走这里。
 
 填值口径：
     Order Lines/Product/ID   ← 产品 __export__ 外部 ID（模板只有 `.id` 列则写数据库 ID）
     Order Lines/Quantity     ← 汇总「建议数量」（> 0 的行才补）
-    Order Lines/Unit Price   ← 汇总「最近一次净价」（去税净价；单一供应商即该供应商的上次价）
+    Order Lines/Unit Price   ← 独家品：汇总「最近一次净价」（单一供应商即该供应商的上次价）；
+                               近期最低价品：「近期该家最近净价」（该家窗口内最近一次，不用最低那笔——
+                               2026-11-12 用户定，避开一次性低价）。都是去税净价
     Order Lines/Taxes[/ID]   ← 产品主数据的进项税（7% / 19% Vorsteuer），不是这两档就停
 模板要求同 PO 导入表（`po_import/po_from_pdf.py`）：第 2 行起带 ID / Order Reference / Vendor，
 勾上 Product / Quantity / Unit Price / Taxes 列；界面名、技术名表头都认。
@@ -36,8 +41,8 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.xlsx import unique_path  # noqa: E402
-from odoo_api.restock import (COL_LAST_NET, COL_QUOTE_VENDOR, COL_SUGGEST,  # noqa: E402
-                              MAIN_SHEET)
+from odoo_api.restock import (COL_LOW_VENDOR, COL_QUOTE_VENDOR, COL_SUGGEST,  # noqa: E402
+                              MAIN_SHEET, quote_rows, rfq_vendors)
 from po_import.po_from_pdf import (TAX_FULL, TAX_REDUCED, blank_reason,  # noqa: E402
                                    odoo_po_status, read_template)
 from so_import.so_from_pdf import StopError  # noqa: E402
@@ -73,17 +78,19 @@ def match_vendor(vendor, candidates):
         return sub[0]
     raise StopError(f"询价单的供应商「{vendor}」不是本周汇总里的询价单供应商"
                     + (f"（子串命中多家 {sub}）" if sub else "")
-                    + f"。询价单供应商：{sorted(candidates)}。其余供应商的产品在 A3000 比价下单，不走询价单。")
+                    + f"。询价单供应商（有独家品或本周需补品近期最低价是它）：{sorted(candidates)}。"
+                    "其余供应商的产品在 A3000 比价下单，不走询价单。")
 
 
 def pick_rows(summary, vendor):
-    """汇总里该供应商、建议数量 > 0 的行。"""
-    df = summary[(summary[COL_QUOTE_VENDOR] == vendor) & (summary[COL_SUGGEST] > 0)].copy()
+    """汇总里该供应商要补的行（独家 + 近期最低价），带 _price / _src 两列。"""
+    df, price, src = quote_rows(summary, vendor)
     if df.empty:
-        raise StopError(f"本周汇总里 {vendor} 的独家品都不需要补货（建议数量全为 0），不出表。")
-    noprice = df[df[COL_LAST_NET].isna() | (df[COL_LAST_NET] <= 0)]
+        raise StopError(f"本周汇总里 {vendor} 没有需补的品（独家品建议数量全为 0、也没有近期最低价是它的需补品），不出表。")
+    df = df.assign(_price=price, _src=src)
+    noprice = df[df["_price"].isna() | (df["_price"] <= 0)]
     if not noprice.empty:
-        raise StopError(f"这些行没有上次采购净价，没法填单价：{noprice['SKU'].tolist()}")
+        raise StopError(f"这些行没有该家的采购净价，没法填单价：{noprice['SKU'].tolist()}")
     return df
 
 
@@ -135,8 +142,8 @@ def resolve_lines(rows, prods, need_xmlid):
             continue
         lines.append({"sku": r["SKU"], "name": r["产品"], "dbid": pid,
                       "xmlid": p["xmlids"][0] if p["xmlids"] else None,
-                      "qty": int(r[COL_SUGGEST]), "price": round(float(r[COL_LAST_NET]), 2),
-                      "tax": tax_of(p["taxes"])})
+                      "qty": int(r[COL_SUGGEST]), "price": round(float(r["_price"]), 2),
+                      "src": r["_src"], "tax": tax_of(p["taxes"])})
     if bad:
         raise StopError("这些行补不进询价单：\n  " + "\n  ".join(bad))
     return lines
@@ -169,7 +176,11 @@ def run(template, summary=None, po=None, outdir=None, status_fn=odoo_po_status, 
     if d and (date.today() - d).days > STALE_DAYS:
         print(f"  ⚠ 这份汇总是 {d}，已超过 {STALE_DAYS} 天；建议先重跑 restock.py")
     sdf = pd.read_excel(summary, sheet_name=MAIN_SHEET)
-    sdf[COL_QUOTE_VENDOR] = sdf[COL_QUOTE_VENDOR].fillna("").astype(str)
+    for c in (COL_QUOTE_VENDOR, COL_LOW_VENDOR):
+        if c in sdf:
+            sdf[c] = sdf[c].fillna("").astype(str)
+    if COL_LOW_VENDOR not in sdf:
+        print(f"  ⚠ 这份汇总没有「{COL_LOW_VENDOR}」列（旧版 restock 出的），只收独家品；重跑 restock.py 才会放宽")
 
     wb, cols, heads, colmap = read_template(template, po)
     if len(heads) > 1:
@@ -180,8 +191,7 @@ def run(template, summary=None, po=None, outdir=None, status_fn=odoo_po_status, 
     if why:
         raise StopError(f"{ref} 不是空白询价单（{why}），不往里写。请新建一张、不加行再导出。")
 
-    vendors = sorted(v for v in sdf[COL_QUOTE_VENDOR].unique() if v)
-    vendor = match_vendor(head[colmap["vendor"]], vendors)
+    vendor = match_vendor(head[colmap["vendor"]], rfq_vendors(sdf))
     rows = pick_rows(sdf, vendor)
     lines = resolve_lines(rows, products_fn(set(int(x) for x in rows["产品ID"])), need_xmlid=bool(colmap["pid"]))
 
@@ -190,10 +200,12 @@ def run(template, summary=None, po=None, outdir=None, status_fn=odoo_po_status, 
     out = unique_path(os.path.join(outdir, f"{ref}_询价单回填.xlsx"))
     write_import(wb, cols, {k: v for k, v in head.items()}, colmap, lines, out)
 
-    print(f"\n{ref} · {vendor} · {len(lines)} 行")
-    print(f"{'SKU':<28}{'数量':>6}{'净价':>10}{'金额':>11}  税")
+    n_low = sum(l["src"] == "近期最低价" for l in lines)
+    print(f"\n{ref} · {vendor} · {len(lines)} 行（独家 {len(lines) - n_low} · 近期最低价 {n_low}）")
+    print(f"{'SKU':<28}{'数量':>6}{'净价':>10}{'金额':>11}  {'来源':<8}税")
     for l in lines:
-        print(f"{l['sku']:<28}{l['qty']:>6}{l['price']:>10.2f}{l['qty'] * l['price']:>11.2f}  {l['tax'][1]}")
+        print(f"{l['sku']:<28}{l['qty']:>6}{l['price']:>10.2f}{l['qty'] * l['price']:>11.2f}  "
+              f"{l['src']:<8}{l['tax'][1]}")
     print(f"{'合计（去税）':<26}{sum(l['qty'] for l in lines):>6}{'':>10}"
           f"{sum(l['qty'] * l['price'] for l in lines):>11.2f}")
     print(f"\n✓ {out}\n  核对数量与单价后在 Odoo 导入（Purchase → 询价单 → 导入）。")
