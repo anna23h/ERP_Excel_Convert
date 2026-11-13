@@ -1,6 +1,6 @@
 ---
 name: PO导入表
-description: 把批发商的 Rechnung/Lieferschein PDF 填进 Odoo 导出的空 purchase.order 模板、出可直接导入的 PO 表时用。用户给出一张 Rechnung / Lieferschein / 供货商账单 PDF 加一张 purchase.order*.xlsx，说「填进 PO」「做 PO 导入表」「账单转采购单」「导入成 PO」时触发。流程：跑 po_import/po_from_pdf.py → 停下就把原因/异常行交用户裁决 → 带 --exclude / --pick 重跑 → 交核对表与合计核对。PZN 是唯一键，绝不按品名兜底、不替用户选。
+description: 把批发商的 Rechnung/Lieferschein PDF 填进 Odoo 导出的空 purchase.order 模板、出可直接导入的 PO 表时用。用户给出一张 Rechnung / Lieferschein / 供货商账单 PDF 加一张 purchase.order*.xlsx，说「填进 PO」「做 PO 导入表」「账单转采购单」「导入成 PO」时触发。流程：跑 po_import/po_from_pdf.py → 停下就把原因/异常行交用户裁决 → 带 --exclude / --pick 重跑 → 交核对表与合计核对。PZN 是唯一键，绝不按品名兜底、不替用户选。dm 门店收银小票扫描 PDF（scandm…）也走这里：脚本自动 OCR、品名查 dm 对照表。
 ---
 
 # PO 导入表（Rechnung/Lieferschein PDF → Odoo 采购单导入）
@@ -67,3 +67,14 @@ python3 -m po_import.po_from_pdf L.pdf T.xlsx --exclude <PZN…> --pick <PZN=外
   B 的 `M` 是 phonetischer Artikel、**不是**减税），脚本按表头自动分流；C：门户 Lieferschein 网页存的 `.html`（按后缀分流，
   单价 = Ek.Preis，税看 MwSt 列 7% / 19%，`Kz` 与税无关；只给截图时请用户在页面 Ctrl+S 存 HTML，不靠识图转录）。
   再有新版式先告诉用户，按项目规则立项后再扩展。
+
+## dm 门店小票（版式 D，ISSUES [PO 导入] H，2026-11-13 用户定）
+
+扫描 PDF 没有文字层 → 脚本自动 OCR（缺包就 `pip install -r requirements-pdf.txt`），命令同上，模板要是 dm 的空白 PO。
+小票**没有 PZN**：品名查私有库 `dm_bon_map.csv`（`小票品名,外部ID,备注`，`SKIP` = 不进 PO），只在对照表内容错匹配；税率取产品默认进项税、
+按两档 Brutto 反验；单价 = 含税价 ÷ (1+税率) 2 位；单号 `dm-YYYYMMDD-<TA-Nummer>`。**不用 `--exclude` / `--pick`**。
+
+- 停在「没有唯一匹配」：列出 OCR 原文与最接近的两条。新品名时可以在 Odoo **只读**查候选给用户参考
+  （同名基础品、税率与小票税档一致、历史 dm 采购行数），**写进对照表前必须用户确认**；品名照小票原样写（用户读图或你读图核对），不写 OCR 噪声。
+- 停在数字护栏（三个倍数都不过、附 OCR 文本）：如实告诉用户，**不要手工改数字硬凑**；可请用户重扫（清晰、平整、不裁边）。
+- 交付：产出路径 + 整张核对表（PZN / OCR 原文 / 小票名(相似度) / 数量 / 含税单价 / 净价 / 税 / ERP 品名）+ 两档 Brutto / Netto 合计核对与舍入差 + SKIP 行。

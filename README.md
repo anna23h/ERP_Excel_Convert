@@ -28,7 +28,7 @@
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它 SO 创建日前 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `procure/price_check.py` | **发票比价核对**（客户发票 / 销售单 → 逐行 SO 净价 × 开票净价 × 发票日前最近一张 PO 价 → 单件毛利与毛利率；**两边一律比去税净价**，首列 PZN；开票价 ≠ SO 价、税码不一致、毛利 ≤ 0 标 ⚠） | `python3 -m procure.price_check INV/2026/11/0069 S04094`（无 GUI，需 Odoo 凭据）；有 skill | [下方章节](#发票比价核对售价-vs-采购价) + 脚本 docstring | 在用（2026-11-06 起） |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
-| `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；认两家批发商版式；单价 AEP 净价、税按税码分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
+| `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；认三家批发商版式 + dm 小票扫描件（OCR + 品名对照表）；单价 AEP 净价、税按税码分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
 | `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
 | `common/` | 跨流水线共享层（Excel 排版 / 供应商简称 / 采购画像 / Supply Remark 分段） | 不单独运行 | — | — |
 
@@ -642,7 +642,15 @@ Claude 侧流程见 `.claude/skills/SO导入表/SKILL.md`。
   C 家门户 Lieferschein（2026-10-27 起，**不是 PDF**：网页上 Ctrl+S 存成 `.html` 当第一个参数传，按后缀分流）：表头
   `Menge Artikelbezeichnung PZN Ek.Preis Zeilenwert MwSt Kz`，单价 = Ek.Preis，税**直接看 MwSt 列** 7% / 19%（`Kz` 的 A / R 是药房 / 处方标记，与税无关）；
   页面只印 `Gesamt (Netto)`，护栏只有逐行 Menge × Ek.Preis = Zeilenwert 与总额（无两档税基可核）；同 PZN 多行照原样分行。
-  其他版式不认，PDF 依赖 `pdfplumber`（`requirements-pdf.txt`）。
+  D：**dm 门店收银小票扫描件**（2026-11-13 起，ISSUES [PO 导入] H，`po_import/dm_bon.py`）：PDF 一个字都抽不出就走本地 OCR
+  （`pypdfium2` 渲染 + `rapidocr_onnxruntime`，渲染倍数 4 → 3 → 5 取第一个护栏全过的）。小票**没有 PZN**，品名按用户维护的
+  **对照表** `dm_bon_map.csv`（私有库根目录，列 `小票品名,外部ID,备注`；外部ID 写 `SKIP` = 这次不进 PO；`--dm-map` 可另指）
+  匹配：OCR 品名每次识别都不一样（实测 Zirkulin → Tirkulin / lirkulin），所以**只在对照表内容错**——归一化后相似度唯一最高、
+  ≥ 0.8、领先次高 ≥ 0.1 才认，不碰 Odoo 品名；对照表外部 ID 是副本 / 查不到就停。**税率取产品默认进项税**（OCR 的税码 1/2 常漏读，只做参考、矛盾才停），
+  按档求和须等于小票印的两档 Brutto；单价 = 含税单价 ÷ 1.19 / 1.07，**2 位**，每档净额与印的 Netto 差 ≤ 0.005 × 件数放行（核对表写出差额）；
+  护栏另有逐行 数量 × 单价 = 小计、Σ = SUMME、档内 Brutto ÷ (1+税率) = Netto、负数行 / 负 SUMME 就停、头部日期 = TSE Start 日期。
+  `Vendor Reference` = `dm-YYYYMMDD-<TSE TA-Nummer>`；模板 Vendor 不是 dm 就停；不用 `--exclude` / `--pick`（改对照表）。
+  其他版式不认，PDF 依赖 `pdfplumber`、dm 小票另要 `rapidocr_onnxruntime`（都在 `requirements-pdf.txt`）。
 - 模板里有**多张 PO**（Odoo 一次导出多张空 PO）时：不给 `--po` 就**自动写进空白 PO**（2026-10-22 用户定：空白 PO 之间没有区别）。
   空白 = Odoo 里 draft/sent、无订单行、Vendor Reference 为空（只读查）；按模板行序取第一张。分次跑同一模板的几张 PDF 时，
   输出目录里已为别的 PDF 出过表的 PO 视为已占用、跳过；同一 PDF 重跑沿用原 PO。没有可用的空白 PO 就停并列出原因。

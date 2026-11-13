@@ -41,6 +41,10 @@ AVP 可缺；护栏同构——逐行 AEP × Menge = Wert、`n Positionen m Stü
 见 ISSUES [PO 导入] G：表头 `Menge Artikelbezeichnung PZN Ek.Preis Zeilenwert MwSt Kz`，单价 = Ek.Preis，
 税看 MwSt 列（7% / 19%），`Kz` 不读；底部只有 Gesamt (Netto)，护栏是逐行算术 + 总额；同 PZN 多行照原样分行。
 
+版式 D（dm 门店收银小票扫描件：PDF 一个字都抽不出）走 `run_dm` → `po_import/dm_bon.py`，见 ISSUES [PO 导入] H：
+本地 OCR；小票无 PZN，品名在用户维护的对照表（`--dm-map`，默认私有库 `dm_bon_map.csv`）里容错匹配到外部 ID；
+税率取产品默认进项税并按两档 Brutto 反验；单价 = 含税价 ÷ (1+税率) 2 位；单号 `dm-YYYYMMDD-<TA-Nummer>`。
+
 模板含多张 PO（Odoo 一次导出多张空 PO）且没给 `--po` 时自动选空白 PO（Odoo 里 draft/sent、无行、无 Vendor Reference），
 按模板行序取；输出目录里已为别的 PDF 出过表的 PO 跳过，同一 PDF 重跑沿用原 PO（`choose_po`，ISSUES [PO 导入] F）。
 """
@@ -546,9 +550,49 @@ def report(lines, dropped):
           + (f"；剔除行合计 {sum(l['gesamt'] for l in dropped)}" if dropped else ""))
 
 
+def is_image_pdf(path):
+    """PDF 且一个字都抽不出（扫描件）→ True，走版式 D（dm 小票 OCR）。"""
+    return path.lower().endswith(".pdf") and not any((t or "").strip() for t in read_pdf(path))
+
+
+def run_dm(pdf, wb, cols, heads, colmap, outdir, dm_map, existing_fn, po_status_fn, ocr_fn=None, products_fn=None):
+    """版式 D：dm 门店小票扫描件（ISSUES [PO 导入] H）。品名走对照表、税率取产品默认进项税，写表与 A/B/C 相同。"""
+    from po_import import dm_bon
+    kw = {k: v for k, v in (("ocr_fn", ocr_fn), ("products_fn", products_fn)) if v}
+    lines, dropped, doc_no, bon = dm_bon.load(pdf, dm_map, **kw)
+    print(f"dm 小票 {doc_no}，明细 {len(bon['lines'])} 行 / {sum(l['qty'] for l in bon['lines'])} 件，"
+          f"SUMME {bon['summe']}（含税）")
+    dup = existing_fn(doc_no)
+    if dup:
+        raise StopError(f"Odoo 里已有 Vendor Reference = {doc_no} 的采购单：{dup}——这张很可能已经录过，不出表。")
+    out, head = _write(pdf, wb, cols, heads, colmap, lines, doc_no, outdir, po_status_fn)
+    if not re.search(r"\bdm\b", str(head[colmap["vendor"]]), re.I):
+        os.remove(out)
+        raise StopError(f"模板这张 PO 的 Vendor 是「{head[colmap['vendor']]}」，不是 dm——小票不能写进别家的 PO，"
+                        "已删掉刚写的表。请导出 dm 的空白 PO 模板。")
+    dm_bon.report(lines, dropped, bon)
+    return out
+
+
+def _write(pdf, wb, cols, heads, colmap, lines, doc_no, outdir, po_status_fn):
+    outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
+    os.makedirs(outdir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(pdf))[0]
+    head = heads[0] if len(heads) == 1 else choose_po(heads, colmap, outdir, stem, po_status_fn)
+    out = unique_path(os.path.join(outdir, f"{head[colmap['ref']]}_import_{stem}.xlsx"))
+    build(wb, cols, head, colmap, lines, doc_no, out)
+    print(f"写出 {out}（{len(lines)} 行）；头信息 {head}"
+          + (f"，Vendor Reference {doc_no}" if colmap["vref"] else "（模板无 Vendor Reference 列，单号没写进去）"))
+    return out, head
+
+
 def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
-        candidates_fn=odoo_candidates, existing_fn=odoo_existing, po_status_fn=odoo_po_status):
+        candidates_fn=odoo_candidates, existing_fn=odoo_existing, po_status_fn=odoo_po_status, dm_map=None):
     wb, cols, heads, colmap = read_template(template, po)
+    if is_image_pdf(pdf):
+        if exclude or pick:
+            raise StopError("dm 小票不用 --exclude / --pick：不进 PO 的行在对照表里把外部ID 写 SKIP，选产品改对照表。")
+        return run_dm(pdf, wb, cols, heads, colmap, outdir, dm_map, existing_fn, po_status_fn)
     lines, doc_no = read_source(pdf)
     print(f"PDF 单号 {doc_no}，明细 {len(lines)} 行 / {sum(l['qty'] for l in lines)} 件"
           f"（页 {sorted({l['page'] for l in lines})}），合计 {sum(l['gesamt'] for l in lines)}")
@@ -567,14 +611,7 @@ def run(pdf, template, outdir=None, exclude=(), pick=None, po=None,
                     for h in base]
             msg += [f"      （已排除副本）{h[0]}  [{h[2]}]" for h in l["variants"]]
         raise StopError("\n".join(msg))
-    outdir = outdir or os.path.join("output", f"{dt.date.today():%Y%m%d}")
-    os.makedirs(outdir, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(pdf))[0]
-    head = heads[0] if len(heads) == 1 else choose_po(heads, colmap, outdir, stem, po_status_fn)
-    out = unique_path(os.path.join(outdir, f"{head[colmap['ref']]}_import_{stem}.xlsx"))
-    build(wb, cols, head, colmap, lines, doc_no, out)
-    print(f"写出 {out}（{len(lines)} 行）；头信息 {head}"
-          + (f"，Vendor Reference {doc_no}" if colmap["vref"] else "（模板无 Vendor Reference 列，单号没写进去）"))
+    out, _ = _write(pdf, wb, cols, heads, colmap, lines, doc_no, outdir, po_status_fn)
     report(lines, dropped)
     return out
 
@@ -588,6 +625,8 @@ def main():
     ap.add_argument("--exclude", nargs="+", default=[], metavar="PZN", help="剔除这些 PZN 的行（用户裁决后用）")
     ap.add_argument("--pick", nargs="+", default=[], metavar="PZN=外部ID",
                     help="一个 PZN 命中多个产品时指定用哪个（用户裁决后用）")
+    ap.add_argument("--dm-map", metavar="CSV",
+                    help="dm 小票（扫描 PDF）品名对照表，默认私有库 dm_bon_map.csv（列 小票品名,外部ID,备注）")
     a = ap.parse_args()
     pick = {}
     for kv in a.pick:
@@ -596,7 +635,7 @@ def main():
         k, v = kv.split("=", 1)
         pick[k.strip()] = v.strip()
     try:
-        run(a.pdf, a.template, a.outdir, a.exclude, pick, a.po)
+        run(a.pdf, a.template, a.outdir, a.exclude, pick, a.po, dm_map=a.dm_map)
     except StopError as e:
         print(f"\n✗ {e}", file=sys.stderr)
         sys.exit(2)

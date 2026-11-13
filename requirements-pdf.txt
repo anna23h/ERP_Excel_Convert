@@ -1,3 +1,6 @@
 # 客户 Bestellung PDF → SO 导入表 so_import/so_from_pdf.py 专用，按需单独装：
 #   pip install -r requirements-pdf.txt
 pdfplumber
+# dm 门店小票扫描件（PO 导入版式 D）要 OCR：渲染用 pypdfium2（pdfplumber 已带），识别用 rapidocr（onnxruntime，离线）
+pypdfium2
+rapidocr_onnxruntime
