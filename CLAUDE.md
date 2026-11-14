@@ -3,6 +3,12 @@
 This repository is developed and maintained by Anna. It reads IHTCT's Odoo
 data and produces Excel files. Colleagues use it; they do not develop it.
 
+**Scope: these rules are for colleagues only.** If a `CLAUDE.local.md` is
+loaded in this project, you are on the maintainer's (Anna's) machine: ignore
+the "Your role" and "When something goes wrong" sections below and follow
+`CLAUDE.local.md` for development work. The "Odoo access" and "Data" rules
+still apply.
+
 Note: this repository is public. Never write customer names, prices, API keys
 or other business data into any file that is tracked by git.
 
