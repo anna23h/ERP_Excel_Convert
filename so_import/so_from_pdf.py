@@ -110,10 +110,25 @@ def true_netto(l):
 
     S04152 实测：印 38,865 € × 900 = 34.978,05 €，34978.05 ÷ 900 = 38.8645 整除，HALF_UP 到 3 位 = 38.865。
     商恰好 ≤ 4 位、≠ 印的价、且舍入回去等于印的价 → 净价改用商，印的价记进 l["printed"]。
-    商除不尽 = 对方按行先舍入（S04151 那种），照旧用印的价。商整除却舍入不回印的价 = PDF 自相矛盾，停。
+    商整除却舍入不回印的价 = PDF 自相矛盾，停。
+
+    商除不尽（2026-11-13 `[SO 导入] E`）：印的价 × Anz. 舍入到 2 位 = Nettosumme（按行舍入，S04151 那种）→ 不动；
+    否则在印的价附近枚举 4 位价 p（舍到印的位数 = 印的价、p × Anz. 舍到 2 位 = Nettosumme），恰好 1 个就用它
+    （S04159 实测：印 13,112 € × 1008 = 13.216,69 €，唯一候选 13.1118），0 个或多个照旧用印的价。
     """
     q = l["nsum"] / l["qty"]
-    if q != q.quantize(Decimal("0.0001")) or q == l["netto"]:
+    if q == l["netto"]:
+        return
+    if q != q.quantize(Decimal("0.0001")):
+        cent = Decimal("0.01")
+        if (l["netto"] * l["qty"]).quantize(cent, ROUND_HALF_UP) == l["nsum"]:
+            return
+        unit = Decimal(1).scaleb(l["netto"].as_tuple().exponent)
+        cands = [p for p in (l["netto"] + Decimal(i).scaleb(-4) for i in range(-9, 10))
+                 if p.quantize(unit, ROUND_HALF_UP) == l["netto"]
+                 and (p * l["qty"]).quantize(cent, ROUND_HALF_UP) == l["nsum"]]
+        if len(cands) == 1:
+            l["printed"], l["netto"], l["unique4"] = l["netto"], cands[0].normalize(), True
         return
     if q.quantize(Decimal(1).scaleb(l["netto"].as_tuple().exponent), ROUND_HALF_UP) != l["netto"]:
         raise StopError(f"{l['pzn']} {l['name']}：Nettosumme {l['nsum']} ÷ {l['qty']} = {q.normalize()}，"
@@ -307,7 +322,8 @@ def report(lines, dropped, summe):
     for k, l in enumerate(lines, 1):
         flag = "" if l["active"] else "  ⚠ 已归档"
         rate = f"{l['rate'].normalize()}%" + ("" if l["rate"] == STD_RATE else " ⚠非19%")
-        netto = f"{l['netto']}" + (f" ↺按Nettosumme反推（PDF印{l['printed']}）" if l.get("printed") else "")
+        netto = f"{l['netto']}" + (f" ↺按Nettosumme反推（PDF印{l['printed']}"
+                                   + ("，唯一4位候选" if l.get("unique4") else "") + "）" if l.get("printed") else "")
         print(f"{k:>3} | {l['pzn']} | {l['name']} | {l['qty']} | {netto} | {rate} | {l['price'].normalize()} | "
               f"{l['erp_name']} | {'✓' if l['sale_ok'] else '✗'}{flag}")
     auto = [l for l in lines if l.get("excluded")]

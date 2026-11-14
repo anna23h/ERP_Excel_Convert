@@ -62,6 +62,19 @@ def test_parse_keeps_price_when_line_rounded():
     assert lines[0]["netto"] == Decimal("8.224") and "printed" not in lines[0]
 
 
+def test_parse_unique_4dp_candidate():
+    """S04159 形态：除不尽、印的价对不上行额，唯一 4 位候选 → 用候选。"""
+    lines, _ = S.parse_text(["13912033 PRODUKT G 30ST 13,112 € 1008 13.216,69 €\nSumme 13.216,69 €"])
+    assert lines[0]["netto"] == Decimal("13.1118") and lines[0]["printed"] == Decimal("13.112")
+    assert lines[0]["unique4"]
+
+
+def test_parse_ambiguous_4dp_keeps_printed():
+    """除不尽、印的价对不上，但 4 位候选有两个（7.8857 / 7.8858）→ 照旧用印的价。"""
+    lines, _ = S.parse_text(["08884375 PRODUKT H 125ML 7,886 € 80 630,86 €\nSumme 630,86 €"])
+    assert lines[0]["netto"] == Decimal("7.886") and "printed" not in lines[0]
+
+
 def test_parse_contradiction_stops():
     """整除到 4 位却舍入不回印的价 → PDF 自相矛盾，停。"""
     with pytest.raises(S.StopError, match="自相矛盾"):
