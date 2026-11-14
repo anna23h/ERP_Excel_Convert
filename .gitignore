@@ -38,6 +38,8 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+# Claude Code 个人权限设置（每台机器各自一份；不能只靠个人全局 ignore）
+.claude/settings.local.json
 
 # === 私有：开发过程文档，不对同事公开（现走独立私有 repo erp-private，项目内为软链）===
 docs
