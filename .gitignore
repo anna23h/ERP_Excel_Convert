@@ -41,8 +41,11 @@ venv/
 
 # === 私有：开发过程文档，不对同事公开（现走独立私有 repo erp-private，项目内为软链）===
 docs
-CLAUDE.md
+CLAUDE.local.md
 ISSUES.md
 ISSUES-*.md
 SPEC.md
 presets/
+
+# === 同事个人脚本与报错 journal：只留在各自电脑，不同步（见 CLAUDE.md）===
+personal/

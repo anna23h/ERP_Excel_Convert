@@ -37,6 +37,19 @@ resolve_private() {
 
 PRIVATE="$(resolve_private)" || PRIVATE=""
 
+# 同事电脑（2026-11-14 加）：同事只 clone 公开库，没有 erp-private。
+# 候选路径**一个都不存在** → 视为同事电脑，跳过私有库、不算失败；
+# 否则同事每次开会话都会收到「拉取失败，别急着改代码」的误报。
+# 只要有任一候选路径存在（Anna 的 Mac 软链 / Windows 联接）却解析不出仓库，仍照常报错。
+has_private_candidate() {
+  local c
+  for c in "$ERP_PRIVATE_DIR" docs 原始开发文档 ../erp-private; do
+    # -L：断掉的软链也算「有候选」，应报错而不是当成同事电脑
+    [ -n "$c" ] && { [ -e "$c" ] || [ -L "$c" ]; } && return 0
+  done
+  return 1
+}
+
 fail=0
 
 pull_repo() {
@@ -63,7 +76,10 @@ pull_repo() {
 echo "开工前拉取"
 pull_repo "公开库 $(basename "$PUBLIC")" "$PUBLIC"
 
-if [ -z "$PRIVATE" ]; then
+if [ -z "$PRIVATE" ] && ! has_private_candidate; then
+  echo ""
+  echo "── 私有库：本机没有（同事电脑），跳过"
+elif [ -z "$PRIVATE" ]; then
   echo ""
   echo "── 私有库"
   echo "   ✗ 找不到 erp-private —— 私有库没拉，请手工确认"
@@ -77,7 +93,7 @@ fi
 
 echo ""
 if [ "$fail" = "0" ]; then
-  echo "✓ 两个仓库都已是最新，可以开工"
+  echo "✓ 已是最新，可以开工 / Up to date"
 else
   echo "⚠ 有仓库没拉成功，见上面的 ✗ —— 别急着改代码"
 fi
