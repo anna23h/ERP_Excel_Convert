@@ -17,6 +17,7 @@ ISSUES `[备货提醒] A`。库存周报搁置后合并改造成**每周三的�
 |---|---|
 | `restock.py` | 备货汇总（launchd 周三 08:30） |
 | `quote_fill.py` | 空询价单 + 备货汇总 → 可导入的询价单表 |
+| `b2b_stock.py` | B2B 可用库存 + 待打包 + 冲突（Windows 任务计划程序工作日 09:00，经根目录 `B2B-Stock-Windows.bat install`；ISSUES `[B2B可用] A`，口径见根 README 同名一节） |
 | `stock_report.py` | 旧三合一库存周报，搁置；`restock.py` 复用它的 `pull_qty_available` / `pull_in_transit` / `resolve_excluded_vendors` / `read_violations` |
 | `discover.py` | 环境探针 |
 
@@ -289,6 +290,12 @@ launchctl unload ~/Library/LaunchAgents/com.ihtct.stockreport.plist
 **2026-11-08 起 `run_weekly.sh` 跑的是 `restock.py`，plist 改为每周三 08:30、不带参数**（口径都是默认值）。
 周三而不是周一：周频供应商周二到货，周三跑时在手已含这批。Label / 文件名沿用旧的 `com.ihtct.stockreport`；
 已装过旧版的机器先 `launchctl unload`，再按上面三行重新 cp + load。
+
+**B2B 可用库存（每天）不走 launchd，跑在 Windows 上**（销售和仓库在那边看，2026-11-15 用户定）：根目录 `B2B-Stock-Windows.bat install`
+用 PowerShell `Register-ScheduledTask` 注册「IHTCT B2B Stock」，周一至周五 09:00（排在天猫 08:00 批量确认 SO 之后），带 `StartWhenAvailable`
+（到点关机/睡眠，开机后补跑一次，理由同上面选 launchd 不选 cron）。任务调 `B2B-Stock-Windows.bat run`：`git pull --ff-only`（不 reset）→ `.venv` → 跑脚本，
+输出追加进 `output\odoo_api.log`。默认任务只在该用户登录时运行，会闪一个控制台窗口。产出默认落 `output\YYYYMMDD\`，
+要换位置就在 config.py 配 `B2B_STOCK_OUTDIR`。
 
 放本机 Mac 还是自托管服务器：本机够用，且产出直接落进已经在走 Syncthing 的 `output/`。
 放服务器要多解决凭据分发和产出回传，本次没有收益。

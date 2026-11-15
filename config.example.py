@@ -31,3 +31,7 @@ ODOO = {
 # 真实在途只有 105 条 / 88 个产品。不排除的话「在途/预测」两列没有任何参考价值。
 # 先跑 odoo_api/discover.py 或按供应商聚合一次 stock.move，确认本机该填谁。
 ODOO_EXCLUDE_VENDORS = []
+
+# B2B 可用库存（odoo_api/b2b_stock.py，每天定时）的输出目录：填销售/仓库都能打开的共享目录。
+# 不填则写仓库内 output/YYYYMMDD/。
+# B2B_STOCK_OUTDIR = "/path/to/shared/folder"

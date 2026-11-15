@@ -19,6 +19,7 @@
 | `po_frequency/` | **采购数量与频次**（指定供应商采购导出 → 每产品次数/数量 + 逐笔明细，纯整理不下结论） | `python3 po_frequency/po_frequency.py <purchase.order.xlsx> [--vendor …]` | [po_frequency/README.md](po_frequency/README.md) | 在用 |
 | `odoo_api/restock.py` | **备货汇总（每周三）**（Odoo **只读**：VO/GW 零售销量按 BoM 折回基础品 → 常销品的建议数量 / 最近一次与最低价供应商 / 询价单供应商，launchd 周三自动跑） | `python3 odoo_api/restock.py` | [下方章节](#备货汇总每周三odoo_apirestockpy--quote_fillpy) + [odoo_api/README.md](odoo_api/README.md) | 在用（2026-11-08 起） |
 | `odoo_api/quote_fill.py` | **询价单回填**（Anna 导出的空询价单 + 本周备货汇总 → 可导入的询价单表：该家的独家需补品 + 近 3 个月最低价是该家的需补品） | `python3 odoo_api/quote_fill.py <空询价单.xlsx>` | 同上 | 在用（2026-11-08 起，待首张真实询价单） |
+| `odoo_api/b2b_stock.py` | **B2B 可用库存（每天）**（Odoo **只读**：WH/Stock 在手 × 出库预留按 天猫 / 已付款（SO 标签 `可以打包`）/ 未付款 分类 → 两列可用、占用明细带客户别称（SO 标签）；仓库待打包清单；已付款单缺货时的冲突提示） | Windows：双击 `B2B-Stock-Windows.bat`（`install` 注册工作日 09:00 定时）；或 `python3 odoo_api/b2b_stock.py` | [下方章节](#b2b-可用库存每天odoo_apib2b_stockpy) + [odoo_api/README.md](odoo_api/README.md) | 在用（2026-11-15 起，Windows 定时待装） |
 | `odoo_api/stock_report.py` | **库存周报**（销量 × 在手 × 安全库存 三合一）——**已搁置**，2026-11-08 起周频定时改跑 `restock.py`；拉数函数仍被它复用 | `python3 odoo_api/discover.py`（环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 搁置 |
 | `lot_entry/` | **入库批次录入**（Odoo 入库单导出 → 操作员录入表 → 批次/效期/数量导回 Odoo 的导入表 + 核对清单；一个入口按文件内容自动分流） | VO 拉单 GUI 的「入库批次」标签页；拖 xlsx 到 `Lot-Entry-Windows.bat` / 双击 `Lot-Entry-Mac.command`；或 `python3 lot_entry/lot_entry.py <xlsx>` | [lot_entry/README.md](lot_entry/README.md) | 建设中（2026-10-11 起，待仓库实测） |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐）；`--code128` 出 **Code128 条码贴纸**（条码在上、数字在下） | `python3 make_labels.py <储位.xlsx / codes.txt>`；`python3 make_labels.py --code128 <号码…>` | 脚本 docstring | 在用 |
@@ -685,6 +686,34 @@ Claude 侧流程见 `.claude/skills/SAD水印归类/SKILL.md`。
 一旦出现「财务单已收 > 订购量」说明前提被破，脚本**拒绝生成回写导入表并以退出码 2 中止**——
 负的未到量在满足前提的数据上不可能发生，此时回写只会把错误写进 ERP。
 
+## B2B 可用库存（每天，`odoo_api/b2b_stock.py`）
+
+ISSUES `[B2B可用] A`（2026-11-15）。Odoo 的 Available Quantity = Quantity − Reserved，而预留是**先到先得、全自动**的
+（确认 SO 时、入库确认的同一事务里、每天 OdooBot 定时任务），没付款的批发单也照样占着货；SO 上的客户是开票主体，
+销售看不出是哪位客户。这张表把占用按付款状态拆开，并带上销售维护的客户别称。Odoo 对脚本**只读**，不改任何配置。
+
+```bash
+python3 odoo_api/b2b_stock.py              # → output/YYYYMMDD/B2B可用库存-YYYYMMDD.xlsx（config.py 配了 B2B_STOCK_OUTDIR 就写那里）
+```
+
+**定时跑在 Windows 上**（销售和仓库在那边看）：根目录 `B2B-Stock-Windows.bat`——双击 = 立即跑一次；`B2B-Stock-Windows.bat install` = 注册任务计划程序（周一至周五 09:00，排在天猫 08:00 批量确认之后；机器当时没开会在开机后补跑一次）；`uninstall` 删除。前提：Windows 上装好 Python、`config.py` 配好 `ODOO`（只读 key）和 `ODOO_EXCLUDE_VENDORS`、能连上 Odoo。日志追加到 `output\odoo_api.log`。
+
+业务约定（销售维护）：确认到账后在 SO 上打标签 **`可以打包`**；客户别称也打成标签（SO 上除 `可以打包` 以外的标签都当别称）。
+不用 Customer Reference 记别称：它会复制到发票 `ref`，并打印在报价单、发票 PDF 上。
+
+口径：
+- 在手与预留取 `WH/Stock`（含子库位）的 quant，与 Odoo 界面上的 Quantity / Available 同源。
+- **硬占用** = 天猫单（SO 号 VO/GW 开头）预留 + 已付款 B2B 单预留 + 非 SO 来源的出库预留；**软占用** = 未付款 B2B 单预留；
+  **报价意向** = 近 90 天（`--quote-days`）创建、未确认的报价单需求，组合装按 phantom BoM 折回基础品，只显示、不扣。
+- 两列可用：`Odoo可用` = 在手 − 全部预留；`可用(按已付款)` = 在手 − 硬占用。
+- Odoo 预留账不一致（出库单上的预留 ≠ quant 上的预留）、在手为负，逐品写进 `备注`，不替它抹平。
+
+| Sheet | 内容 |
+|---|---|
+| `产品可用` | 一品一行，有 B2B 占用或报价意向的排前：SKU / 产品 / 在手 / Odoo可用 / 可用(按已付款) / 天猫预留 / 已付款预留 / 未付款预留 / 其他出库预留 / 报价意向 / 在途 / B2B占用明细（`SO · 已付款/未付款 · 数量 · 销售员 · 别称`，没别称就不写）/ 报价明细（同格式，状态为「报价中」） / 备注 |
+| `待打包` | 带 `可以打包` 的单逐行：状态（货齐可打包 / 等货 / 需先确认 SO）/ SO / 别称 / 销售员 / SKU / 产品 / 需求 / 已预留 / 缺口 / 本单货齐 / 出库单 |
+| `冲突` | 已付款单缺货时：同品有空闲库存没预留上（点 Check Availability）、或被未付款单预留着（人工 Unreserve 后再 Check Availability）|
+
 ## 备货汇总（每周三，`odoo_api/restock.py` + `quote_fill.py`）
 
 ISSUES `[备货提醒] A`（2026-11-08）。每周三固定出一张备货汇总，每条提醒自带现成方案：
@@ -823,6 +852,7 @@ Python + pandas + openpyxl。
 - [x] **Code128 条码贴纸**（`make_labels.py --code128`，2026-10-26，ISSUES [标签] L1）：照上条约定做成开关而非新脚本。位置参数可多个，**已存在的文件**照旧读（txt / Excel + `-c`），**否则当字面编码**（形如 `.txt/.csv/.xlsx` 但不存在的直接报错，防打错路径被印成条码）。reportlab 自带 Code128（自动 C/B 子集，奇数位数字自动切 B），不加依赖。模块宽 = 放得下「条码 + 两侧各 ≥10 模块静区」的最大整数 dot，低于 0.25mm（2 dot）拒绝；40mm 宽下 12 位数字 25.3mm、15 位 33.5mm，都是 2 dot。条高 11.5mm、数字 Helvetica-Bold 居中在条下，PDF 为矢量矩形且坐标吸附点阵。产出 `output/labels/条码标签_Code128.pdf`（每码一页），`--png` 另出 `png/<编码>.png`；不写 `储位编码.csv`。`--verify` 需 numpy + opencv（可选 pyzbar），不在就跳过。
 - [ ] **采购对账**（`po_reconcile/`）：算法与前提校验已实现、构造数据测试通过；**等真实干净数据验证后再上线**。
 - [x] **备货汇总 + 询价单回填**（`odoo_api/restock.py` / `quote_fill.py`，2026-11-08，ISSUES [备货提醒] A）：VO/GW 前缀零售销量按 phantom BoM 折回基础品 → 常销品（≥6/13 周有销）建议数量 = ⌈备货基数 × 备货周数 − 在手 − 在途⌉（基数 = 近 4 周周均 ×1.2，近期下降用近 4 周周均，周均 <3 有单再补，[备货提醒] B），备货周数按大单量占比分 3 / 1 周；最近一次 + 最低价供应商（去税净价）；单一供应商 → 询价单供应商，`quote_fill.py` 往 Anna 导出的空询价单补行。launchd 改为周三跑它。单测 11；实跑 241 品 / 需补 173 / 询价单供应商 7 家，7 家回填均跑通（合成模板）。
+- [x] **B2B 可用库存**（`odoo_api/b2b_stock.py`，2026-11-15，ISSUES [B2B可用] A）：WH/Stock quant × 未完成出库预留按 天猫 / 已付款（标签 `可以打包`）/ 未付款 分类，两列可用 + 占用明细（别称取 SO 标签）+ 待打包 + 冲突；报价意向按 BoM 折回基础品。单测 9；实跑 1759 品（有 B2B 占用或意向的 221 个），合计 Odoo可用 = 在手 − quant 预留 对平；发现 2 个产品 Odoo 预留账不一致，已进备注。定时放 Windows（`B2B-Stock-Windows.bat install` 注册任务计划程序，周一至周五 09:00），**待在 Windows 上安装并实测**；输出先落 `output/`。
 - [x] **询价单放宽到近 3 个月最低价供应商**（2026-11-12，ISSUES [备货提醒] D）：汇总加 近期最低价供应商 / 近期最低净价 / 近期该家最近净价 三列，新 CLI `--low-months`；需补品近期最低价是哪家就进哪家的询价单（所有供应商通用，并列不算），单价取该家近期最近一次净价。单测 14 → 16；P12591（Bären）实跑 1 → 13 行。
 - [ ] **库存周报**（`odoo_api/stock_report.py`，**2026-11-08 起搁置**，由备货汇总取代）：XML-RPC **只读**拉数替掉三份手工导出——`sale.report` 自定义窗口销量（默认近 4 周，不用周期写死 12 个月的 `sales_count`）× `stock.quant` 内部库位在手 × 安全库存两路并列（产品自定义字段 vs `orderpoint.product_min_qty`，后者已滤 `trigger=manual` 临时建议）→ `库存周报.xlsx/.csv` + `安全库存不一致.csv`；产品范围取并集（`sale_ok` ∪ 有销量 ∪ 有库存 ∪ 有规则），避免漏掉已下架但仍在卖的货；`discover.py` 环境探针先跑、`test_stock_report.py` 构造数据 21 项断言通过；`launchd` 周一 08:30。**代码就绪，待用真实凭据跑通并与手工导出逐列对拍**。
 - [ ] **采购缺口 + 报价比较**（`procure/gap_report.py`）：销售单 → 缺口（需求 − max(0, 在手 − 他单占用)，四个中间量各占一列可复核）× 采购历史（3 个月内每家的次数/最近日期/单价/数量，窗口为空回落历史最近一次并标灰）→ 汇总对账 + 每单一张备货进度 + 询价录入（长表，一行一个「产品×供应商」，**唯一录入口**，可自己加行问新供应商）+ 报价比较（3+N 列**只读派生**，SUMIFS 从长表实时取）+ 缺口明细，共 6 张 sheet；汇总对账另有 已报价家数/最低报价（从长表实时取）与 未下单/剩余 两条口径不同的差额列（一家一张的「询价-x」底稿 2026-08-30 删除）。走 `odoo_api` 只读。重跑按 `产品代码 (+供应商)` 回收上一版六类手填内容（报价/可供/保质期/交期、分给本单、已下单量），`--fresh` 关掉。**已下单量刻意不从 Odoo PO 取**——本库 PO 是到货后才建的（2026-08-27 实测近 90 天 707 张 PO，95% 已 done、86% 的行全额收货），当下单进度用滞后一个采购周期。**S04018+S04029 实测跑通（2026-08-30 复跑：23 产品 / 17 有缺口 / 询价录入 33 行 / 6 家供应商），等实际询价一轮后再校准。**
