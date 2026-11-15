@@ -59,10 +59,10 @@ if not exist "%VPY%" (
 )
 
 if /i "%MODE%"=="run" (
-  >>"%LOG%" echo ===== %DATE% %TIME% B2B stock start =====
+  >>"%LOG%" echo ===== !DATE! !TIME! B2B stock start =====
   "%VPY%" odoo_api\b2b_stock.py >>"%LOG%" 2>&1
   set "RC=!errorlevel!"
-  >>"%LOG%" echo ===== %DATE% %TIME% B2B stock end, exit code !RC! =====
+  >>"%LOG%" echo ===== !DATE! !TIME! B2B stock end, exit code !RC! =====
   exit /b !RC!
 )
 
