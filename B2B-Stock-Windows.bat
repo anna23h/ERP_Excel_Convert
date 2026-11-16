@@ -24,6 +24,9 @@ REM ============================================
 
 cd /d "%~dp0"
 set "TASK=IHTCT B2B Stock"
+REM Force UTF-8 for Python I/O: under Task Scheduler stdout is redirected to the log
+REM   and would otherwise use the ANSI code page (cp1252), which crashes on Chinese text.
+set "PYTHONUTF8=1"
 
 if /i "%~1"=="install" goto :install
 if /i "%~1"=="uninstall" goto :uninstall
