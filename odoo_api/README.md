@@ -17,7 +17,7 @@ ISSUES `[备货提醒] A`。库存周报搁置后合并改造成**每周三的�
 |---|---|
 | `restock.py` | 备货汇总（launchd 周三 08:30） |
 | `quote_fill.py` | 空询价单 + 备货汇总 → 可导入的询价单表 |
-| `b2b_stock.py` | B2B 可用库存 + 待打包 + 冲突（Windows 任务计划程序工作日 09:00，经根目录 `B2B-Stock-Windows.bat install`；ISSUES `[B2B可用] A`，口径见根 README 同名一节） |
+| `b2b_stock.py` | B2B 可用库存 + 按SO（整单库存 / 付款）+ 待打包 + 冲突（Windows 任务计划程序工作日 09:00，经根目录 `B2B-Stock-Windows.bat install`；ISSUES `[B2B可用] A`，口径见根 README 同名一节） |
 | `stock_report.py` | 旧三合一库存周报，搁置；`restock.py` 复用它的 `pull_qty_available` / `pull_in_transit` / `resolve_excluded_vendors` / `read_violations` |
 | `discover.py` | 环境探针 |
 

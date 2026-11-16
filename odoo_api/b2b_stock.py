@@ -23,8 +23,10 @@
 在手与预留取 `WH/Stock`（及其子库位）的 quant——与用户在 Odoo 里点开在手看到的 Quantity / Available 同源。
 组合装没有自己的 quant，SO 确认时已拆成组件出库，所以这里只出现基础品。
 
-产出三个 sheet：
+产出四个 sheet：
   产品可用   一品一行（有在手、有预留、有报价意向的都进），有 B2B 占用的排前面
+  按SO       每张 B2B 单 × 产品一行（已确认单的未完成出库 + 近期报价单）：按 SO 一筛看整单缺货与库存；
+             付款两列——「付款」看 `可以打包` 标签，「发票付款」看 Odoo 客户发票已登记付款（ISSUES [B2B可用] B）
   待打包     带 `可以打包` 的单逐行：需求 / 已预留 / 缺口 / 本单货齐；打了标签但还是报价单的标「需先确认 SO」
   冲突       已付款单缺货时，同一产品有空闲库存（点 Check Availability 即可）或被未付款单预留着（需人工 Unreserve）
 """
@@ -51,9 +53,12 @@ STOCK_LOCATION = "WH/Stock"
 CAT_RETAIL, CAT_PAID, CAT_UNPAID, CAT_OTHER = "天猫", "已付款", "未付款", "其他出库"
 HARD_CATS = {CAT_RETAIL, CAT_PAID, CAT_OTHER}
 
-SHEET_PRODUCTS, SHEET_PACK, SHEET_CONFLICT = "产品可用", "待打包", "冲突"
+SHEET_PRODUCTS, SHEET_BY_SO, SHEET_PACK, SHEET_CONFLICT = "产品可用", "按SO", "待打包", "冲突"
 PRODUCT_COLS = ["SKU", "产品", "在手", "Odoo可用", "可用(按已付款)", "天猫预留", "已付款预留",
                 "未付款预留", "其他出库预留", "报价意向", "在途", "B2B占用明细", "报价明细", "备注"]
+BY_SO_COLS = ["SO", "别称", "销售员", "付款", "发票付款", "单据", "本单货齐", "SKU", "产品",
+              "待出库", "已预留", "缺口", "在手", "Odoo可用", "可用(按已付款)", "在途", "出库单"]
+NO_INVOICE = "未开票"
 PACK_COLS = ["状态", "SO", "别称", "销售员", "SKU", "产品", "需求", "已预留", "缺口", "本单货齐", "出库单"]
 CONFLICT_COLS = ["类型", "SKU", "产品", "已付款单", "别称", "缺口", "空闲库存", "占着货的未付款单", "建议操作"]
 
@@ -87,6 +92,75 @@ def occupant_label(so, qty, cat, paid_tag=PAID_TAG):
     if alias:
         parts.append(alias)
     return " · ".join(parts)
+
+
+def invoice_pay_label(invoices):
+    """SO 的客户发票付款情况。invoices = [(move_type, state, payment_state)]。
+    只数已过账的 out_invoice，冲销掉的（reversed）不算；本库没做银行对账，
+    in_payment 即「已登记付款」，与 paid 同算已付（见 ISSUES [付款状态] A）。"""
+    inv = [ps for mt, st, ps in invoices if mt == "out_invoice" and st == "posted" and ps != "reversed"]
+    if not inv:
+        return NO_INVOICE
+    paid = sum(ps in ("in_payment", "paid") for ps in inv)
+    if paid == len(inv):
+        return "已付"
+    if paid == 0 and "partial" not in inv:
+        return "未付"
+    return f"部分（{paid}/{len(inv)} 张已付）"
+
+
+def availability(quants, moves, sos, paid_tag=PAID_TAG):
+    """→ {pid: (在手, Odoo可用, 可用(按已付款))}，口径同 build_products。"""
+    hard = defaultdict(float)
+    for m in moves:
+        if m["reserved"] > 0 and classify(sos.get(m["so_id"]), paid_tag) in HARD_CATS:
+            hard[m["pid"]] += m["reserved"]
+    return {pid: (onhand, onhand - res_all, onhand - hard[pid]) for pid, (onhand, res_all) in quants.items()}
+
+
+def build_by_so(moves, sos, quotes, quants, incoming, products, paid_tag=PAID_TAG):
+    """→ DataFrame（按SO）：每张 B2B 单 × 产品一行，含已确认单的未完成出库和报价单需求。
+    天猫单与非 SO 出库不进。产品级的在手/可用/在途与「产品可用」同值，方便按 SO 一筛看全。"""
+    avail = availability(quants, moves, sos, paid_tag)
+    lines = defaultdict(lambda: {"demand": 0.0, "reserved": 0.0, "pickings": set(), "quote": False})
+    for m in moves:
+        if classify(sos.get(m["so_id"]), paid_tag) not in (CAT_PAID, CAT_UNPAID):
+            continue
+        ln = lines[(m["so_id"], m["pid"])]
+        ln["demand"] += m["demand"]
+        ln["reserved"] += m["reserved"]
+        ln["pickings"].add(m["picking"])
+    for q in quotes:
+        so = sos.get(q["so_id"])
+        if not so or so["name"].startswith(RETAIL_PREFIXES):
+            continue
+        ln = lines[(q["so_id"], q["pid"])]
+        ln["demand"] += q["qty"]
+        ln["quote"] = True
+    complete = defaultdict(lambda: True)
+    for (sid, _), ln in lines.items():
+        if ln["quote"] or ln["reserved"] + 1e-9 < ln["demand"]:
+            complete[sid] = False
+    rows = []
+    for (sid, pid), ln in lines.items():
+        so, p = sos[sid], products.get(pid, {})
+        onhand, odoo_av, paid_av = avail.get(pid, (0.0, 0.0, 0.0))
+        rows.append({
+            "SO": so["name"], "别称": alias_of(so["tags"], paid_tag), "销售员": so["salesperson"] or "",
+            "付款": CAT_PAID if paid_tag in so["tags"] else CAT_UNPAID,
+            "发票付款": so.get("invoice_pay") or NO_INVOICE,
+            "单据": "报价单" if ln["quote"] else "已确认",
+            "本单货齐": "—" if ln["quote"] else ("是" if complete[sid] else "否"),
+            "SKU": p.get("code") or "", "产品": p.get("name") or f"id={pid}",
+            "待出库": ln["demand"], "已预留": ln["reserved"], "缺口": max(ln["demand"] - ln["reserved"], 0.0),
+            "在手": onhand, "Odoo可用": odoo_av, "可用(按已付款)": paid_av, "在途": incoming.get(pid, 0.0),
+            "出库单": "（报价单，未确认）" if ln["quote"] else "、".join(sorted(x for x in ln["pickings"] if x)),
+        })
+    df = pd.DataFrame(rows, columns=BY_SO_COLS)
+    if not df.empty:
+        df["_nosku"] = df["SKU"] == ""
+        df = df.sort_values(["SO", "_nosku", "SKU", "产品"]).drop(columns="_nosku")
+    return df.reset_index(drop=True)
 
 
 def product_notes(quants, moves):
@@ -294,15 +368,24 @@ def pull_quotes(od, since, kit_map):
 
 
 def pull_sos(od, ids):
-    """→ {so_id: {"name","tags","salesperson","state"}}。"""
+    """→ {so_id: {"name","tags","salesperson","state","invoice_pay"}}。
+    invoice_pay 只给 B2B 单算（天猫单发票多、用不到，不拉）。"""
     ids = sorted(i for i in ids if i)
     if not ids:
         return {}
-    rows = od.execute("sale.order", "read", [ids, ["name", "tag_ids", "user_id", "state"]])
+    rows = od.execute("sale.order", "read", [ids, ["name", "tag_ids", "user_id", "state", "invoice_ids"]])
     tag_ids = sorted({t for r in rows for t in r["tag_ids"]})
     tags = {t["id"]: t["name"] for t in od.execute("crm.tag", "read", [tag_ids, ["name"]])} if tag_ids else {}
+    b2b = [r for r in rows if not r["name"].startswith(RETAIL_PREFIXES)]
+    inv_ids = sorted({i for r in b2b for i in r["invoice_ids"]})
+    invs = {}
+    for i in range(0, len(inv_ids), 1000):
+        for v in od.execute("account.move", "read", [inv_ids[i:i + 1000], ["move_type", "state", "payment_state"]]):
+            invs[v["id"]] = (v["move_type"], v["state"], v["payment_state"])
     return {r["id"]: {"name": r["name"], "tags": [tags[t] for t in r["tag_ids"] if t in tags],
-                      "salesperson": m2o_name(r["user_id"]) if r["user_id"] else "", "state": r["state"]}
+                      "salesperson": m2o_name(r["user_id"]) if r["user_id"] else "", "state": r["state"],
+                      "invoice_pay": invoice_pay_label([invs[i] for i in r["invoice_ids"] if i in invs])
+                      if not r["name"].startswith(RETAIL_PREFIXES) else ""}
             for r in rows}
 
 
@@ -322,7 +405,7 @@ def write_book(path, sheets):
     wb = Workbook()
     wb.remove(wb.active)
     left = {"SKU", "产品", "B2B占用明细", "报价明细", "备注", "别称", "销售员", "SO", "出库单", "已付款单",
-            "占着货的未付款单", "建议操作", "类型", "状态"}
+            "占着货的未付款单", "建议操作", "类型", "状态", "付款", "发票付款", "单据", "本单货齐"}
     for name, df, freeze in sheets:
         ws = wb.create_sheet(name)
         write_df(ws, df)
@@ -356,6 +439,7 @@ def run(outdir=None, quote_days=90, transit_days=60, exclude_vendors=None, paid_
 
     products = pull_products(od, set(quants) | {m["pid"] for m in moves} | {q["pid"] for q in quotes})
     dfp = build_products(quants, moves, sos, quotes, incoming, products, paid_tag, notes)
+    dfs = build_by_so(moves, sos, quotes, quants, incoming, products, paid_tag)
     dfk, short = build_packing(moves, sos, quotes, products, paid_tag)
     dfc = build_conflicts(short, quants, moves, sos, products, paid_tag)
 
@@ -364,17 +448,24 @@ def run(outdir=None, quote_days=90, transit_days=60, exclude_vendors=None, paid_
         outdir = localconf.get("B2B_STOCK_OUTDIR") or os.path.join("output", f"{today:%Y%m%d}")
     os.makedirs(outdir, exist_ok=True)
     path = write_book(os.path.join(outdir, f"B2B可用库存-{today:%Y%m%d}.xlsx"),
-                      [(SHEET_PRODUCTS, dfp, "C2"), (SHEET_PACK, dfk, "C2"), (SHEET_CONFLICT, dfc, "A2")])
+                      [(SHEET_PRODUCTS, dfp, "C2"), (SHEET_BY_SO, dfs, "B2"), (SHEET_PACK, dfk, "C2"),
+                       (SHEET_CONFLICT, dfc, "A2")])
     n_paid = len({sid for sid, so in sos.items() if classify(so, paid_tag) == CAT_PAID})
     say(f"\n✓ {path}")
     say(f"  产品 {len(dfp)} 个（有 B2B 占用或报价意向的 "
         f"{int(((dfp['已付款预留'] + dfp['未付款预留'] + dfp['报价意向']) > 0).sum()) if len(dfp) else 0} 个）")
     if len(dfp):
         say("  预留: " + "  ".join(f"{c} {dfp[c].sum():,.0f}" for c in ("天猫预留", "已付款预留", "未付款预留", "其他出库预留")))
+    if len(dfs):
+        so_pay = dfs.drop_duplicates("SO")
+        mism = so_pay[(so_pay["发票付款"] == "已付") & (so_pay["付款"] == CAT_UNPAID)]
+        say(f"  按SO: {len(so_pay)} 张 B2B 单 / {len(dfs)} 行；发票付款 "
+            + "  ".join(f"{k} {v}" for k, v in so_pay["发票付款"].value_counts().items())
+            + (f"；⚠ 发票已付但没打「{paid_tag}」{len(mism)} 张：{'、'.join(mism['SO'])}" if len(mism) else ""))
     say(f"  带「{paid_tag}」的单 {n_paid} 张；待打包 {len(dfk)} 行"
         + (f"（{'、'.join(f'{k} {v}' for k, v in dfk['状态'].value_counts().items())}）" if len(dfk) else ""))
     say(f"  冲突 {len(dfc)} 条；RPC 调用 {od.call_count} 次")
-    return path, dfp, dfk, dfc
+    return path, dfp, dfs, dfk, dfc
 
 
 def main():

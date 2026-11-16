@@ -101,3 +101,34 @@ def test_notes_negative_and_reservation_mismatch():
     assert "出库单 7 / 库存 2" in n[11]
     df = B.build_products(quants, moves, SOS, [], {}, PRODUCTS, notes=n)
     assert df.set_index("SKU").loc["B", "备注"] == n[11]
+
+
+def test_invoice_pay_label():
+    P = ("out_invoice", "posted")
+    assert B.invoice_pay_label([]) == "未开票"
+    assert B.invoice_pay_label([("out_invoice", "draft", "not_paid")]) == "未开票"     # 草稿不算
+    assert B.invoice_pay_label([(*P, "in_payment"), (*P, "paid")]) == "已付"          # in_payment = 已登记付款
+    assert B.invoice_pay_label([(*P, "not_paid")]) == "未付"
+    assert B.invoice_pay_label([(*P, "in_payment"), (*P, "not_paid")]) == "部分（1/2 张已付）"
+    assert B.invoice_pay_label([(*P, "partial")]) == "部分（0/1 张已付）"
+    assert B.invoice_pay_label([(*P, "paid"), (*P, "reversed"), ("out_refund", "posted", "paid")]) == "已付"
+
+
+def test_by_so_all_b2b_orders_with_product_availability():
+    sos = {k: dict(v) for k, v in SOS.items()}
+    sos[2]["invoice_pay"] = "已付"
+    quants = {10: (100.0, 90.0), 11: (8.0, 2.0)}
+    moves = [mv(10, 1, 50, 40), mv(11, 1, 2, 2, "WH/OUT/2"), mv(10, 2, 30, 30), mv(10, 3, 20, 20),
+             mv(11, None, 1, 0)]
+    quotes = [{"pid": 11, "so_id": 4, "qty": 6.0}, {"pid": 10, "so_id": 6, "qty": 1.0}]
+    df = B.build_by_so(moves, sos, quotes, quants, {11: 3.0}, PRODUCTS)
+    assert list(df["SO"]) == ["S09001", "S09001", "S09002", "S09004"]   # 天猫、非 SO 出库不进
+    s1 = df[df["SO"] == "S09001"].set_index("SKU")
+    assert set(s1["本单货齐"]) == {"否"} and s1.loc["A", "缺口"] == 10 and s1.loc["B", "缺口"] == 0
+    assert s1.loc["A", "出库单"] == "WH/OUT/1" and s1.loc["A", "付款"] == "已付款"
+    assert (s1.loc["A", "在手"], s1.loc["A", "Odoo可用"], s1.loc["A", "可用(按已付款)"]) == (100, 10, 40)
+    s2 = df[df["SO"] == "S09002"].iloc[0]
+    assert (s2["付款"], s2["发票付款"], s2["本单货齐"]) == ("未付款", "已付", "是")   # 发票已付、没打标签
+    q = df[df["SO"] == "S09004"].iloc[0]
+    assert (q["单据"], q["本单货齐"], q["待出库"], q["缺口"], q["在途"]) == ("报价单", "—", 6, 6, 3)
+    assert q["发票付款"] == "未开票"
