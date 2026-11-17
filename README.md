@@ -28,6 +28,7 @@
 | `procure/` | **采购缺口 + 报价比较**（销售单 → 每产品缺多少 × 曾在哪几家买过 → 产品 × 供应商的报价比较；询价/分配/已下单量手填，重跑不冲掉） | `python3 -m procure.gap_report S04018 S04029`（无 GUI，需 Odoo 凭据） | [下方章节](#采购缺口--报价比较销售单驱动) + 脚本 docstring | 建设中 |
 | `procure/po_price.py` | **采购价格收集表**（销售单 → 一品一行摊开它 SO 创建日前 N 个月的每一笔采购；**纯收集，成本列留空由人填**） | `python3 -m procure.po_price S04041 S04042`（无 GUI，需 Odoo 凭据） | [下方章节](#采购价格收集表成本核算用) + 脚本 docstring | 在用 |
 | `procure/price_check.py` | **发票比价核对**（客户发票 / 销售单 → 逐行 SO 净价 × 开票净价 × 发票日前最近一张 PO 价 → 单件毛利与毛利率；**两边一律比去税净价**，首列 PZN；开票价 ≠ SO 价、税码不一致、毛利 ≤ 0 标 ⚠） | `python3 -m procure.price_check INV/2026/11/0069 S04094`（无 GUI，需 Odoo 凭据）；有 skill | [下方章节](#发票比价核对售价-vs-采购价) + 脚本 docstring | 在用（2026-11-06 起） |
+| `procure/invoice_reprice.py` | **草稿发票批量改价**（Odoo 导出的单张草稿客户发票 + 一张价格表 → 可直接导入的改价表（3 列）+ 核对表 + 改前快照；按完整产品编码匹配、取发票日有效价；导入后 `verify` 比对改前 / 改后导出，只允许单价与由它重算的金额变化；**纯文件进出，不连 Odoo**） | `python3 -m procure.invoice_reprice build <发票导出> <价格表导出>` → Odoo 导入 → `verify <改前> <改后> --expect <导入表>`；有 skill | [下方章节](#草稿发票批量改价按价格表) + 脚本 docstring | 在用（2026-11-17 起） |
 | `so_import/` | **SO 导入表**（客户 Bestellung PDF → 填进 Odoo 导出的空 sale.order 模板 → 可直接导入的 SO 表；PZN 经 Odoo API 精确匹配，**匹配异常整表不出**） | `python3 -m so_import.so_from_pdf <PDF> <sale.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#so-导入表客户-bestellung-pdf--odoo-销售单) + 脚本 docstring | 在用（2026-10-13 起） |
 | `po_import/` | **PO 导入表**（批发商 Rechnung/Lieferschein PDF → 填进 Odoo 导出的空 purchase.order 模板 → 可直接导入的 PO 表；认三家批发商版式 + dm 小票扫描件（OCR + 品名对照表）；单价 AEP 净价、税按税码分 7%/19%，PZN 经 Odoo API 精确匹配，**匹配异常 / 合计对不上 / 单号已录过 整表不出**） | `python3 -m po_import.po_from_pdf <PDF> <purchase.order.xlsx>`（无 GUI，需 Odoo 凭据 + `requirements-pdf.txt`）；有 skill | [下方章节](#po-导入表批发商-rechnunglieferschein-pdf--odoo-采购单) + 脚本 docstring | 建设中（2026-10-20 起，待首张真模板导入验证） |
 | `sad_export/` | **JD 问题包裹 SAD 归类**（荷兰出口申报单批次 → 挑出没有出境确认的问题包裹 + 每单一份 Exit Confirmed 正常件 + 填好的 POE 用 Export statement；源文件夹只读，**任一异常整批不出**） | `python3 -m sad_export.sad_batch verify …` → `run <源文件夹> <输出目录>`（无 GUI，需系统 `pdftotext`）；有 skill | [下方章节](#jd-问题包裹-sad-归类荷兰出口申报单--poe-声明) + 脚本 docstring | 在用（2026-10-16 起） |
@@ -585,6 +586,35 @@ VO Test Order 是虚拟库存映射测试单，单价恒为 0，不剔会把最�
 
 与采购价格收集表的分工：那张给人**手填成本**（逐笔摊开、不算）；这张是对已开发票**做核对**（取最近一张、算毛利）。
 
+## 草稿发票批量改价（按价格表）
+
+`procure/invoice_reprice.py`（ISSUES [发票改价] A）。把一张**草稿**客户发票的产品单价批量改成某张 Odoo 价格表上的价。
+**纯文件进出、不连 Odoo、不读 `config.py`**——账号 key 有写权限，数据一律由人从 Odoo 界面导出（2026-11-17 用户定）。
+跑法见 [运行指令 · 二十](启动说明/运行指令.md)。
+
+**输入（Odoo「普通导出」，不勾导入兼容，两个模板各存一次）**：
+
+- 发票（客户发票列表勾一张 → 导出）：Status / ID（外部 ID）/ Invoice/Bill Date / Date / Partner / Untaxed Amount / Total /
+  Invoice lines/ID（外部 ID）/ Display Type / Quantity / Unit Price / Discount (%) / Product/Internal Reference /
+  Subtotal / Total / Label（Taxes、Account、Sequence 等可一并导出，`verify` 会一起比）。
+- 价格表（从价格表导出，条目作为子行）：Pricelist Name / Pricelist Items/ Product/Internal Reference / Product/Name /
+  Fixed Price / Min. Quantity / Start Date / End Date / Compute Price。
+- 这个模板把外部 ID 也显示成 `ID`，`Partner/ID` 等会出现两列——脚本按列内容（`__export__.…`）认列，缺必需列就停。
+
+**口径（用户定）**：按**完整产品编码**精确匹配（`_GW` 与非 GW 分开）；取价日 = 发票日期，草稿没填就用记账日期 `Date`；
+有效 = Start ≤ 取价日 ≤ End（空则不限），多条有效取 Start 最新并标 ⚠ 列候选；配不上 / 无有效价保持原价并标出；
+Min. Quantity 只显示不参与取价。含税口径不写死：逐行用 Subtotal / Total 与 单价×数量×(1−折扣) 反推，价格表价直接填 `price_unit`，
+税率 ≠ 0 的行标 ⚠ 请人确认。SO 单价不动。非草稿、一个文件里多张发票或多张价格表 → 停。价格表名称里没有发票客户名 → 只提示。
+
+**产出**（`output/YYYYMMDD/`）：`发票改价_导入表_<id>.xlsx`（`id` / `invoice_line_ids/id` / `invoice_line_ids/price_unit`，只含要改的行，
+发票 ID 只写第一行——2026-11-17 在 47306 上实测导入成功；在发票列表里导入，Odoo 自动重算小计、应收行与合计）、
+`发票改价_核对表_<id>.xlsx`（首列 PZN）、`发票改价_改前快照_<id>.xlsx`（输入的原样拷贝）。
+
+**verify**：同一模板导入后再导出一次，与改前快照逐字段比对。只允许 单价 / 行 Subtotal / 行 Total / 发票 Untaxed Amount / Total 变化，
+且改价行的小计须等于新单价算出的值、发票合计须等于各行之和；带 `--expect` 时单价须逐行等于导入表。其他任何变化都报出来，退出码 2。
+
+**否决过的做法**（2026-11-17 实测）：改原始导出再导回（重复 `id` 列 + 计算列）；改 `line_ids` 的 debit/credit（关掉发票自动补全，要手工凑借贷）。
+
 ## SO 导入表（客户 Bestellung PDF → Odoo 销售单）
 
 `so_import/so_from_pdf.py`。客户发来 Bestellung PDF，在 Odoo 建好空 SO 后导出一张模板（表头即导入列名，
@@ -855,5 +885,6 @@ Python + pandas + openpyxl。
 - [x] **备货汇总 + 询价单回填**（`odoo_api/restock.py` / `quote_fill.py`，2026-11-08，ISSUES [备货提醒] A）：VO/GW 前缀零售销量按 phantom BoM 折回基础品 → 常销品（≥6/13 周有销）建议数量 = ⌈备货基数 × 备货周数 − 在手 − 在途⌉（基数 = 近 4 周周均 ×1.2，近期下降用近 4 周周均，周均 <3 有单再补，[备货提醒] B），备货周数按大单量占比分 3 / 1 周；最近一次 + 最低价供应商（去税净价）；单一供应商 → 询价单供应商，`quote_fill.py` 往 Anna 导出的空询价单补行。launchd 改为周三跑它。单测 11；实跑 241 品 / 需补 173 / 询价单供应商 7 家，7 家回填均跑通（合成模板）。
 - [x] **B2B 可用库存**（`odoo_api/b2b_stock.py`，2026-11-15，ISSUES [B2B可用] A）：WH/Stock quant × 未完成出库预留按 天猫 / 已付款（标签 `可以打包`）/ 未付款 分类，两列可用 + 占用明细（别称取 SO 标签）+ 待打包 + 冲突；报价意向按 BoM 折回基础品。2026-11-16 加 `按SO` sheet 与发票付款列（ISSUES [B2B可用] B），单测 11。原单测 9；实跑 1759 品（有 B2B 占用或意向的 221 个），合计 Odoo可用 = 在手 − quant 预留 对平；发现 2 个产品 Odoo 预留账不一致，已进备注。定时放 Windows（`B2B-Stock-Windows.bat install` 注册任务计划程序，周一至周五 09:00），**待在 Windows 上安装并实测**；输出先落 `output/`。
 - [x] **询价单放宽到近 3 个月最低价供应商**（2026-11-12，ISSUES [备货提醒] D）：汇总加 近期最低价供应商 / 近期最低净价 / 近期该家最近净价 三列，新 CLI `--low-months`；需补品近期最低价是哪家就进哪家的询价单（所有供应商通用，并列不算），单价取该家近期最近一次净价。单测 14 → 16；P12591（Bären）实跑 1 → 13 行。
+- [x] **草稿发票批量改价**（`procure/invoice_reprice.py`，2026-11-17，ISSUES [发票改价] A）：发票导出 + 价格表导出 → 3 列改价导入表 + 核对表 + 改前快照，`verify` 比对改前 / 改后导出；纯文件进出不连 Odoo。单测 11；47306 真实导出实跑（001 价格表，2 行改价，取价日退到记账日期），`verify` 用模拟的改后导出验证通过 / 能抓出被改的 Label。**待第一张真实单导入后跑 verify 实测。**
 - [ ] **库存周报**（`odoo_api/stock_report.py`，**2026-11-08 起搁置**，由备货汇总取代）：XML-RPC **只读**拉数替掉三份手工导出——`sale.report` 自定义窗口销量（默认近 4 周，不用周期写死 12 个月的 `sales_count`）× `stock.quant` 内部库位在手 × 安全库存两路并列（产品自定义字段 vs `orderpoint.product_min_qty`，后者已滤 `trigger=manual` 临时建议）→ `库存周报.xlsx/.csv` + `安全库存不一致.csv`；产品范围取并集（`sale_ok` ∪ 有销量 ∪ 有库存 ∪ 有规则），避免漏掉已下架但仍在卖的货；`discover.py` 环境探针先跑、`test_stock_report.py` 构造数据 21 项断言通过；`launchd` 周一 08:30。**代码就绪，待用真实凭据跑通并与手工导出逐列对拍**。
 - [ ] **采购缺口 + 报价比较**（`procure/gap_report.py`）：销售单 → 缺口（需求 − max(0, 在手 − 他单占用)，四个中间量各占一列可复核）× 采购历史（3 个月内每家的次数/最近日期/单价/数量，窗口为空回落历史最近一次并标灰）→ 汇总对账 + 每单一张备货进度 + 询价录入（长表，一行一个「产品×供应商」，**唯一录入口**，可自己加行问新供应商）+ 报价比较（3+N 列**只读派生**，SUMIFS 从长表实时取）+ 缺口明细，共 6 张 sheet；汇总对账另有 已报价家数/最低报价（从长表实时取）与 未下单/剩余 两条口径不同的差额列（一家一张的「询价-x」底稿 2026-08-30 删除）。走 `odoo_api` 只读。重跑按 `产品代码 (+供应商)` 回收上一版六类手填内容（报价/可供/保质期/交期、分给本单、已下单量），`--fresh` 关掉。**已下单量刻意不从 Odoo PO 取**——本库 PO 是到货后才建的（2026-08-27 实测近 90 天 707 张 PO，95% 已 done、86% 的行全额收货），当下单进度用滞后一个采购周期。**S04018+S04029 实测跑通（2026-08-30 复跑：23 产品 / 17 有缺口 / 询价录入 33 行 / 6 家供应商），等实际询价一轮后再校准。**
