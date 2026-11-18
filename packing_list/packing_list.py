@@ -12,9 +12,14 @@
 Quantity total（L 列）预填 SO 订购量（旧出库单格式为批次数量之和）；
 P 列 =SUMPRODUCT(箱规*箱数)，仓库填完与 L 列对拍。
 
+也可以不导出、直接给 SO 号（ISSUES [箱单] E）：`--so` 走 Odoo API（只读）读出库单的
+订购量 / 预留批次 / 效期，并按产品箱规主数据预估箱号、箱规、箱数、托盘、毛重、尺寸、体积重
+（packing_list/estimate.py），文件名带「(预估)」。只做 CLI，不进 VOTool。
+
 用法:
     python packing_list.py "sale.order.xlsx" [-o 输出目录] [--spare 2]
     python packing_list.py "stock.picking.xlsx" [-o 输出目录] [--spare 2]
+    python packing_list.py --so S04162 [S04163 …] [-o 输出目录] [--spare 2]
 """
 
 import argparse
@@ -367,7 +372,9 @@ def _write_line(ws, row, line, spare):
     出库单导出带批次时，前几行逐行写批次号/保质期；SO 导出没有批次，
     就是原来的 1 主行 + spare 行，产出与加批次之前逐格一致。
     """
-    last = row + max(len(line["lots"]), 1) - 1 + spare
+    # --so 预估时一个 SKU 可能分几段箱号（跨托 / 尾箱），行数取批次数与段数的大者
+    line["_row"] = row
+    last = row + max(len(line["lots"]), len(line.get("segments", [])), 1) - 1 + spare
     for i, lot in enumerate(line["lots"]):
         cell = ws.cell(row + i, COL_LOT, lot["lot"])
         cell.number_format = "@"   # 28211 这类纯数字批次号别被当数
@@ -452,12 +459,50 @@ def run(export, outdir="output", spare=2):
     orders = read_orders(export)
     if not orders:
         raise ValueError("导出里没有产品行")
-
     # 箱单是打包当天产生的单据，日期取制单日（当下），与 SO 何时下的无关
     made_on = dt.date.today()
-    wb = build(orders, spare, made_on)
+    return _save(orders, build(orders, spare, made_on), outdir, spare, made_on)
 
-    name = f"{so_label(orders)}箱单{made_on:%d.%m}.xlsx"
+
+def run_so(so_names, outdir="output", spare=2, odoo=None):
+    """--so：Odoo API 读 SO → 出表 + 按箱规主数据预估（ISSUES [箱单] E）。"""
+    from packing_list import estimate, odoo_source
+    if odoo is None:
+        from odoo_api.odoo_client import Odoo
+        odoo = Odoo.connect(verbose=False)
+    so_names = [n.strip().upper() for n in so_names]
+    orders = odoo_source.read_orders(odoo, so_names, _new_line, _add_lot)
+    if not orders:
+        raise ValueError("这些 SO 里没有产品行")
+    made_on = dt.date.today()
+    pallets = estimate.plan(orders)
+    wb = build(orders, spare, made_on)
+    ws = wb.active
+    total_row = estimate.write(ws, orders, pallets, FIRST_DATA_ROW)
+    note, warns = estimate.note_text(orders, made_on)
+    estimate.write_note(ws, total_row + 2, note)
+    path, lines = _save(orders, wb, outdir, spare, made_on,
+                        suffix="(预估)" if pallets else "")
+    head = [f"  出库单：{o['order']} → {', '.join(o.get('pickings') or ['（无，按 SO 行订购量，批次留空）'])}"
+            for o in orders]
+    tiers = {}
+    for o in orders:
+        for l in o["lines"].values():
+            tiers.setdefault(l["pack"]["tier"], []).append(l["sku"])
+    est = [f"  预估：{len(pallets)} 托，"
+           f"箱规齐全 {len(tiers.get('A', []))} 个 / 只有箱规（粗估）{len(tiers.get('B', []))} 个 / "
+           f"无箱规 {len(tiers.get('C', []))} 个产品"]
+    for p in pallets:
+        skus = sorted({l["sku"] for l, _ in p["segments"]})
+        n = sum(seg["count"] for _, seg in p["segments"])
+        h = f"{p['height']}cm" if p["height"] else "高度?"
+        est.append(f"    托{p['no']}: {n} 箱，{h}{'，粗估' if p['rough'] else ''}，{' + '.join(skus)}")
+    est += [f"  ⚠ {w}" for w in warns]
+    return path, head + lines + est
+
+
+def _save(orders, wb, outdir, spare, made_on, suffix=""):
+    name = f"{so_label(orders)}箱单{made_on:%d.%m}{suffix}.xlsx"
 
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -483,7 +528,8 @@ def run(export, outdir="output", spare=2):
             n_lots = sum(1 for l in o["lines"].values() for lot in l["lots"] if lot["lot"])
             reserved = sum(l["reserved"] for l in o["lines"].values())
             lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / {n_lots} 个批次"
-                         f" / 订购 {qty:g} 件，预留 {reserved:g} 件（出库单导出）")
+                         f" / 订购 {qty:g} 件，预留 {reserved:g} 件"
+                         f"（{'Odoo API' if 'pickings' in o else '出库单导出'}）")
         else:
             lines.append(f"  {o['order']}: {len(o['lines'])} 行 SKU / 订购 {qty:g} 件")
     lines.append(f"  共 {len(orders)} 张 SO，每行预留 {spare} 行空行")
@@ -513,15 +559,23 @@ def run(export, outdir="output", spare=2):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="SO / 出库单导出 → 箱单半成品")
-    ap.add_argument("export", help="ERP 导出的 sale.order 或 stock.picking xlsx（按表头自动认）")
+    ap = argparse.ArgumentParser(description="SO / 出库单导出 → 箱单半成品；或 --so 直连 Odoo 出预估箱单")
+    ap.add_argument("export", nargs="?",
+                    help="ERP 导出的 sale.order 或 stock.picking xlsx（按表头自动认）")
+    ap.add_argument("--so", nargs="+", metavar="SO",
+                    help="直接给 SO 号，走 Odoo API（只读）读数据并按箱规主数据预估；与 export 二选一")
     ap.add_argument("-o", "--outdir", default="output", help="输出目录")
     ap.add_argument("--spare", type=int, default=2,
                     help="每个 SKU 预留几行空行给仓库拆批次（默认 2）")
     args = ap.parse_args()
+    if bool(args.export) == bool(args.so):
+        ap.error("export 文件和 --so 二选一")
 
     try:
-        path, lines = run(args.export, args.outdir, args.spare)
+        if args.so:
+            path, lines = run_so(args.so, args.outdir, args.spare)
+        else:
+            path, lines = run(args.export, args.outdir, args.spare)
     except ValueError as e:
         raise SystemExit(str(e))
     print(path)

@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | `vo_orders/` | **VO 拉单**（天猫 B2C 履约，本文档主体） | `Mac双击运行.command` / `Windows双击运行.bat` → `vo_orders/gui.py` | 本文档 + [SPEC.md](SPEC.md) | 在用 |
 | `reorder/` | **订货辅助**（需求清单 × purchase order → 订货决策表） | `Reorder-Mac.command` / `Reorder-Windows.bat` → `reorder/reorder_gui.py` | [订货辅助输入说明](启动说明/订货辅助输入说明.md) | 在用 |
-| `packing_list/` | **出口箱单**（B2B，SO 或出库单导出 → Packing List 半成品；出库单带批次/效期） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx 或 stock.picking.xlsx>` | [下方章节](#出口箱单b2b) | 在用 |
+| `packing_list/` | **出口箱单**（B2B，SO 或出库单导出 → Packing List 半成品；出库单带批次/效期；`--so` 直连 Odoo 并按箱规主数据预估箱号/托盘/毛重/体积） | VO 拉单 GUI 的「箱单」标签页；或 `python3 packing_list/packing_list.py <sale.order.xlsx 或 stock.picking.xlsx>`；或 `python3 packing_list/packing_list.py --so S04162 [S…]`（只 CLI） | [下方章节](#出口箱单b2b) | 在用 |
 | `扫码/` | **运单扫码回流**——**非独立流水线**：VO 拉单阶段一↔阶段二之间的可选替换段（单文件 HTML，零依赖，跑在仓库机） | 浏览器打开 `扫码/扫码回流.html` | [扫码/README.md](扫码/README.md) + [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `sales_insight/safety_writeback.py` | **安全库存直写**（运营的表 + 产品主数据 → `Safety Stock` 回写表，**不要销售数据**） | `ERP回写-Mac.command` →「安全库存直写」页；或 `python3 sales_insight/safety_writeback.py <安全库存表.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
@@ -413,6 +413,8 @@ python3 vo_orders/stage2.py --erp <ERP导出> --cancel-list <取消订单清单>
 `Quantity total`（L 列）预填 SO 订购量（旧详细操作格式为预留数之和）；P 列 `核对 箱规×箱数` 是 `=SUMPRODUCT` 公式，仓库填完箱规/箱数后与 L 列对拍，实发≠订购一眼可见（P 列在成品箱单的 15 列之外，是辅助列）。表头**左上角 `A4:C5` 一个大格**（3 列宽 × 2 行高、16 号加粗）写 SO 单号——打印给仓库，要一眼看见，且多张 SO 拼接后单格装不下。每个 SKU 底下预留空行（默认 2）供拆批次。
 要几张 SO 合并成一张箱单，就在 ERP 里一次性导到同一份文件里，脚本按 `Order Reference` 自动分单。
 输出同名自动加序号，不覆盖。
+
+**`--so` 直连 Odoo + 预估**（2026-11-18，ISSUES [箱单] E，只 CLI、不进 VOTool）：`python3 packing_list/packing_list.py --so S04162 [S04163 …]`，不用导出，走 `odoo_api/odoo_client.py` 只读读出库单（订购量 / 预留批次 / 效期，效期 UTC→柏林再取日期；没有出库单就按 SO 行，批次留空），再按产品主数据 `carton_pieces` / `carton_dimensions` / `carton_weight` 预估：箱数按**订购量**，120×80 托、托高含托盘 ≤160cm，同一 SO 内逐层拼托（不同 SO 不拼），填箱号（`托N: a-b`，尾数单列尾箱）/ 箱规 / 箱数 / 毛重公式（含 25kg 空托）/ 托尺寸 / 体积重（÷6000），浅蓝斜体；只有箱规、没有整箱尺寸或重量的产品单独成托、毛重按单件 weight 粗估标红、托高留 `?`；没有箱规的不估。表末合计行 + 口径说明，文件名带 `(预估)`。主数据是自由文本，解析规则（kg/g/纯数字、mm/cm、`1,000`、`200盒/箱`…）在 `packing_list/estimate.py`，单测 `packing_list/test_estimate.py`。
 
 ## 京东装箱复核瘦身表
 
@@ -872,6 +874,7 @@ Python + pandas + openpyxl。
 - [x] **出口箱单**（`packing_list/packing_list.py`）：SO 行明细 → Packing List 半成品，机器可知的列填好、现场才知道的留空，`Quantity total` 预填 SO 订购量 + P 列 `=箱规×箱数` 对拍、J5 写 SO 号（2026-08-29）；接进 VO 拉单 GUI「箱单」标签页（同批下架了京东标签页，`jd_export.py` 代码保留）。
   - 2026-10-16：也吃出库单 `stock.picking` 详细操作导出（按表头自动认），批次号 / 保质期（`MM.YYYY`）由 ERP 预留批次带出、一个批次一行；SO 读法产出逐格不变。
   - 2026-10-16：出库单改用「箱单」导出模板（`Stock Moves` 往下导）：数量取 `Demand`，没预留的 SO 行不再漏，预留 ≠ 订购标黄；S04097+4098 十个产品数量与仓库成品箱单逐个相等。
+  - 2026-11-18：`--so` 直连 Odoo（只读）出箱单，并按箱规主数据预估箱号 / 拼托（≤160cm）/ 毛重 / 体积重，文件名带 `(预估)`；只 CLI（ISSUES [箱单] E）。单测 10。
 - [x] **销售分析 + 安全库存**（`sales_insight/`）：销量排名 + 安全库存提醒 + `Safety Stock` 回写 ERP，吃按周分组导出（周数自动）；候选值表可直接导入；`--test-sku` 试水时**同时出全量**；试水报错逐级判定说清缺哪一环。~~回写的 `Safety Stock` 被阶段一「补货预判清单」读走~~——2026-11-08 起补货预判清单改用 Odoo 现拉的动态安全库存、不再读该字段（ISSUES 安全库存 A）。
 - [x] **补货预判清单 动态安全库存 + 套件并入基础品**（`vo_orders/safety_dynamic.py`，2026-11-08，ISSUES 安全库存 A）：ERP 静态 `Safety Stock` 不再读；出表时 Odoo 只读现拉 12 周 VO/GW 零售周均（BoM 折算），安全库存 = 周均 × 2、周均 < 10 不设；组合装并进基础品一行（今日需求按 BoM 系数、在手取基础品、`含套件` 列注明）；拉不到则降级。单测 6。
 - [x] **安全库存直写**（`sales_insight/safety_writeback.py`，2026-09-22）：运营的表 + 产品主数据 → `Safety Stock` 回写表，**不需要销售数据**；以安全库存表为 SKU 全集（`sales_insight` 是以销售导出为全集，表里有、导出里没有的会被丢掉）。**不写 `Supply Remark`**——源表没有备注列，列整个不出现 Odoo 就不碰该字段。四条「宁可报错也不出表」：值为 0/空/负数/小数、源表重复 SKU、产品主数据同 SKU 多行、值列命中多个口径。构造数据测试 28 项。
