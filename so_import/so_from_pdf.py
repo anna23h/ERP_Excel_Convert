@@ -35,6 +35,9 @@ BoM**（套件），或内部编码带渠道 / 组合装后缀（`_VO`/`_GW`/`xN
 PDF 版式**只支持一家**（明细行 `PZN 名称 Netto € Anz. Nettosumme €`，`Summe` 收尾）。
 解析的护栏：抽出的行 Nettosumme 合计必须等于印的 Summe，否则视为版式不认识、拒绝出表——
 换了别家版式会在这里停下，而不是静默漏行。
+
+收件公司护栏（2026-11-19 `[SO 导入] F`）：第 1 页没有 `IHTCT` 就停——同一客户也给同地址的另一家公司下单，
+版式完全一样，不看收件公司会做错账套。无跳过开关。
 """
 import argparse
 import datetime as dt
@@ -77,6 +80,27 @@ def de_num(s):
 def pzn8(v):
     s = str(v).strip()
     return s.zfill(8) if s.isdigit() else s
+
+
+OWN_COMPANY = "IHTCT"
+#: 版式里收件地址块紧跟在客户抬头右侧的这一行之后（2026-11-19 Downloads 16 份 BE1019xxxx 一致）
+RECIPIENT_ANCHOR = "Gesundheitswesen"
+
+
+def check_recipient(page_texts):
+    """Bestellung 必须是发给 IHTCT 的（2026-11-19 `[SO 导入] F`）。
+
+    同一客户也给同地址的另一家公司下单，版式、PZN、价格都一样，只有收件公司名不同；
+    不看收件公司就会把别家的单做进 IHTCT 的 SO。第 1 页找不到公司名 → 停，报出识别到的收件公司。
+    """
+    first = (page_texts[0] if page_texts else "") or ""
+    if OWN_COMPANY.lower() in first.lower():
+        return
+    rows = [r.strip() for r in first.splitlines()]
+    found = next((rows[i + 1] for i, r in enumerate(rows[:-1]) if r == RECIPIENT_ANCHOR and rows[i + 1]),
+                 "未识别")
+    raise StopError(f"这张 Bestellung 的收件公司不是 {OWN_COMPANY}（识别到：{found}），不出表。"
+                    f"请确认这张单是否该进 {OWN_COMPANY} 的 Odoo。")
 
 
 def parse_text(page_texts):
@@ -355,7 +379,9 @@ def report(lines, dropped, summe):
 def run(pdf, template, outdir=None, exclude=(), pick=None, candidates_fn=odoo_candidates,
         tax_fn=odoo_tax_info):
     wb, cols, head = read_template(template)
-    lines, summe = parse_text(read_pdf(pdf))
+    texts = read_pdf(pdf)
+    check_recipient(texts)   # 先于解析、先于连 Odoo
+    lines, summe = parse_text(texts)
     print(f"PDF 明细 {len(lines)} 行（页 {sorted({l['page'] for l in lines})}），Summe {summe}")
     lines, dropped = apply_exclude(lines, exclude)
     problems = match(lines, candidates_fn({l["pzn"] for l in lines}), pick or {})

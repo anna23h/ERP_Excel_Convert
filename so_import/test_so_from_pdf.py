@@ -23,6 +23,31 @@ PAGE2 = "PZN Artikel/Bezeichnung Inhalt Netto Anz. Nettosumme\nMit Annahme der v
 COLS = ["ID", "Order Reference", "Customer", S.COL_PID, S.COL_IREF, S.COL_QTY, S.COL_PRICE]
 
 
+HEAD_TPL = """KUNDE GMBH
+KUNDE GMBH Musterstr. 1 12345 Musterstadt Vertriebsspezialist und
+Logistikpartner im
+Gesundheitswesen
+{company}
+Herr Max Muster
+Bestellung"""
+
+
+@pytest.mark.parametrize("company", ["IHTCT GmbH", "Ihtct GmbH"])
+def test_recipient_own_company_passes(company):
+    S.check_recipient([HEAD_TPL.format(company=company), PAGE2])
+
+
+def test_recipient_other_company_stops():
+    with pytest.raises(S.StopError, match="ANDERE FIRMA GmbH"):
+        S.check_recipient([HEAD_TPL.format(company="ANDERE FIRMA GmbH"), "IHTCT steht erst auf Seite 2"])
+
+
+@pytest.mark.parametrize("pages", [["ohne Adressblock"], [], [None]])
+def test_recipient_unrecognised_stops(pages):
+    with pytest.raises(S.StopError, match="未识别"):
+        S.check_recipient(pages)
+
+
 def test_parse_lines_and_summe():
     lines, summe = S.parse_text([PAGE1, PAGE2])
     assert summe == Decimal("4497.60")
