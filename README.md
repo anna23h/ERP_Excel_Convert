@@ -285,13 +285,15 @@ python3 dashboard/export_product_dict.py --include-unsellable
 > 新订单获单清单、回传ERP销售上传表、取消订单清单、补货预判清单**仍按全部订单出**。未排入的单次日仍在发货范围里。
 > 拣货表+面单的面单 / 无货勾选 sheet 一律按天猫 `面单生成时间` **从晚到早**排（最新在上、最老在底）——操作员从表底往上打包，即从早到晚；
 > 天猫判罚从面单完成起计时。此前是 ERP 导出顺序（Odoo Order Date 降序，而 Order Date 是订单批量同步进 Odoo 的时间，不反映判罚计时）。
+>
+> **面单按 SKU 聚合**（ISSUES [拣货面单] O，2026-11-21，**只有 CLI** `--face-order sku`，默认仍按时间）：选单不变，排列改成同一个 SKU 的面单连在一起，当天总件数多的 SKU 先打包，组内多件单在前，多品订单最后（仍从表底往上打包）；xlsx 多一张隐藏 sheet `分隔页`，面单排序时据此在运单 ≥3 张的 SKU 组下面插一页分隔页（SKU / 拣货名 / 中文标题 / 德文名 / 张数 / 件数；1~2 张的组和多品订单不插，ISSUES [拣货面单] P）。目的是打包时每个 SKU 只回笼架找一次货。
 
 | 产出 | 内容 | 下一步手工动作 |
 |---|---|---|
 | `新订单获单清单[店].xlsx` | 系统履约单号（履约单状态=新订单 ∩ ERP）| 复制 → 天猫后台批量获单。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `YYYY年MM月DD日{店}{n}单 拣货表+面单.xlsx` | 发货+已补运单（含无货勾选页）| 打印交仓库 |
 | `YYYY年MM月DD日{店}{n}单 LP清单.txt` | 只有 LP 号（每行一个，顺序同面单 sheet、每单一次），每 100 个一段、段间空一行；UTF-8 无 BOM | 逐段复制去天猫下载面单 PDF |
-| `YYYY年MM月DD日{店}{n}单 面单（按拣货表排序）.pdf` | 天猫下载的面单 PDF 按「面单」sheet 顺序重排合并（VOTool「面单排序」页 / `vo_orders/sort_labels.py`；两边对不上整份不出）| 打印，与拣货表+面单同序 |
+| `YYYY年MM月DD日{店}{n}单 面单（按拣货表排序）.pdf` | 天猫下载的面单 PDF 按「面单」sheet 顺序重排合并（VOTool「面单排序」页 / `vo_orders/sort_labels.py`；两边对不上整份不出）；拣货表+面单是 `--face-order sku` 出的时候，运单 ≥3 张的 SKU 组下面多一页分隔页 | 打印，与拣货表+面单同序 |
 | `YYYY年MM月DD日{店}{n}单 扫码清单.csv` | 订单级白名单（序号 / Order Reference / VO Tracking No / 店），与拣货表+面单同源同批 | 载入扫码 HTML，走[运单扫码回流](#运单扫码回流替代纸质勾选--手工转录)（选用） |
 | `回传ERP销售上传表[店].xlsx` | 取消/无运单/已补运单三类 Terms 写回**一张** | 上传 ERP，按关键词分别 Cancel/标记/恢复。**两店同批合并一份**（文件名不带店），单店批次带店名 |
 | `取消订单清单.xlsx` | 取消订单的 系统履约单号 + Order Reference（种子表，仅有取消单时产出）| 回传天猫后把后到的取消单手工补录 → 阶段二生成取消出库单 |
@@ -869,6 +871,7 @@ Python + pandas + openpyxl。
 - [x] GUI(`gui.py`) + Windows exe 打包：办公室员工双击使用；含「④ 货代合并」入口。
 - [x] **先核对再发货**：采用护栏（发货集合反查完整天猫真实状态报警），替代原「昨日发货 VO Tracking 去重」方案——覆盖面更大。
 - [x] **当日处理单数 + 按面单生成时间排序**（`build_excel.order_by_label_time`，ISSUES [拣货面单] N）：VOTool 阶段一 VO / GW 两个单数框（CLI `--limit-vo` / `--limit-gw`），按面单生成时间取最早的 N 单进 拣货表+面单 / 扫码清单 / LP清单，其余产出全量；面单排列改为面单生成时间从晚到早。
+- [x] **面单按 SKU 聚合 + 分隔页**（`build_excel.order_by_sku` + `sort_labels.render_separators`，ISSUES [拣货面单] O）：CLI `--face-order sku`（不进 VOTool），选单照旧，面单按 SKU 成组（总件数多的先打包、组内多件单在前、多品订单最后）；隐藏 sheet `分隔页` → 面单排序在运单 ≥3 张的 SKU 组下面插分隔页（ISSUES [拣货面单] P；要 reportlab + 中文字体）。待操作员试用反馈。
 - [x] **LP 清单**（`build_excel.build_lp_text` / `_write_lplist`，ISSUES [拣货面单] M）：阶段一每店多出 `…LP清单.txt`，取自 `build_scanlist`（与扫码清单同源同批），每 100 个一段（天猫一次下载上限），供操作员复制去天猫下载面单，再走面单排序。
 - [x] **面单排序**（`vo_orders/sort_labels.py` + VOTool「面单排序」页，ISSUES [拣货面单] L）：天猫下载的面单 PDF（每份 ≤100 页）按每页 LP 号对上拣货表+面单「面单」sheet 的 `VO Tracking No`，重排合并成一份；某页无 LP/多 LP、同单两页、同一 PDF 选两次、缺单、多单任一出现就整份不出（CLI 退出码 2，GUI 弹窗 + 日志列全）。依赖 `pypdfium2`（进主 requirements）。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 白名单入库**刷新自动恢复**（红色「清空」键彻底清空白名单+存档，作载错清单的换清单逃生口）+ 30 天自动清理，导出**单个 zip**（内含 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`，规避 Chrome 多文件拦截，解压后投）；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。

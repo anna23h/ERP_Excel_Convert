@@ -107,6 +107,22 @@ def load_full_tmall(path):
     return df.set_index("_k")[[TM_STATUS, TM_LABEL_STATUS, TM_LABEL_TIME]]
 
 
+TM_SKU   = "SKU"
+TM_TITLE = "标题"     # 天猫商品标题(中文短名)，只用于 --face-order sku 的分隔页(ISSUES: [拣货面单] O)
+
+
+def load_tmall_titles(path):
+    """完整天猫导出 → {SKU: 中文标题}（同一 SKU 取最后一条）。缺列或无文件返回 {}，
+    只影响分隔页上少印一行中文名，不挡出表。"""
+    if not path:
+        return {}
+    df = _read_tmall_sheet(path, usecols=lambda c: c in {TM_SKU, TM_TITLE})
+    if not {TM_SKU, TM_TITLE} <= set(df.columns):
+        return {}
+    df = df.dropna()
+    return dict(zip(df[TM_SKU].astype(str).str.strip(), df[TM_TITLE].astype(str).str.strip()))
+
+
 def done_keys_from_full(full):
     """发货范围 = 履约单状态∈{新订单,商家已接单} ∧ 面单申请状态=已完成。
     二段式且有序：①履约闸门在前——剔除已发货/已收货/取消的历史老单(防重复发货)；

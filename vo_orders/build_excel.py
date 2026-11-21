@@ -414,9 +414,9 @@ def _upload_terms(cat_df, idcol, terms):
     return out
 
 
-def _write_pickface(facesheet, outdir, out_arg=None):
+def _write_pickface(facesheet, outdir, out_arg=None, separators=None):
     """把一个店铺的发货集合写成一个「拣货表+面单+无货勾选」workbook。
-    facesheet 需已含 `序号`。返回 (路径, SKU数, 订单数)。"""
+    facesheet 需已含 `序号`。separators 非空时多写隐藏 sheet「分隔页」。返回 (路径, SKU数, 订单数)。"""
     pick_df = build_picking(facesheet)
     face_df = build_facesheet(facesheet)
     wb = Workbook()
@@ -450,6 +450,8 @@ def _write_pickface(facesheet, outdir, out_arg=None):
     # 无货勾选：无货标注也按订单合并(每单一格，操作员按单勾一次；序号已是固定订单级列)
     merge_multiproduct(ws_chk, chk_df, extra_cols=("无货(1=缺货)",))
     fix_merged_alignment(ws_chk, face_left)
+    if separators is not None and len(separators):
+        _write_separators(wb, separators)
     path = unique_path(out_arg or make_output_name(facesheet, outdir))
     wb.save(path)
     return path, len(pick_df), int(face_df["Order Reference"].nunique())
@@ -491,8 +493,80 @@ def order_by_label_time(sub, label_time, limit=None):
     return out, total, int(out[s4.ERP_ORDER_REF].nunique()), no_time
 
 
+FACE_ORDERS = ("time", "sku")
+SEP_SHEET = "分隔页"     # --face-order sku 时写进 xlsx 的隐藏 sheet，sort_labels 据此插分隔页
+SEP_COLS = ["打包顺序", "类型", "Internal Reference", "拣货名", "德文品名", "中文品名", "张数", "件数", "插在运单后"]
+SEP_SKU = "SKU"
+SEP_MIN_LABELS = 3      # 运单 ≥3 张的 SKU 组才插分隔页（ISSUES: [拣货面单] P）
+
+
+def _clean_text(df, col):
+    """分隔页用的文字列：缺列给空串，折行/多余空白压成一个空格（Picking Name 里常带换行）。"""
+    if col not in df:
+        return pd.Series("", index=df.index)
+    return df[col].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def order_by_sku(sub, label_time):
+    """面单按 SKU 聚合排序（ISSUES: [拣货面单] O；只在 --face-order sku 时用，选单已由
+    order_by_label_time 做完，这里只重排）。
+
+    打包顺序（操作员从表底往上打包）：
+      1. 单 SKU 订单按 SKU 分组，组按该 SKU 在这批单 SKU 订单里的总件数从多到少；
+         件数相同按 Internal Reference 升序（不分大小写，即拣货表顺序）；
+      2. 组内件数多的单在前、单件单在后，同件数按面单生成时间从早到晚；
+      3. 多 SKU 订单全部放在最后，按面单生成时间从早到晚。
+    文件里的排列是打包顺序的倒序（最先打包的在表底），多品订单的行保持连续、行内原序。
+    返回 (排好的行, 全部 SKU 组 DataFrame[SEP_COLS 去掉 中文品名])，打包顺序 = SKU 组序号；
+    真正插哪几页由 `separators_to_insert` 过滤（≥3 张，多品订单不插）。拣货名 = ERP 的 Picking Name
+    （仓库自己的识货提示，如「蓝白方盒」），德文品名 = ERP 的 Product/Name（导出没勾这列就空）。分隔页按打包顺序，
+    `插在运单后` = 该组最先打包那单的运单号：PDF 里分隔页紧跟在它下面，倒着翻时先看到分隔页。"""
+    REF = s4.ERP_ORDER_REF
+    d = sub.assign(
+        _t=sub["_key"].map(label_time).values,
+        _ir=sub[s4.ERP_INTERNAL].astype(str).str.strip(),
+        _q=pd.to_numeric(sub[s4.ERP_QTY], errors="coerce").fillna(0),
+        _pn=_clean_text(sub, s4.ERP_PICKING), _nm=_clean_text(sub, ERP_NAME))
+    o = d.groupby(REF, sort=False).agg(
+        _t=("_t", "first"), _nsku=("_ir", "nunique"), _ir=("_ir", "first"),
+        _q=("_q", "sum"), _lp=(s4.ERP_TRACKING, "first"), _pn=("_pn", "first"), _nm=("_nm", "first"))
+    single = o[o["_nsku"] == 1].copy()
+    multi = o[o["_nsku"] > 1].sort_values("_t", na_position="last", kind="stable")
+    single["_tot"] = single["_ir"].map(single.groupby("_ir")["_q"].sum())
+    single["_irl"] = single["_ir"].str.lower()
+    single = single.sort_values(["_tot", "_irl", "_ir", "_q", "_t"],
+                                ascending=[False, True, True, False, True],
+                                na_position="last", kind="stable")
+    pack = list(single.index) + list(multi.index)
+    rank = {r: i for i, r in enumerate(reversed(pack))}
+    out = (sub.assign(_r=sub[REF].map(rank)).sort_values("_r", kind="stable")
+           .drop(columns="_r").reset_index(drop=True))
+
+    seps = []
+    for ir, g in single.groupby("_ir", sort=False):
+        seps.append({"类型": SEP_SKU, "Internal Reference": ir, "拣货名": g["_pn"].iloc[0],
+                     "德文品名": g["_nm"].iloc[0],
+                     "张数": len(g), "件数": int(g["_q"].sum()), "插在运单后": g["_lp"].iloc[0]})
+    seps = pd.DataFrame(seps, columns=[c for c in SEP_COLS if c not in ("打包顺序", "中文品名")])
+    seps.insert(0, "打包顺序", range(1, len(seps) + 1))
+    return out, seps
+
+
+def separators_to_insert(seps):
+    """只给运单 ≥ SEP_MIN_LABELS 张的 SKU 组插分隔页（ISSUES: [拣货面单] P）：1~2 张的组下一张运单
+    本身就是新产品，分隔页提醒作用弱、还耗运单纸；多品订单已排在最后、面单表上能看出同单，也不插。"""
+    return seps[seps["张数"] >= SEP_MIN_LABELS].reset_index(drop=True)
+
+
+def _write_separators(wb, seps):
+    """分隔页信息写进隐藏 sheet：打印整本工作簿时不出纸，sort_labels 读它插页。"""
+    ws = wb.create_sheet(SEP_SHEET)
+    write_df(ws, seps[SEP_COLS])
+    ws.sheet_state = "hidden"
+
+
 def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None,
-          limits=None):
+          limits=None, face_order="time"):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
     输入 ERP 导出（天猫两店混合，经 ∩ERP 收敛）+ 一份完整天猫导出：
@@ -503,9 +577,13 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     单店批次仍带店名(见 `_ch_suffix`)。
     limits: {"VO": 200, "GW": 100} 按店限定当日处理单数(ISSUES: [拣货面单] N)，缺省/None = 全部；
     只约束 拣货表+面单 / 扫码清单 / LP清单，按面单生成时间取最早的 N 单，其余产出照旧全量。
-    拣货表+面单的排列一律按面单生成时间从晚到早(见 `order_by_label_time`)。
+    face_order: 拣货表+面单的面单排列。"time"(默认)按面单生成时间从晚到早(见 `order_by_label_time`)；
+    "sku"(ISSUES: [拣货面单] O，只 CLI)选单照旧，再按 SKU 聚合重排(见 `order_by_sku`)，
+    并在 xlsx 写隐藏 sheet「分隔页」供 sort_labels 插页。拣货表本身两种模式一样。
     完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
     负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
+    if face_order not in FACE_ORDERS:
+        raise ValueError(f"face_order 只能是 {FACE_ORDERS}：{face_order!r}")
     os.makedirs(outdir, exist_ok=True)
     log = []
     erp = _load_erps(erp_paths)
@@ -530,6 +608,7 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                             .str.split("_", n=1).str[0])
         chans = sorted(facesheet["_ch"].unique())
         label_time = full[s4.TM_LABEL_TIME] if s4.TM_LABEL_TIME in full else pd.Series(dtype="datetime64[ns]")
+        titles = s4.load_tmall_titles(full_tmall_path) if face_order == "sku" else {}
         for ch in chans:
             sub = facesheet[facesheet["_ch"] == ch].drop(columns="_ch")
             lim = (limits or {}).get(ch)
@@ -545,13 +624,25 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
             if sub.empty:
                 log.append(f"[{ch}] 上限为 0，未生成拣货表+面单")
                 continue
+            seps = None
+            if face_order == "sku":
+                sub, seps = order_by_sku(sub, label_time)
+                seps.insert(SEP_COLS.index("中文品名"), "中文品名",
+                            seps["Internal Reference"].map(titles).fillna("").values)
+                nsk = len(seps)
+                nmul = sub[s4.ERP_ORDER_REF].nunique() - int(seps["张数"].sum())
+                seps = separators_to_insert(seps)
+                miss = int((seps["中文品名"] == "").sum())
+                log.append(f"[{ch}] 面单按 SKU 聚合排序: {nsk} 个 SKU 组 + 多品 {nmul} 单；"
+                           f"运单 ≥{SEP_MIN_LABELS} 张的 {len(seps)} 组插分隔页"
+                           + (f"（其中 {miss} 组在天猫导出里找不到中文标题）" if miss else ""))
             # 序号按订单计数(店内独立编号)：同一 Order Reference 的多行共享一个序号，
             # 按订单出现顺序 1,2,3… 密集连续。行已按订单连续(merge_multiproduct 依赖此前提)，
             # factorize 给同单相同码、按首次出现顺序递增，+1 转 1-based。
             codes = pd.factorize(sub[s4.ERP_ORDER_REF])[0]
             sub.insert(0, "序号", codes + 1)
             p, nsku, nord = _write_pickface(
-                sub, outdir, out_arg if len(chans) == 1 else None)
+                sub, outdir, out_arg if len(chans) == 1 else None, separators=seps)
             main_paths.append(p)
             log.append(f"拣货表+面单[{ch}] 已生成: {p}  ({nsku} SKU / {nord} 单)")
             sp, nscan = _write_scanlist(sub, ch, outdir)
@@ -708,13 +799,18 @@ def main():
     ap.add_argument("--limit-vo", type=int, default=None,
                     help="VO 当日处理单数上限(按面单生成时间取最早的 N 单)，缺省=全部")
     ap.add_argument("--limit-gw", type=int, default=None, help="GW 当日处理单数上限，同上")
+    ap.add_argument("--face-order", choices=FACE_ORDERS, default="time",
+                    help="面单排列：time=按面单生成时间(默认)；sku=选单照旧，按 SKU 聚合"
+                         "(总件数多的 SKU 先打包、组内多件单在前、多品订单最后)，"
+                         "并供面单排序插分隔页")
     a = ap.parse_args()
     for v in (a.limit_vo, a.limit_gw):
         if v is not None and v < 0:
             ap.error("处理单数上限不能为负")
     limits = {k: v for k, v in (("VO", a.limit_vo), ("GW", a.limit_gw)) if v is not None}
     outdir = os.path.dirname(a.out) if a.out else "output"
-    log, st = build(a.erp.split(","), a.full, a.out, outdir, limits=limits)
+    log, st = build(a.erp.split(","), a.full, a.out, outdir, limits=limits,
+                    face_order=a.face_order)
     for ln in log:
         print(ln)
 
