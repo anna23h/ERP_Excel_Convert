@@ -1,4 +1,4 @@
-"""面单按 SKU 聚合排序 + 分隔页（ISSUES: [拣货面单] O）。
+"""面单按货聚合排序 + 分隔页（ISSUES: [拣货面单] O / P / Q）。
 
 数据全是虚构的：SKU 名 / 单号 / 运单号都是造的。PDF 用 test_sort_labels 的最小 PDF 造法。
 """
@@ -114,6 +114,56 @@ def test_limit_selection_is_unchanged_by_sku_order():
     out, _ = B.order_by_sku(sel, T)
     assert set(out[REF]) == set(sel[REF])            # 只重排，不增不减
     assert set(sel[REF]) == {ref(n) for n in (10, 7, 6, 5)}   # 面单时间最早的 4 单
+
+
+# ---- [拣货面单] Q：套件归基础品、组内多件在前且按时间、实物件数 ----
+KITS = {"Ax2": ("A", 2), "A_VO": ("A", 1)}
+
+
+def test_kits_join_their_base_product_group():
+    sub, t = rows([
+        (1, [("A", 1)], "2026-11-01 03:00"),
+        (2, [("Ax2", 1)], "2026-11-01 05:00"),      # 实物 2 件 → 多件单
+        (3, [("A_VO", 1)], "2026-11-01 01:00"),
+        (4, [("B", 1)], "2026-11-01 02:00"),
+        (5, [("A", 1), ("Ax2", 1)], "2026-11-01 04:00"),   # 同一种货 → 单品订单，实物 3 件
+    ])
+    out, seps = B.order_by_sku(sub, t, KITS)
+    # A 组 1+2+1+3=7 件：多件单 5(04:00)、2(05:00)，再单件单 3(01:00)、1(03:00)；然后 B
+    assert pack_seq(out) == [5, 2, 3, 1, 4]
+    assert seps["Internal Reference"].tolist() == ["A", "B"]
+    assert seps["张数"].tolist() == [4, 1]
+    assert seps["件数"].tolist() == [7, 1]
+    assert seps.loc[0, "拣货名"] == "A 方盒"             # 有基础品自己的行就取它的名字
+    assert out[s4.ERP_INTERNAL].tolist().count("Ax2") == 2   # 面单表照旧印原始 SKU
+
+
+def test_kit_only_group_uses_kit_names_and_title_fallback():
+    sub, t = rows([(1, [("Ax2", 1)], "2026-11-01"), (2, [("Ax2", 2)], "2026-11-02")])
+    _, seps = B.order_by_sku(sub, t, KITS)
+    assert seps.loc[0, "Internal Reference"] == "A"
+    assert seps.loc[0, "件数"] == 6
+    assert seps.loc[0, "拣货名"] == "Ax2 方盒"
+    assert seps.loc[0, "_skus"] == ("A", "Ax2")
+    assert B._first_title(seps.loc[0, "_skus"], {"Ax2": "套装标题"}) == "套装标题"
+    assert B._first_title(seps.loc[0, "_skus"], {"A": "基础", "Ax2": "套装"}) == "基础"
+
+
+def test_multi_piece_orders_first_then_by_label_time_not_by_quantity():
+    sub, t = rows([
+        (1, [("A", 5)], "2026-11-01 09:00"),
+        (2, [("A", 2)], "2026-11-01 08:00"),
+        (3, [("A", 1)], "2026-11-01 07:00"),
+        (4, [("A", 3)], "2026-11-01 10:00"),
+    ])
+    out, _ = B.order_by_sku(sub, t)
+    assert pack_seq(out) == [2, 1, 4, 3]      # 多件单按时间（不再按件数），单件单最后
+
+
+def test_without_kits_kit_skus_stay_separate_groups():
+    sub, t = rows([(1, [("A", 1)], "2026-11-01"), (2, [("Ax2", 1)], "2026-11-02")])
+    _, seps = B.order_by_sku(sub, t)          # Odoo 拉不到时的降级
+    assert sorted(seps["Internal Reference"]) == ["A", "Ax2"]
 
 
 def _seps_with_titles():

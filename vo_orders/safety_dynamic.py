@@ -58,22 +58,11 @@ def kit_code_map(kit_map, code_of, pid_of_sku):
     return out, sorted(multi)
 
 
-def pull_safety(skus, until=None, weeks=WEEKS, timeout=60):
-    """→ dict(kits={套件 SKU: (基础品 SKU, 系数)}, avg={SKU: 周均}, onhand={基础品 SKU: 在手}, info=说明)。
-
-    avg 只给并入后清单里会出现的 SKU（非套件 SKU + 套件的基础品）。拉不到时抛异常，由调用方降级。
-    """
-    from odoo_api.odoo_client import Odoo, m2o_id
-    from odoo_api.restock import SOLD_STATES, prefix_domain, pull_kit_map, pull_codes, roll_sales
-    from odoo_api.stock_report import pull_qty_available
+def _kit_lookup(od, skus):
+    """SKU → Odoo pid + 单组件套件映射。→ (pid_of, 重码数, kit_map, code_of, kits, multi)。"""
+    from odoo_api.restock import pull_kit_map, pull_codes
     import odoo_api.restock as rs
 
-    od = Odoo.connect(timeout=timeout, verbose=False)
-    until = until or (date.today() - timedelta(days=1))
-    since = until - timedelta(days=weeks * 7 - 1)
-    n_days = (until - since).days + 1
-
-    skus = sorted({str(s).strip() for s in skus if str(s).strip()})
     prods = od.search_read_all("product.product", [("default_code", "in", skus)], ["default_code"])
     pid_of, dup = {}, 0
     for p in prods:                      # 按 id 升序，同码取最早建档的（同 pending_moves）
@@ -90,6 +79,41 @@ def pull_safety(skus, until=None, weeks=WEEKS, timeout=60):
     finally:
         rs.say = _say
     kits, multi = kit_code_map(kit_map, code_of, pid_of)
+    return pid_of, dup, kit_map, code_of, kits, multi
+
+
+def pull_kits(skus, timeout=60):
+    """只拉套件映射（ISSUES [拣货面单] Q：面单按基础品聚合）。→ (kits={套件 SKU: (基础品 SKU, 系数)}, 说明)。
+    拉不到时抛异常，由调用方降级。"""
+    from odoo_api.odoo_client import Odoo
+
+    od = Odoo.connect(timeout=timeout, verbose=False)
+    skus = sorted({str(s).strip() for s in skus if str(s).strip()})
+    pid_of, dup, _, _, kits, multi = _kit_lookup(od, skus)
+    info = f"{len(pid_of)}/{len(skus)} 个 SKU 在 Odoo 找到，{len(kits)} 个套件归到基础品"
+    if multi:
+        info += f"；⚠ 多组件套件 {len(multi)} 个不归并: {', '.join(multi[:5])}"
+    if dup:
+        info += f"；⚠ {dup} 个 Internal Reference 在 Odoo 有重码，取最早建档的"
+    return kits, info
+
+
+def pull_safety(skus, until=None, weeks=WEEKS, timeout=60):
+    """→ dict(kits={套件 SKU: (基础品 SKU, 系数)}, avg={SKU: 周均}, onhand={基础品 SKU: 在手}, info=说明)。
+
+    avg 只给并入后清单里会出现的 SKU（非套件 SKU + 套件的基础品）。拉不到时抛异常，由调用方降级。
+    """
+    from odoo_api.odoo_client import Odoo, m2o_id
+    from odoo_api.restock import SOLD_STATES, prefix_domain, roll_sales
+    from odoo_api.stock_report import pull_qty_available
+
+    od = Odoo.connect(timeout=timeout, verbose=False)
+    until = until or (date.today() - timedelta(days=1))
+    since = until - timedelta(days=weeks * 7 - 1)
+    n_days = (until - since).days + 1
+
+    skus = sorted({str(s).strip() for s in skus if str(s).strip()})
+    pid_of, dup, kit_map, code_of, kits, multi = _kit_lookup(od, skus)
 
     dom = [("date", ">=", since.isoformat()), ("date", "<=", f"{until.isoformat()} 23:59:59"),
            ("state", "in", SOLD_STATES)] + prefix_domain()

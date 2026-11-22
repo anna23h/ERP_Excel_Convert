@@ -507,34 +507,44 @@ def _clean_text(df, col):
     return df[col].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
 
 
-def order_by_sku(sub, label_time):
-    """面单按 SKU 聚合排序（ISSUES: [拣货面单] O；只在 --face-order sku 时用，选单已由
+def order_by_sku(sub, label_time, kits=None):
+    """面单按货聚合排序（ISSUES: [拣货面单] O / Q；只在 --face-order sku 时用，选单已由
     order_by_label_time 做完，这里只重排）。
 
+    kits: {套件 SKU: (基础品 SKU, BoM 系数)}（safety_dynamic.pull_kits，Odoo 只读）。套件和它的
+    基础品是同一种实物，按基础品归成一组、件数按实物件数（套件数量 × 系数）算；不传 = 按原始 SKU。
     打包顺序（操作员从表底往上打包）：
-      1. 单 SKU 订单按 SKU 分组，组按该 SKU 在这批单 SKU 订单里的总件数从多到少；
-         件数相同按 Internal Reference 升序（不分大小写，即拣货表顺序）；
-      2. 组内件数多的单在前、单件单在后，同件数按面单生成时间从早到晚；
-      3. 多 SKU 订单全部放在最后，按面单生成时间从早到晚。
+      1. 单品订单（只含一种基础品）按基础品分组，组按这批单品订单里该货的实物总件数从多到少；
+         件数相同按基础品 Internal Reference 升序（不分大小写，即拣货表顺序）；
+      2. 组内先打多件单（实物 ≥2 件），再打单件单；各自按面单生成时间从早到晚（老单先拿货，
+         取不到时间的排最后）。缺货时跳过哪单由人判断，程序不管（用户 2026-11-22 定）；
+      3. 多品订单全部放在最后，按面单生成时间从早到晚。
     文件里的排列是打包顺序的倒序（最先打包的在表底），多品订单的行保持连续、行内原序。
-    返回 (排好的行, 全部 SKU 组 DataFrame[SEP_COLS 去掉 中文品名])，打包顺序 = SKU 组序号；
+    面单表的 Internal Reference 照旧是订单上的原始 SKU（运单对应它）。
+    返回 (排好的行, 全部组 DataFrame[SEP_COLS 去掉 中文品名] + `_skus`)，打包顺序 = 组序号；
+    `_skus` = 查中文标题的候选 SKU（基础品在前、再按组内出现顺序的套件），build 用完即丢。
     真正插哪几页由 `separators_to_insert` 过滤（≥3 张，多品订单不插）。拣货名 = ERP 的 Picking Name
-    （仓库自己的识货提示，如「蓝白方盒」），德文品名 = ERP 的 Product/Name（导出没勾这列就空）。分隔页按打包顺序，
+    （仓库自己的识货提示，如「蓝白方盒」），德文品名 = ERP 的 Product/Name（导出没勾这列就空），
+    组里有基础品自己的行就取它的，否则取第一个套件行的。分隔页按打包顺序，
     `插在运单后` = 该组最先打包那单的运单号：PDF 里分隔页紧跟在它下面，倒着翻时先看到分隔页。"""
     REF = s4.ERP_ORDER_REF
+    kits = kits or {}
+    ir = sub[s4.ERP_INTERNAL].astype(str).str.strip()
+    q = pd.to_numeric(sub[s4.ERP_QTY], errors="coerce").fillna(0)
     d = sub.assign(
-        _t=sub["_key"].map(label_time).values,
-        _ir=sub[s4.ERP_INTERNAL].astype(str).str.strip(),
-        _q=pd.to_numeric(sub[s4.ERP_QTY], errors="coerce").fillna(0),
+        _t=sub["_key"].map(label_time).values, _ir=ir,
+        _b=ir.map(lambda r: kits[r][0] if r in kits else r),
+        _pq=q * ir.map(lambda r: kits[r][1] if r in kits else 1),
         _pn=_clean_text(sub, s4.ERP_PICKING), _nm=_clean_text(sub, ERP_NAME))
     o = d.groupby(REF, sort=False).agg(
-        _t=("_t", "first"), _nsku=("_ir", "nunique"), _ir=("_ir", "first"),
-        _q=("_q", "sum"), _lp=(s4.ERP_TRACKING, "first"), _pn=("_pn", "first"), _nm=("_nm", "first"))
-    single = o[o["_nsku"] == 1].copy()
-    multi = o[o["_nsku"] > 1].sort_values("_t", na_position="last", kind="stable")
-    single["_tot"] = single["_ir"].map(single.groupby("_ir")["_q"].sum())
-    single["_irl"] = single["_ir"].str.lower()
-    single = single.sort_values(["_tot", "_irl", "_ir", "_q", "_t"],
+        _t=("_t", "first"), _nb=("_b", "nunique"), _b=("_b", "first"),
+        _q=("_pq", "sum"), _lp=(s4.ERP_TRACKING, "first"))
+    single = o[o["_nb"] == 1].copy()
+    multi = o[o["_nb"] > 1].sort_values("_t", na_position="last", kind="stable")
+    single["_tot"] = single["_b"].map(single.groupby("_b")["_q"].sum())
+    single["_bl"] = single["_b"].str.lower()
+    single["_many"] = single["_q"] >= 2
+    single = single.sort_values(["_tot", "_bl", "_b", "_many", "_t"],
                                 ascending=[False, True, True, False, True],
                                 na_position="last", kind="stable")
     pack = list(single.index) + list(multi.index)
@@ -542,14 +552,24 @@ def order_by_sku(sub, label_time):
     out = (sub.assign(_r=sub[REF].map(rank)).sort_values("_r", kind="stable")
            .drop(columns="_r").reset_index(drop=True))
 
+    lines = d[d[REF].isin(single.index)]
     seps = []
-    for ir, g in single.groupby("_ir", sort=False):
-        seps.append({"类型": SEP_SKU, "Internal Reference": ir, "拣货名": g["_pn"].iloc[0],
-                     "德文品名": g["_nm"].iloc[0],
-                     "张数": len(g), "件数": int(g["_q"].sum()), "插在运单后": g["_lp"].iloc[0]})
-    seps = pd.DataFrame(seps, columns=[c for c in SEP_COLS if c not in ("打包顺序", "中文品名")])
+    for base, g in single.groupby("_b", sort=False):
+        gl = lines[lines["_b"] == base]
+        own = gl[gl["_ir"] == base]
+        name_row = (own if len(own) else gl).iloc[0]
+        seps.append({"类型": SEP_SKU, "Internal Reference": base, "拣货名": name_row["_pn"],
+                     "德文品名": name_row["_nm"],
+                     "张数": len(g), "件数": int(round(g["_q"].sum())), "插在运单后": g["_lp"].iloc[0],
+                     "_skus": tuple(dict.fromkeys([base] + gl["_ir"].tolist()))})
+    seps = pd.DataFrame(seps, columns=[c for c in SEP_COLS if c not in ("打包顺序", "中文品名")]
+                        + ["_skus"])
     seps.insert(0, "打包顺序", range(1, len(seps) + 1))
     return out, seps
+
+
+def _first_title(skus, titles):
+    return next((titles[k] for k in skus if titles.get(k)), "")
 
 
 def separators_to_insert(seps):
@@ -609,6 +629,15 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         chans = sorted(facesheet["_ch"].unique())
         label_time = full[s4.TM_LABEL_TIME] if s4.TM_LABEL_TIME in full else pd.Series(dtype="datetime64[ns]")
         titles = s4.load_tmall_titles(full_tmall_path) if face_order == "sku" else {}
+        kits = {}
+        if face_order == "sku":
+            # 套件归基础品(ISSUES: [拣货面单] Q)：Odoo 只读；拉不到就按原始 SKU 聚合，不挡产出
+            try:
+                kits, kinfo = SD.pull_kits(facesheet[s4.ERP_INTERNAL].dropna().unique())
+                log.append(f"面单按货聚合，套件映射已拉取: {kinfo}")
+            except Exception as e:
+                log.append("⚠ 套件映射拉取失败，面单按原始 SKU 聚合(套件和基础品会各成一组): "
+                           + str(e).splitlines()[0][:120])
         for ch in chans:
             sub = facesheet[facesheet["_ch"] == ch].drop(columns="_ch")
             lim = (limits or {}).get(ch)
@@ -626,14 +655,14 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
                 continue
             seps = None
             if face_order == "sku":
-                sub, seps = order_by_sku(sub, label_time)
+                sub, seps = order_by_sku(sub, label_time, kits)
                 seps.insert(SEP_COLS.index("中文品名"), "中文品名",
-                            seps["Internal Reference"].map(titles).fillna("").values)
+                            [_first_title(k, titles) for k in seps.pop("_skus")])
                 nsk = len(seps)
                 nmul = sub[s4.ERP_ORDER_REF].nunique() - int(seps["张数"].sum())
                 seps = separators_to_insert(seps)
                 miss = int((seps["中文品名"] == "").sum())
-                log.append(f"[{ch}] 面单按 SKU 聚合排序: {nsk} 个 SKU 组 + 多品 {nmul} 单；"
+                log.append(f"[{ch}] 面单按货聚合排序: {nsk} 个货组 + 多品 {nmul} 单；"
                            f"运单 ≥{SEP_MIN_LABELS} 张的 {len(seps)} 组插分隔页"
                            + (f"（其中 {miss} 组在天猫导出里找不到中文标题）" if miss else ""))
             # 序号按订单计数(店内独立编号)：同一 Order Reference 的多行共享一个序号，
