@@ -585,6 +585,36 @@ def _write_separators(wb, seps):
     ws.sheet_state = "hidden"
 
 
+def load_kit_map(skus, kits_file=None, pull=None):
+    """面单按货聚合用的套件映射 → (kits, 日志行列表)。不抛异常，取不到就返回空映射(按原始 SKU 聚合)。
+
+    顺序(ISSUES: [拣货面单] S，用户 2026-11-24 定)：程序旁有 `套件对照表.csv` 就**只用它、不连 Odoo**；
+    文件坏了才退回 Odoo；没有文件就连 Odoo 只读拉(ISSUES: [拣货面单] Q)；都不行按原始 SKU。
+    kits_file / pull 供单测注入，缺省 = `SD.find_kits_file()` / `SD.pull_kits`。
+    """
+    log = []
+    path = kits_file if kits_file is not None else SD.find_kits_file()
+    if path:
+        try:
+            kits, info, _, known = SD.load_kits(path, skus)
+            log.append(f"面单按货聚合，套件映射用{info}")
+            miss = SD.kit_like_missing(skus, known)
+            if miss:
+                log.append(f"⚠ {len(miss)} 个 SKU 名字像套件但对照表里没有(对照表可能过期，按原始 SKU 成组): "
+                           + ", ".join(miss[:8]) + (" …" if len(miss) > 8 else ""))
+            return kits, log
+        except Exception as e:
+            log.append(f"⚠ {SD.KITS_FILE} 读不了，改连 Odoo: " + str(e).splitlines()[0][:120])
+    try:
+        kits, info = (pull or SD.pull_kits)(skus)
+        log.append(f"面单按货聚合，套件映射已从 Odoo 拉取: {info}")
+        return kits, log
+    except Exception as e:
+        log.append("⚠ 套件映射拉取失败，面单按原始 SKU 聚合(套件和基础品会各成一组；"
+                   f"可把 {SD.KITS_FILE} 放到程序旁离线使用): " + str(e).splitlines()[0][:120])
+        return {}, log
+
+
 def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None,
           limits=None, face_order="sku"):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
@@ -631,13 +661,8 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
         titles = s4.load_tmall_titles(full_tmall_path) if face_order == "sku" else {}
         kits = {}
         if face_order == "sku":
-            # 套件归基础品(ISSUES: [拣货面单] Q)：Odoo 只读；拉不到就按原始 SKU 聚合，不挡产出
-            try:
-                kits, kinfo = SD.pull_kits(facesheet[s4.ERP_INTERNAL].dropna().unique())
-                log.append(f"面单按货聚合，套件映射已拉取: {kinfo}")
-            except Exception as e:
-                log.append("⚠ 套件映射拉取失败，面单按原始 SKU 聚合(套件和基础品会各成一组): "
-                           + str(e).splitlines()[0][:120])
+            kits, kinfo = load_kit_map(facesheet[s4.ERP_INTERNAL].dropna().unique())
+            log.extend(kinfo)
         for ch in chans:
             sub = facesheet[facesheet["_ch"] == ch].drop(columns="_ch")
             lim = (limits or {}).get(ch)

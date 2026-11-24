@@ -16,7 +16,9 @@ phantom BoM 折算（直接复用 restock 的 pull_kit_map / roll_sales），周
 
 拉不到（没配凭据 / 连不上）由调用方降级：套件不并、两列不出，清单照出。
 """
+import csv
 import os
+import re
 import sys
 from datetime import date, timedelta
 
@@ -96,6 +98,118 @@ def pull_kits(skus, timeout=60):
     if dup:
         info += f"；⚠ {dup} 个 Internal Reference 在 Odoo 有重码，取最早建档的"
     return kits, info
+
+
+# ---------- 本地套件对照表（ISSUES [拣货面单] S）----------
+# 同事机器不连 Odoo 也能把套件归到基础品：开发机用 export_kits.py 导出，同事把文件放到程序旁。
+# 用户定（2026-11-24）：**有本地对照表就只用它、不连 Odoo**；固定文件名、自动找，不加界面栏位。
+KITS_FILE = "套件对照表.csv"
+KITS_COLS = ("套件SKU", "基础品SKU", "系数", "导出日期")
+KITS_STALE_DAYS = 30
+_KIT_LIKE = re.compile(r"(x\d+|_(VO|GW))$", re.I)   # 名字像套件：…x2 / …_VO / …_GW
+
+
+def kits_file_dirs():
+    """找对照表的目录，按顺序：打包 exe 所在目录；仓库根（源码版）。"""
+    dirs = []
+    if getattr(sys, "frozen", False):
+        dirs.append(os.path.dirname(sys.executable))
+    dirs.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return dirs
+
+
+def find_kits_file(dirs=None):
+    """→ 第一个存在的对照表路径；都没有返回 None。"""
+    for d in dirs if dirs is not None else kits_file_dirs():
+        p = os.path.join(d, KITS_FILE)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def load_kits(path, skus=None, today=None):
+    """读本地对照表 → (kits={套件 SKU: (基础品 SKU, 系数)}, 说明, 导出日期 date 或 None, known=表里全部套件+基础品 SKU)。
+
+    skus 给了就只留这批出现的套件；文件格式不对抛 ValueError（调用方降级）。
+    说明里带导出日期，超过 KITS_STALE_DAYS 天加 ⚠ 提醒更新。
+    """
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    if rows and not set(KITS_COLS[:3]) <= set(rows[0]):
+        raise ValueError(f"{KITS_FILE} 缺列，应有：{' / '.join(KITS_COLS)}")
+    want = None if skus is None else {str(s).strip() for s in skus}
+    kits, dates, known = {}, set(), set()
+    for i, r in enumerate(rows, start=2):
+        kit, base = (r.get("套件SKU") or "").strip(), (r.get("基础品SKU") or "").strip()
+        if not kit or not base:
+            continue
+        try:
+            k = float(r.get("系数") or "")
+        except ValueError:
+            raise ValueError(f"{KITS_FILE} 第 {i} 行系数不是数字：{r.get('系数')!r}") from None
+        if k <= 0:
+            raise ValueError(f"{KITS_FILE} 第 {i} 行系数必须大于 0：{k}")
+        known.update((kit, base))
+        if (r.get("导出日期") or "").strip():
+            dates.add(r["导出日期"].strip())
+        if want is None or kit in want:
+            kits[kit] = (base, int(k) if k == int(k) else k)
+    exported = None
+    if dates:
+        try:
+            exported = max(date.fromisoformat(d) for d in dates)
+        except ValueError:
+            exported = None
+    info = f"本地 {KITS_FILE}（{len(rows)} 条，本批用到 {len(kits)} 个套件"
+    info += f"，导出于 {exported.isoformat()}）" if exported else "，导出日期不明）"
+    age = ((today or date.today()) - exported).days if exported else None
+    if age is None:
+        info += "；⚠ 对照表没有导出日期，请找 Anna 要新的"
+    elif age > KITS_STALE_DAYS:
+        info += f"；⚠ 对照表已导出 {age} 天（超过 {KITS_STALE_DAYS} 天），请找 Anna 要新的"
+    return kits, info, exported, known
+
+
+def kit_like_missing(skus, known):
+    """本批 SKU 里名字像套件、对照表里（套件和基础品两列）都没有的（对照表可能过期）→ 排序列表。
+    11-24 全量 568 个套件里 514 个名字命中；也有 12 个基础品命中，所以基础品列也要算「已知」。"""
+    return sorted({str(s).strip() for s in skus
+                   if _KIT_LIKE.search(str(s).strip()) and str(s).strip() not in known})
+
+
+def export_kits(out_path, timeout=60, today=None):
+    """Odoo 只读 → 写对照表 CSV（全部单组件 phantom BoM）。→ (条数, 多组件套件 SKU 列表, 重码数)。"""
+    from odoo_api.odoo_client import Odoo
+    from odoo_api.restock import pull_kit_map, pull_codes
+
+    od = Odoo.connect(timeout=timeout, verbose=False)
+    kit_map = pull_kit_map(od)
+    pids = set(kit_map) | {c for comps in kit_map.values() for c, _ in comps}
+    code_of = {pid: v["code"] for pid, v in pull_codes(od, pids).items()} if pids else {}
+    stamp = (today or date.today()).isoformat()
+    rows, multi, seen, dup = [], [], set(), 0
+    for pid in sorted(kit_map):                      # 同码取最早建档的（同 _kit_lookup）
+        code = code_of.get(pid, "")
+        if not code:
+            continue
+        if code in seen:
+            dup += 1
+            continue
+        seen.add(code)
+        comps = kit_map[pid]
+        if len(comps) != 1:
+            multi.append(code)
+            continue
+        base, k = comps[0]
+        if code_of.get(base) and k > 0:
+            rows.append((code, code_of[base], int(k) if k == int(k) else k, stamp))
+    rows.sort(key=lambda r: r[0].lower())
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:   # utf-8-sig：Excel 直接打开不乱码
+        w = csv.writer(f)
+        w.writerow(KITS_COLS)
+        w.writerows(rows)
+    return len(rows), sorted(multi), dup
 
 
 def pull_safety(skus, until=None, weeks=WEEKS, timeout=60):

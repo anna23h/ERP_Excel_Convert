@@ -13,6 +13,7 @@
 | `扫码/` | **运单扫码回流**——**非独立流水线**：VO 拉单阶段一↔阶段二之间的可选替换段（单文件 HTML，零依赖，跑在仓库机） | 浏览器打开 `扫码/扫码回流.html` | [扫码/README.md](扫码/README.md) + [下方章节](#运单扫码回流替代纸质勾选--手工转录) | 在用 |
 | `sales_insight/` | **销售分析 + 安全库存提醒 + Safety Stock 回写 ERP** | `ERP回写-Mac.command` → `erp_writeback_gui.py`「销售分析」页；或 `python3 sales_insight/sales_insight.py <销售数据.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
 | `sales_insight/safety_writeback.py` | **安全库存直写**（运营的表 + 产品主数据 → `Safety Stock` 回写表，**不要销售数据**） | `ERP回写-Mac.command` →「安全库存直写」页；或 `python3 sales_insight/safety_writeback.py <安全库存表.xlsx> --products <product.product.xlsx>` | [sales_insight/README.md](sales_insight/README.md) | 在用 |
+| `vo_orders/export_kits.py` | **套件对照表导出**（Odoo 只读 BoM → `套件对照表.csv`，同事不连 Odoo 也能让面单按货聚合把套件归到基础品，ISSUES [拣货面单] S） | `python3 vo_orders/export_kits.py [-o 路径]`（开发机跑，文件发给同事放程序旁） | [产出文件](#产出文件) 段的「套件对照表（离线）」 + 脚本 docstring | 在用 |
 | `vo_orders/fs_writeback.py` | **FS 回写**（采购单 → 供应商代号写回产品主数据 `FS`） | `ERP回写-Mac.command` →「FS 回写」页；或 `python3 vo_orders/fs_writeback.py <purchase.order.xlsx> <product.product.xlsx>` | [下方章节](#erp-回写三条销售分析--安全库存直写--fs-回写) + 脚本 docstring | 在用 |
 | `vo_orders/jd_packing_review.py` | **京东装箱复核瘦身表**（京东后台 45 列导出 → 打印给仓库核对的 7 列瘦表，同单合并、A4 横向压一页） | `python3 vo_orders/jd_packing_review.py <xlsx 或 目录>`（2026-10-19 起不再进 VOTool） | [下方章节](#京东装箱复核瘦身表) + 脚本 docstring | 在用 |
 | `po_reconcile/` | **采购对账**（采购 PO ↔ 财务 PO，算未到货量） | `python3 po_reconcile/po_reconcile.py <purchase.order.xlsx> --buyer P… --finance P…` | [po_reconcile/README.md](po_reconcile/README.md) | 算法就绪，待真实干净数据验证 |
@@ -287,6 +288,8 @@ python3 dashboard/export_product_dict.py --include-unsellable
 > 天猫判罚从面单完成起计时。此前是 ERP 导出顺序（Odoo Order Date 降序，而 Order Date 是订单批量同步进 Odoo 的时间，不反映判罚计时）。
 >
 > **面单按 SKU 聚合**（ISSUES [拣货面单] O，2026-11-21；**2026-11-24 起是默认排列，VOTool 阶段一也用**，ISSUES [拣货面单] R；老的按时间排列只留 CLI 退路 `--face-order time`）：选单不变，排列改成同一个 SKU 的面单连在一起，当天总件数多的货先打包，组内多件单在前、单件单在后、各自按面单生成时间，多品订单最后（仍从表底往上打包）；套件和基础品归同一组、件数按实物算（ISSUES [拣货面单] Q，2026-11-22）；xlsx 多一张隐藏 sheet `分隔页`，面单排序时据此在运单 ≥3 张的 SKU 组下面插一页分隔页（SKU / 拣货名 / 中文标题 / 德文名 / 张数 / 件数；1~2 张的组和多品订单不插，ISSUES [拣货面单] P）。目的是打包时每个 SKU 只回笼架找一次货。
+>
+> **套件对照表（离线）**（ISSUES [拣货面单] S，2026-11-24）：按货聚合要把套件归到基础品。程序旁有 `套件对照表.csv`（源码版放仓库根，VOTool.exe 放 exe 同目录）就**只读它、不连 Odoo**；没有这个文件才连 Odoo 只读拉；文件读不了退回 Odoo；都不行按原始 SKU 成组并在日志 ⚠。日志写明用的哪个来源和对照表导出日期，超过 30 天 ⚠ 提醒更新；本批里名字像套件（`…x2` / `…_VO` / `…_GW`）但对照表两列都没有的 SKU 也会点名。对照表由开发机导出：`python3 vo_orders/export_kits.py [-o 路径]`（Odoo 只读，默认写 `output/套件对照表.csv`，列 套件SKU / 基础品SKU / 系数 / 导出日期，只收单组件 phantom BoM，多组件套件终端点名），再发给同事。CSV 被 .gitignore 兜底，不进公开仓库。
 
 | 产出 | 内容 | 下一步手工动作 |
 |---|---|---|
@@ -873,6 +876,7 @@ Python + pandas + openpyxl。
 - [x] **当日处理单数 + 按面单生成时间排序**（`build_excel.order_by_label_time`，ISSUES [拣货面单] N）：VOTool 阶段一 VO / GW 两个单数框（CLI `--limit-vo` / `--limit-gw`），按面单生成时间取最早的 N 单进 拣货表+面单 / 扫码清单 / LP清单，其余产出全量；面单排列改为面单生成时间从晚到早。
 - [x] **面单按 SKU 聚合 + 分隔页**（`build_excel.order_by_sku` + `sort_labels.render_separators`，ISSUES [拣货面单] O）：2026-11-24 转正为默认，VOTool 阶段一固定用它（ISSUES [拣货面单] R；CLI `--face-order time` 可回到老排列），选单照旧，面单按货成组（套件归基础品、总件数多的先打包、组内多件单在前且按面单生成时间、多品订单最后，ISSUES [拣货面单] Q）；隐藏 sheet `分隔页` → 面单排序在运单 ≥3 张的 SKU 组下面插分隔页（ISSUES [拣货面单] P；要 reportlab（已进 requirements.txt 与 VOTool.exe）+ 中文字体）。
 - [x] **LP 清单**（`build_excel.build_lp_text` / `_write_lplist`，ISSUES [拣货面单] M）：阶段一每店多出 `…LP清单.txt`，取自 `build_scanlist`（与扫码清单同源同批），每 100 个一段（天猫一次下载上限），供操作员复制去天猫下载面单，再走面单排序。
+- [x] **套件对照表离线**（`vo_orders/export_kits.py` + `safety_dynamic.load_kits` / `build_excel.load_kit_map`，ISSUES [拣货面单] S）：程序旁有 `套件对照表.csv` 就只用它、不连 Odoo；没有才连 Odoo。
 - [x] **面单排序**（`vo_orders/sort_labels.py` + VOTool「面单排序」页，ISSUES [拣货面单] L）：天猫下载的面单 PDF（每份 ≤100 页）按每页 LP 号对上拣货表+面单「面单」sheet 的 `VO Tracking No`，重排合并成一份；某页无 LP/多 LP、同单两页、同一 PDF 选两次、缺单、多单任一出现就整份不出（CLI 退出码 2，GUI 弹窗 + 日志列全）。依赖 `pypdfium2`（进主 requirements）。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 白名单入库**刷新自动恢复**（红色「清空」键彻底清空白名单+存档，作载错清单的换清单逃生口）+ 30 天自动清理，导出**单个 zip**（内含 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`，规避 Chrome 多文件拦截，解压后投）；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
 - [x] **订货辅助工具**（`reorder_helper.py` + 全英文 `reorder_gui.py`）：需求清单 × purchase order → 一行一品订货决策表；PZN 按模式抽取（支持销售分析 `[前缀_PZN]` 嵌入 + 金额列不误判 + 无 PZN 报错护栏）；选填 product.product 主数据富化干净身份字段（PZN/Name/Barcode/Internal Reference/库存），双键索引桥接 PZN 更新错位；连接键 Product ID 优先（数字/External ID 归一互通）+ 逐行回退 PZN，绕开官方 PZN 空白/脏值。启动器 `Reorder-Windows.bat`/`Reorder-Mac.command` + 打包 `build_reorder_exe.bat`。
