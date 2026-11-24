@@ -2,7 +2,7 @@
 """VO 拉单工具 · 图形界面（给办公室员工，零命令行）。
 
 打包成 Windows exe 后双击运行：选文件 → 点按钮 → 出结果。
-阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库。
+阶段一：选 ERP + 完整天猫导出 → 生成「拣货表+面单」打印给仓库（面单按货聚合，ISSUES: [拣货面单] R）。
 阶段二：选 销售ERP + 仓库返回文件(有货/无货) + 出库数据 → 生成 系统履约单号/发货表/账单/出库。
 两阶段在界面上各自独立输入，互不依赖；阶段二无需天猫数据。
 阶段一之后有「面单排序」：天猫下载的面单 PDF 按拣货表+面单顺序重排合并。
@@ -205,7 +205,9 @@ class App:
         ttk.Label(t1, style="Hint.TLabel", justify="left", wraplength=520,
                   text="点「开始生成」自动生成：拣货表+面单 / LP清单(每 100 个一段，复制去天猫下载面单) / "
                        "新订单获单清单 / 回传ERP上传表。"
-                       "若填了采购单导出，再多一张补货预判清单。").pack(anchor="w", pady=(6, 10))
+                       "若填了采购单导出，再多一张补货预判清单。\n"
+                       "面单按货排列：同一种货(套件归基础品)的单连在一起，当天件数多的货先打包，"
+                       "组内多件单在前、老单在前，多品订单在最后。").pack(anchor="w", pady=(6, 10))
         self._action_row(t1, "▶  开始生成", self._run_stage1)
 
         # 面单排序标签(ISSUES: [拣货面单] L)：阶段一出表 → 去天猫按 LP 下载面单 → 这里排好再打印
@@ -215,6 +217,7 @@ class App:
         self._hint(t1b, "拣货表+面单 选阶段一产出的那份；面单 PDF 选天猫下载的全部文件(可多选，每份最多 100 页)。")
         ttk.Label(t1b, style="Hint.TLabel", justify="left", wraplength=520,
                   text="按拣货表『面单』页的顺序重排，合并成一份 PDF，直接打印。"
+                       "运单 ≥3 张的货，在这组运单下面多一页分隔页(印货号和品名)。"
                        "两边对不上(缺面单、多面单、同一单两页、同一份 PDF 选了两次)就不出文件，"
                        "日志里列出是哪几单。").pack(anchor="w", pady=(6, 10))
         self._action_row(t1b, "▶  排序合并", self._run_sort_labels)
@@ -360,7 +363,7 @@ class App:
         def work():
             log, _ = build_excel.build(erp, full, outdir=self.outdir.get(),
                                        po_path=self.po.get().strip() or None,
-                                       limits=limits)
+                                       limits=limits, face_order="sku")
             return log
         self._bg(work)
 

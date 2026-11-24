@@ -494,7 +494,7 @@ def order_by_label_time(sub, label_time, limit=None):
 
 
 FACE_ORDERS = ("time", "sku")
-SEP_SHEET = "分隔页"     # --face-order sku 时写进 xlsx 的隐藏 sheet，sort_labels 据此插分隔页
+SEP_SHEET = "分隔页"     # face_order="sku"(默认)时写进 xlsx 的隐藏 sheet，sort_labels 据此插分隔页
 SEP_COLS = ["打包顺序", "类型", "Internal Reference", "拣货名", "德文品名", "中文品名", "张数", "件数", "插在运单后"]
 SEP_SKU = "SKU"
 SEP_MIN_LABELS = 3      # 运单 ≥3 张的 SKU 组才插分隔页（ISSUES: [拣货面单] P）
@@ -508,7 +508,7 @@ def _clean_text(df, col):
 
 
 def order_by_sku(sub, label_time, kits=None):
-    """面单按货聚合排序（ISSUES: [拣货面单] O / Q；只在 --face-order sku 时用，选单已由
+    """面单按货聚合排序（ISSUES: [拣货面单] O / Q；face_order="sku"(默认)时用，选单已由
     order_by_label_time 做完，这里只重排）。
 
     kits: {套件 SKU: (基础品 SKU, BoM 系数)}（safety_dynamic.pull_kits，Odoo 只读）。套件和它的
@@ -586,7 +586,7 @@ def _write_separators(wb, seps):
 
 
 def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=None,
-          limits=None, face_order="time"):
+          limits=None, face_order="sku"):
     """阶段一核心(步骤4+7/8/9)：分流 + 生成交付。返回 (log行列表, stats)。
 
     输入 ERP 导出（天猫两店混合，经 ∩ERP 收敛）+ 一份完整天猫导出：
@@ -597,9 +597,9 @@ def build(erp_paths, full_tmall_path, out_arg=None, outdir="output", po_path=Non
     单店批次仍带店名(见 `_ch_suffix`)。
     limits: {"VO": 200, "GW": 100} 按店限定当日处理单数(ISSUES: [拣货面单] N)，缺省/None = 全部；
     只约束 拣货表+面单 / 扫码清单 / LP清单，按面单生成时间取最早的 N 单，其余产出照旧全量。
-    face_order: 拣货表+面单的面单排列。"time"(默认)按面单生成时间从晚到早(见 `order_by_label_time`)；
-    "sku"(ISSUES: [拣货面单] O，只 CLI)选单照旧，再按 SKU 聚合重排(见 `order_by_sku`)，
-    并在 xlsx 写隐藏 sheet「分隔页」供 sort_labels 插页。拣货表本身两种模式一样。
+    face_order: 拣货表+面单的面单排列。"sku"(默认，ISSUES: [拣货面单] O/Q，R 起 VOTool 也用)选单照旧，
+    再按货聚合重排(见 `order_by_sku`)，并在 xlsx 写隐藏 sheet「分隔页」供 sort_labels 插页；
+    "time"(老排列，只留作 CLI 退路)按面单生成时间从晚到早(见 `order_by_label_time`)。拣货表本身两种模式一样。
     完整天猫导出是唯一天猫输入：发货范围由二段式(履约∈{新订单,商家已接单}∧面单已完成)推出，
     负集再按履约状态拆 取消/无运单。供 CLI(main) 与 GUI 共用。"""
     if face_order not in FACE_ORDERS:
@@ -828,10 +828,10 @@ def main():
     ap.add_argument("--limit-vo", type=int, default=None,
                     help="VO 当日处理单数上限(按面单生成时间取最早的 N 单)，缺省=全部")
     ap.add_argument("--limit-gw", type=int, default=None, help="GW 当日处理单数上限，同上")
-    ap.add_argument("--face-order", choices=FACE_ORDERS, default="time",
-                    help="面单排列：time=按面单生成时间(默认)；sku=选单照旧，按 SKU 聚合"
-                         "(总件数多的 SKU 先打包、组内多件单在前、多品订单最后)，"
-                         "并供面单排序插分隔页")
+    ap.add_argument("--face-order", choices=FACE_ORDERS, default="sku",
+                    help="面单排列：sku=按货聚合(默认；套件归基础品、总件数多的货先打包、"
+                         "组内多件单在前且按面单生成时间、多品订单最后，并供面单排序插分隔页)；"
+                         "time=老排列，按面单生成时间(出问题时的退路)")
     a = ap.parse_args()
     for v in (a.limit_vo, a.limit_gw):
         if v is not None and v < 0:

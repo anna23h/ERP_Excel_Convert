@@ -7,3 +7,6 @@ openpyxl
 # VOTool「面单排序」页(vo_orders/sort_labels.py)：同事要用，所以进最小集；
 # 用到时才 import，装不上只挡这一页
 pypdfium2
+# VOTool「面单排序」插分隔页(阶段一默认按货聚合，ISSUES: [拣货面单] R)：同事要用，
+# 用到时才 import；装不上时按货聚合的拣货表做面单排序会报错(要求先装)
+reportlab

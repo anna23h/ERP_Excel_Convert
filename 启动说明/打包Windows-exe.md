@@ -30,7 +30,7 @@
 > 手动打包命令（等价于 bat 内容）：
 > ```bat
 > py -3 -m pip install -r requirements-dev.txt
-> py -3 -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl --paths . --paths vo_orders vo_orders\gui.py
+> py -3 -m PyInstaller --onefile --windowed --name VOTool --collect-all openpyxl --collect-all pypdfium2 --collect-all pypdfium2_raw --collect-all reportlab --paths . --paths vo_orders vo_orders\gui.py
 > ```
 > （若 `py` 不可用，把 `py -3` 换成 `python`）
 
