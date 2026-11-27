@@ -77,18 +77,20 @@ PO_COLS = ["partner_id/.id", "partner_ref", "order_line/product_id/.id", "order_
 META_SHEET = "_meta"
 META_KIND = "return_intake_v1"
 SHEET = "点货"
-ARRIVED, MISSING = "到", "未到"
+ARRIVED, MISSING = "到", "未到"      # 由实收推出：包裹所有行实收 0 = 未到
 
 # 点货表列（1 起）
-(C_LP, C_SCP, C_SKU, C_PZN, C_NAME, C_SOLL, C_GOT, C_BAD, C_LOT, C_MHD, C_NOTE) = range(1, 12)
-HEADS = ["LP单号", "SCP单号", "SKU", "PZN", "品名", "应收", "实收", "不可售", "批次", "MHD", "备注"]
-WIDTHS = [20, 18, 26, 11, 52, 6, 7, 7, 16, 11, 24]
-TECH = ["_type", "pid"]          # 隐藏列：H = 包裹头行，P = 应收产品行，END = 表尾；操作员插的行为空
-C_TECH0 = 13                      # M 起（L 留空作隔）
+(C_LP, C_SCP, C_SKU, C_PZN, C_NAME, C_SOLL, C_YES, C_NO, C_GOT, C_BAD, C_LOT, C_MHD, C_NOTE) = range(1, 14)
+HEADS = ["LP单号", "SCP单号", "SKU", "PZN", "品名", "应收", "到", "未到", "实收", "不可售", "批次", "MHD", "备注"]
+WIDTHS = [20, 18, 26, 11, 52, 6, 5, 5, 7, 7, 16, 11, 24]
+#: 「到」「未到」两列是勾选列（用户 2026-11-27：下拉步骤多）：填 1 显示 ✓；Excel 365 也可把这两列
+#: 「插入 → 复选框」变成可点的框（存 TRUE/FALSE），两种都认。
+CHECK_FMT = '"✓";"✓";""'
+
+TECH = ["_type", "pid", "lp", "scp"]   # 隐藏列：P = 应收产品行，END = 表尾；操作员插的行为空
+C_TECH0 = 15                      # O 起（N 留空作隔）
 
 F_HEAD = PatternFill("solid", fgColor="1F3864")
-F_PARCEL = PatternFill("solid", fgColor="D9E1F2")
-F_INPUT = PatternFill("solid", fgColor="FFF2CC")
 F_BAD = PatternFill("solid", fgColor="F8CBAD")
 F_WARN = PatternFill("solid", fgColor="FFE699")
 THIN = Side(style="thin", color="A6A6A6")
@@ -338,6 +340,7 @@ def write_summary(path, n, batch, data):
 
 
 def write_sheet(path, n, batch, parcels, data):
+    """一个产品一行（LP / SCP 每行都写），不加包裹头行、不涂底色（用户 2026-11-27：少噪音）。"""
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET
@@ -351,46 +354,31 @@ def write_sheet(path, n, batch, parcels, data):
         c = ws.cell(1, C_TECH0 + j, h)
         ws.column_dimensions[c.column_letter].hidden = True
     ws.freeze_panes = "A2"
-    dv_arr = DataValidation(type="list", formula1=f'"{ARRIVED},{MISSING}"', allow_blank=True,
-                            error=f"只能填 {ARRIVED} 或 {MISSING}", showErrorMessage=True)
     dv_num = DataValidation(type="decimal", operator="greaterThanOrEqual", formula1="0", allow_blank=True,
                             error="数量要填 ≥ 0 的数字", showErrorMessage=True)
-    ws.add_data_validation(dv_arr)
     ws.add_data_validation(dv_num)
     r = 2
     for p in parcels:
-        vals = {C_LP: p["lp"], C_SCP: p["scp"], C_NAME: f"包裹到了吗？在「实收」列选 {ARRIVED} / {MISSING} →",
-                C_SOLL: None, C_NOTE: None}
-        for col in range(1, len(HEADS) + 1):
-            c = ws.cell(r, col, vals.get(col))
-            c.fill = F_PARCEL
-            c.font = Font(bold=True)
-            c.border = BOX
-        ws.cell(r, C_GOT).fill = F_INPUT
-        ws.cell(r, C_NOTE).fill = F_INPUT
-        dv_arr.add(ws.cell(r, C_GOT))
-        ws.cell(r, C_TECH0, "H")
-        r += 1
         for it in p["items"]:
             pr = data.prod[it["pid"]]
             name = pr["name"] + (f"（{'；'.join(it['notes'])}）" if it["notes"] else "")
-            row = {C_SKU: pr["code"], C_PZN: pr["pzn"], C_NAME: name, C_SOLL: fmt_q(it["soll"])}
+            row = {C_LP: p["lp"], C_SCP: p["scp"], C_SKU: pr["code"], C_PZN: pr["pzn"], C_NAME: name,
+                   C_SOLL: fmt_q(it["soll"])}
             for col in range(1, len(HEADS) + 1):
-                c = ws.cell(r, col, row.get(col))
-                c.border = BOX
-                if col in (C_GOT, C_BAD, C_LOT, C_MHD, C_NOTE):
-                    c.fill = F_INPUT
-            ws.cell(r, C_PZN).number_format = "@"
-            for col in (C_LOT, C_MHD):
-                ws.cell(r, col).number_format = "@"
-            dv_num.add(ws.cell(r, C_GOT))
-            dv_num.add(ws.cell(r, C_BAD))
-            ws.cell(r, C_TECH0, "P")
-            ws.cell(r, C_TECH0 + 1, it["pid"])
+                ws.cell(r, col, row.get(col)).border = BOX
+            for k, v in enumerate(("P", it["pid"], p["lp"], p["scp"])):
+                ws.cell(r, C_TECH0 + k, v)
             r += 1
-    ws.cell(r, C_TECH0, "END")
+    end = r
+    ws.cell(end, C_TECH0, "END")
+    dv_num.add(f"{ws.cell(2, C_GOT).coordinate}:{ws.cell(end + 200, C_BAD).coordinate}")
+    for rr in range(2, end + 200):
+        for col in (C_YES, C_NO):
+            c = ws.cell(rr, col)
+            c.number_format = CHECK_FMT
+            c.alignment = Alignment(horizontal="center")
     # 操作员插的行（第二个批次 / 多出的产品）也要是文本格式：整列预设到表尾后 200 行
-    for rr in range(2, r + 200):
+    for rr in range(2, end + 200):
         for col in (C_PZN, C_LOT, C_MHD):
             ws.cell(rr, col).number_format = "@"
 
@@ -401,27 +389,27 @@ def write_sheet(path, n, batch, parcels, data):
         meta.append([k, v])
     meta.sheet_state = "hidden"
 
-    help_ = wb.create_sheet("说明")
+    help_ = wb.create_sheet("说明", 1)
     for line in SHEET_HELP:
         help_.append([line])
     help_.column_dimensions["A"].width = 110
-    wb.move_sheet("说明", offset=-1)
-    wb.active = wb.sheetnames.index(SHEET)
+    wb.active = 0
     wb.save(path)
 
 
 SHEET_HELP = [
-    "点货表怎么填（在电脑上直接填，黄色格子可填）",
+    "点货表怎么填（在电脑上直接填）",
     "",
-    "1. 拿起一个包裹，按面单上的 LP 单号找到蓝色的包裹行（表按 LP 号排序，可以 Ctrl+F 搜 LP 号）。",
-    f"2. 在包裹行的「实收」格选 {ARRIVED}；这批里没收到的包裹选 {MISSING}。每个包裹行都要选，空着会报错。",
-    "3. 包裹里的每个产品：",
-    "   - 「实收」不填 = 和「应收」一样；少了就填实际件数（一件没有填 0）。",
-    "   - 「不可售」填破损、拆封等不能再卖的件数，这部分不入库。",
-    "   - 「批次」「MHD」照包装抄。MHD 写法同入库批次录入：05.28 / 05.2028 / 31.05.2028。包装上没有批次就空着。",
-    "   - 同一产品有两个批次：在它下面插一行，只填「实收」「不可售」「批次」「MHD」（此时每行都要填实收）。",
-    "4. 包裹里多出订单上没有的产品：在这个包裹下面插一行，填「PZN」「实收」，有批次也填上；品名可以不填。",
-    "5. 其他情况写在「备注」，会抄到差异清单。",
+    "1. 一个产品一行，按 LP 号排序；拿起包裹，Ctrl+F 搜面单上的 LP 号，找到它的产品行（一个包裹有几个产品就有几行）。",
+    "2. 每一行勾「到」或「未到」（填 1 就显示 ✓；Excel 365 可选中这两列 → 插入 → 复选框，变成点一下就勾）：",
+    "   - 勾「到」、件数和「应收」一样：「实收」不用填；件数不一样才填「实收」。",
+    "   - 勾「未到」：这个产品没收到（整包没到就把这包每一行都勾「未到」），「实收」空着。",
+    "   - 两个都没勾、也没填「实收」会报错（= 还没点）；两个都勾也会报错。",
+    "3. 「不可售」填破损、拆封、过期等不能再卖的件数，这部分不入库。",
+    "4. 「批次」「MHD」照包装抄。MHD 写法同入库批次录入：05.28 / 05.2028 / 31.05.2028。包装上没有批次就空着。",
+    "5. 同一产品有两个批次：在它下面插一行，只填「实收」「不可售」「批次」「MHD」。",
+    "6. 包裹里多出订单上没有的产品：在这个包裹的最后一行下面插一行，填「PZN」「实收」，有批次也填上；品名可以不填。",
+    "7. 其他情况写在「备注」，会抄到差异清单。",
     "",
     "填完交回，跑 po 生成差异清单和 PO 导入表；PO 在 Odoo 确认后导出入库单，再跑 lot 生成批次导入表。",
 ]
@@ -476,9 +464,11 @@ def _qty(v, row, what, errs):
 
 
 def read_sheet(path):
-    """→ (meta, parcels, errs)。parcels = [{lp, scp, row, arrived, note, items:[item]}]；
+    """→ (meta, parcels, errs)。parcels = [{lp, scp, row, arrived, note, items:[item]}]，按表里出现顺序；
 
-    item = {row, pid|None, pzn, soll|None(多出), extra, lots:[{row, got, bad, lot, mhd}]}。
+    item = {row, pid|None, pzn, soll(多出为 0), extra, lots:[{row, got, bad, lot, mhd}]}。
+    行归属：P 行（隐藏列，带 pid / LP / SCP）是应收产品；操作员插的行填了 PZN = 多出的产品，
+    否则 = 上一个产品的续批次；都归上一 P 行的包裹。包裹「未到」= 它所有行实收都是 0、不可售也没填。
     errs = [(row, 说明)]：只做「表填得对不对」的检查，不连 Odoo。
     """
     wb = load_workbook(path)
@@ -488,68 +478,76 @@ def read_sheet(path):
     if meta.get("kind") != META_KIND:
         raise InputError(f"{os.path.basename(path)} 不是本工具生成的点货表")
     ws = wb[SHEET]
-    parcels, errs = [], []
+    parcels, errs = OrderedDict(), []
     cur_p = cur_i = None
     for r in range(2, ws.max_row + 1):
         t = ws.cell(r, C_TECH0).value
         g = lambda c: ws.cell(r, c).value
         if t == "END":
             break
-        if t == "H":
-            cur_p = {"lp": _txt(g(C_LP)), "scp": _txt(g(C_SCP)), "row": r, "arrived": _txt(g(C_GOT)),
-                     "note": _txt(g(C_NOTE)), "items": []}
-            cur_i = None
-            if cur_p["arrived"] not in (ARRIVED, MISSING):
-                errs.append((r, f"包裹 {cur_p['lp']} 的「实收」格要选 {ARRIVED} 或 {MISSING}"
-                                + ("（还没点？）" if not cur_p["arrived"] else f"，现在是 {cur_p['arrived']!r}")))
-            parcels.append(cur_p)
-            continue
-        filled = any(g(c) not in (None, "") for c in (C_PZN, C_GOT, C_BAD, C_LOT, C_MHD, C_NOTE))
+        filled = any(g(c) not in (None, "") for c in (C_PZN, C_GOT, C_BAD, C_LOT, C_MHD, C_NOTE)) or \
+            _checked(g(C_YES)) or _checked(g(C_NO))
         if t != "P" and not filled:
             continue
-        if cur_p is None:
-            errs.append((r, "这一行在第一个包裹行上面，不知道属于哪个包裹"))
-            continue
         lot = {"row": r, "got": _qty(g(C_GOT), r, "实收", errs), "bad": _qty(g(C_BAD), r, "不可售", errs),
-               "lot": _txt(g(C_LOT)), "mhd": g(C_MHD), "note": _txt(g(C_NOTE))}
+               "lot": _txt(g(C_LOT)), "mhd": g(C_MHD), "note": _txt(g(C_NOTE)),
+               "yes": _checked(g(C_YES)), "no": _checked(g(C_NO))}
         if t == "P":
+            lp, scp = (_txt(ws.cell(r, C_TECH0 + k).value) for k in (2, 3))
+            cur_p = parcels.setdefault(lp, {"lp": lp, "scp": scp, "row": r, "arrived": ARRIVED, "note": "",
+                                            "items": []})
             cur_i = {"row": r, "pid": int(ws.cell(r, C_TECH0 + 1).value), "sku": _txt(g(C_SKU)),
                      "pzn": _txt(g(C_PZN)), "name": _txt(g(C_NAME)), "soll": L.num(g(C_SOLL)) or 0,
                      "extra": False, "lots": [lot]}
             cur_p["items"].append(cur_i)
+        elif cur_p is None:
+            errs.append((r, "这一行在第一个产品行上面，不知道属于哪个包裹"))
         elif _txt(g(C_PZN)):                       # 操作员插的行填了 PZN = 多出的产品
             cur_i = {"row": r, "pid": None, "sku": "", "pzn": _txt(g(C_PZN)), "name": _txt(g(C_NAME)),
                      "soll": 0, "extra": True, "lots": [lot]}
             cur_p["items"].append(cur_i)
-        elif cur_i is None:
-            errs.append((r, f"包裹 {cur_p['lp']} 下面这一行没有 PZN，也不在某个产品下面——"
-                            f"多出的产品要填 PZN"))
         else:                                      # 续行 = 上面那个产品的第 2、3 … 个批次
             cur_i["lots"].append(lot)
+    parcels = list(parcels.values())
     for p in parcels:
-        if p["arrived"] == MISSING:
-            for it in p["items"]:
-                if any(l["got"] or l["bad"] or l["lot"] or l["mhd"] not in (None, "") for l in it["lots"]):
-                    errs.append((it["row"], f"包裹 {p['lp']} 选了 {MISSING}，下面却填了实收 / 批次"))
-            continue
         for it in p["items"]:
             _check_item(p, it, errs)
+        lots = [l for it in p["items"] for l in it["lots"]]
+        if all(l["got"] == 0 and not l["bad"] for l in lots):
+            p["arrived"] = MISSING
     return meta, parcels, errs
+
+
+def _checked(v):
+    """勾选格：TRUE（Excel 复选框）/ 1 / x / ✓ … 都算勾；空、0、FALSE 算没勾。"""
+    if v is None or v is False:
+        return False
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return v != 0
+    return str(v).strip().upper() not in ("", "0", "FALSE")
 
 
 def _check_item(p, it, errs):
     lots = it["lots"]
-    multi = len(lots) > 1
-    if it["extra"] and any(l["got"] is None for l in lots):
-        errs.append((it["row"], f"多出的产品 PZN {it['pzn']}：要填实收件数"))
-    if multi and any(l["got"] is None for l in lots):
-        errs.append((it["row"], f"{it['sku'] or it['pzn']} 有 {len(lots)} 行批次：每行都要填实收"))
-    if multi and not all(l["lot"] for l in lots):
-        errs.append((it["row"], f"{it['sku'] or it['pzn']} 有 {len(lots)} 行：每行都要填批次"))
+    label = it["sku"] or f"PZN {it['pzn']}"
+    first = lots[0]
+    if first["yes"] and first["no"]:
+        errs.append((first["row"], f"{label}（LP {p['lp']}）「到」「未到」都勾了"))
+        first["got"] = 0 if first["got"] is None else first["got"]      # 只报这一条
+    elif first["no"]:
+        if first["got"] or first["bad"] or len(lots) > 1:
+            errs.append((first["row"], f"{label}（LP {p['lp']}）勾了「未到」，却填了实收 / 不可售 / 批次行"))
+        first["got"] = 0
+    elif first["yes"] and first["got"] is None and len(lots) == 1 and not it["extra"]:
+        first["got"] = it["soll"]                  # 勾「到」不填实收 = 和应收一样
+    for l in lots:
+        if l["got"] is None:
+            errs.append((l["row"], f"{label}（LP {p['lp']}）没勾「到」「未到」也没填实收——没点？"
+                         + ("（同一产品有多个批次时每行都要填实收）" if len(lots) > 1 else "")))
+    if len(lots) > 1 and not all(l["lot"] for l in lots):
+        errs.append((it["row"], f"{label} 有 {len(lots)} 行：每行都要填批次"))
     seen = set()
     for l in lots:
-        if l["got"] is None and not it["extra"] and not multi:
-            l["got"] = it["soll"]                  # 单批次不填实收 = 和应收一样（同 lot_entry 的 Menge）
         if l["got"] is not None and l["bad"] is not None and l["bad"] > l["got"]:
             errs.append((l["row"], f"不可售 {fmt_q(l['bad'])} 比实收 {fmt_q(l['got'])} 还多"))
         if l["lot"]:
@@ -600,8 +598,6 @@ def diff_rows(parcels):
                 out.append((p["lp"], p["scp"], it["sku"], it["pzn"], it["name"], fmt_q(it["soll"]), 0, 0, 0,
                             "包裹未到", p["note"]))
             continue
-        if p["note"]:
-            out.append((p["lp"], p["scp"], "", "", "", None, None, None, None, "包裹备注", p["note"]))
         for it in p["items"]:
             got = sum(l["got"] or 0 for l in it["lots"])
             bad = sum(l["bad"] or 0 for l in it["lots"])

@@ -152,16 +152,9 @@ def test_sheet_outputs_and_taken_number(tmp_path):
 
 
 def _rows(ws):
-    """→ {LP: 包裹行号}、{(LP, SKU): 产品行号}。"""
-    parcels, items, lp = {}, {}, None
-    for r in range(2, ws.max_row + 1):
-        t = ws.cell(r, R.C_TECH0).value
-        if t == "H":
-            lp = ws.cell(r, R.C_LP).value
-            parcels[lp] = r
-        elif t == "P":
-            items[(lp, ws.cell(r, R.C_SKU).value)] = r
-    return parcels, items
+    """→ {(LP, SKU): 产品行号}。一个产品一行，LP 在每行的 A 列。"""
+    return {(ws.cell(r, R.C_LP).value, ws.cell(r, R.C_SKU).value): r for r in range(2, ws.max_row + 1)
+            if ws.cell(r, R.C_TECH0).value == "P"}
 
 
 def _make_sheet(tmp_path):
@@ -172,16 +165,23 @@ def _make_sheet(tmp_path):
 def _fill(path, out, edit):
     wb = load_workbook(path)
     ws = wb[R.SHEET]
-    parcels, items = _rows(ws)
-    edit(ws, parcels, items)
+    edit(ws, _rows(ws))
     wb.save(out)
     return str(out)
 
 
-def _fill_ok(ws, parcels, items):
-    """LP0001 到：Doppelherz 3 件，两个批次 2 + 1，其中 1 件不可售；LP0002 未到；
-    LP0003 到：Eucerin 1 件，批次 + MHD；多出一件 PZN 12345678。"""
-    ws.cell(parcels["LP0001"], R.C_GOT, R.ARRIVED)
+def _all_got(ws, items):
+    """每行勾「到」、不填实收（全部到齐）。"""
+    for r in items.values():
+        ws.cell(r, R.C_YES, 1)
+
+
+def _fill_ok(ws, items):
+    """LP0001：Doppelherz 3 件，两个批次 2 + 1，其中 1 件不可售；LP0002 未到（实收 0）；
+    LP0003：Eucerin 1 件，批次 + MHD；多出一件 PZN 12345678。"""
+    _all_got(ws, items)
+    ws.cell(items[("LP0002", "Hueb_446071")], R.C_YES).value = None
+    ws.cell(items[("LP0002", "Hueb_446071")], R.C_NO, True)        # Excel 复选框存 TRUE
     r = items[("LP0001", "Doph_15994609")]
     ws.cell(r, R.C_GOT, 2)
     ws.cell(r, R.C_LOT, "AB123")
@@ -191,9 +191,7 @@ def _fill_ok(ws, parcels, items):
     ws.cell(r + 1, R.C_BAD, 1)
     ws.cell(r + 1, R.C_LOT, "CD456")
     ws.cell(r + 1, R.C_MHD, "06.2029")
-    parcels, items = _rows(ws)
-    ws.cell(parcels["LP0002"], R.C_GOT, R.MISSING)
-    ws.cell(parcels["LP0003"], R.C_GOT, R.ARRIVED)
+    items = _rows(ws)
     r = items[("LP0003", "Euc_18222103")]
     ws.cell(r, R.C_LOT, "E1001")
     ws.cell(r, R.C_MHD, "31.12.2028")
@@ -201,6 +199,14 @@ def _fill_ok(ws, parcels, items):
     ws.cell(r + 1, R.C_PZN, "12345678")
     ws.cell(r + 1, R.C_GOT, 1)
     ws.cell(r + 1, R.C_NOTE, "客户多寄")
+
+
+def test_sheet_layout_one_row_per_product(tmp_path):
+    ws = load_workbook(_make_sheet(tmp_path))[R.SHEET]
+    rows = [r for r in ws.iter_rows(min_row=2, values_only=True) if r[R.C_TECH0 - 1] == "P"]
+    assert [(r[0], r[2], r[5]) for r in rows] == [("LP0001", "Doph_15994609", 3), ("LP0002", "Hueb_446071", 6),
+                                                  ("LP0003", "Euc_18222103", 1)]
+    assert all(ws.cell(r, c).fill.fill_type is None for r in range(2, 5) for c in range(1, len(R.HEADS) + 1))
 
 
 def test_po_full_flow(tmp_path):
@@ -218,19 +224,46 @@ def test_po_full_flow(tmp_path):
     assert kinds[("LP0002", "Hueb_446071")] == "包裹未到"
     assert kinds[("LP0001", "Doph_15994609")] == "不可售"
     assert kinds[("LP0003", "Extra_123456")] == "多出产品"
-    assert any("入库（进 PO） 4" in l for l in lines)
+    assert any("包裹 2 / 3 到" in l and "入库（进 PO） 4" in l for l in lines)
+
+
+@pytest.mark.parametrize("v,want", [(1, True), ("x", True), ("✓", True), (True, True), ("TRUE", True),
+                                    (None, False), (0, False), (False, False), ("FALSE", False), ("", False)])
+def test_checked(v, want):
+    assert R._checked(v) is want
+
+
+def test_explicit_qty_without_tick(tmp_path):
+    def edit(ws, i):
+        for r in i.values():
+            ws.cell(r, R.C_GOT, ws.cell(r, R.C_SOLL).value)    # 不勾、直接填实收也算点过
+    sheet = _fill(_make_sheet(tmp_path), tmp_path / "f.xlsx", edit)
+    files, lines = R.cmd_po([sheet], str(tmp_path / "po"), FakeData())
+    assert any("差异 0 行" in l for l in lines)
+
+
+def test_po_all_received_no_diff(tmp_path):
+    sheet = _fill(_make_sheet(tmp_path), tmp_path / "f.xlsx", _all_got)
+    files, lines = R.cmd_po([sheet], str(tmp_path / "po"), FakeData())
+    assert any("差异 0 行" in l for l in lines)
+
+
+def _with_all(edit):
+    def f(ws, i):
+        _all_got(ws, i)
+        edit(ws, i)
+    return f
 
 
 @pytest.mark.parametrize("edit,msg", [
-    (lambda ws, p, i: None, "要选 到 或 未到"),
-    (lambda ws, p, i: [ws.cell(r, R.C_GOT, R.ARRIVED) for r in p.values()]
-     and ws.cell(i[("LP0003", "Euc_18222103")], R.C_BAD, 3), "不可售 3 比实收 1"),
-    (lambda ws, p, i: [ws.cell(r, R.C_GOT, R.ARRIVED) for r in p.values()]
-     and ws.cell(i[("LP0003", "Euc_18222103")], R.C_MHD, "01.2020"), "已过期"),
-    (lambda ws, p, i: [ws.cell(r, R.C_GOT, R.ARRIVED) for r in p.values()]
-     and ws.cell(i[("LP0003", "Euc_18222103")], R.C_MHD, "05.29"), "没写批次"),
-    (lambda ws, p, i: [ws.cell(r, R.C_GOT, R.MISSING) for r in p.values()]
-     and ws.cell(i[("LP0003", "Euc_18222103")], R.C_LOT, "AB123"), "选了 未到"),
+    (lambda ws, i: None, "没勾「到」「未到」也没填实收"),
+    (_with_all(lambda ws, i: ws.cell(i[("LP0001", "Doph_15994609")], R.C_NO, "x")), "都勾了"),
+    (lambda ws, i: ws.cell(i[("LP0001", "Doph_15994609")], R.C_NO, 1)
+     and ws.cell(i[("LP0001", "Doph_15994609")], R.C_GOT, 2), "勾了「未到」"),
+    (_with_all(lambda ws, i: ws.cell(i[("LP0003", "Euc_18222103")], R.C_BAD, 3)), "不可售 3 比实收 1"),
+    (_with_all(lambda ws, i: ws.cell(i[("LP0003", "Euc_18222103")], R.C_MHD, "01.2020")), "已过期"),
+    (_with_all(lambda ws, i: ws.cell(i[("LP0003", "Euc_18222103")], R.C_MHD, "05.29")), "没写批次"),
+    (_with_all(lambda ws, i: ws.cell(i[("LP0003", "Euc_18222103")], R.C_GOT, "x")), "不是 ≥ 0 的数字"),
 ])
 def test_po_sheet_errors_stop(tmp_path, edit, msg):
     sheet = _fill(_make_sheet(tmp_path), tmp_path / "bad.xlsx", edit)
@@ -240,9 +273,9 @@ def test_po_sheet_errors_stop(tmp_path, edit, msg):
 
 
 def test_po_unknown_extra_pzn_stops(tmp_path):
-    def edit(ws, p, i):
-        _fill_ok(ws, p, i)
-        _, items = _rows(ws)
+    def edit(ws, i):
+        _fill_ok(ws, i)
+        items = _rows(ws)
         ws.cell(items[("LP0003", "Euc_18222103")] + 1, R.C_PZN, "99999999")
     sheet = _fill(_make_sheet(tmp_path), tmp_path / "f.xlsx", edit)
     with pytest.raises(R.StopError, match="99999999"):
