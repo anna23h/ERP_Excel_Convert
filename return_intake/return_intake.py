@@ -85,6 +85,7 @@ HEADS = ["LP单号", "SCP单号", "SKU", "PZN", "品名", "应收", "到", "未�
 WIDTHS = [20, 18, 26, 11, 52, 6, 5, 5, 7, 7, 16, 11, 24]
 #: 「到」「未到」两列是勾选列（用户 2026-11-27：下拉步骤多）：填 1 显示 ✓；Excel 365 也可把这两列
 #: 「插入 → 复选框」变成可点的框（存 TRUE/FALSE），两种都认。
+ROW_H = 20                        # 点货表行高（用户 2026-11-27）
 CHECK_FMT = '"✓";"✓";""'
 
 TECH = ["_type", "pid", "lp", "scp"]   # 隐藏列：P = 应收产品行，END = 表尾；操作员插的行为空
@@ -372,6 +373,8 @@ def write_sheet(path, n, batch, parcels, data):
     end = r
     ws.cell(end, C_TECH0, "END")
     dv_num.add(f"{ws.cell(2, C_GOT).coordinate}:{ws.cell(end + 200, C_BAD).coordinate}")
+    for rr in range(1, end + 200):
+        ws.row_dimensions[rr].height = ROW_H
     for rr in range(2, end + 200):
         for col in (C_YES, C_NO):
             c = ws.cell(rr, col)

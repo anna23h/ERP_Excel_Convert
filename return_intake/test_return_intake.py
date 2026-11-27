@@ -207,6 +207,7 @@ def test_sheet_layout_one_row_per_product(tmp_path):
     assert [(r[0], r[2], r[5]) for r in rows] == [("LP0001", "Doph_15994609", 3), ("LP0002", "Hueb_446071", 6),
                                                   ("LP0003", "Euc_18222103", 1)]
     assert all(ws.cell(r, c).fill.fill_type is None for r in range(2, 5) for c in range(1, len(R.HEADS) + 1))
+    assert all(ws.row_dimensions[r].height == 20 for r in range(1, 5))
 
 
 def test_po_full_flow(tmp_path):
