@@ -23,6 +23,7 @@
 | `odoo_api/b2b_stock.py` | **B2B 可用库存（每天）**（Odoo **只读**：WH/Stock 在手 × 出库预留按 天猫 / 已付款（SO 标签 `可以打包`）/ 未付款 分类 → 两列可用、占用明细带客户别称（SO 标签）；按 SO 一单一筛（整单缺货 + 标签付款 / 发票付款）；仓库待打包清单；已付款单缺货时的冲突提示） | Windows：双击 `B2B-Stock-Windows.bat`（`install` 注册工作日 09:00 定时）；或 `python3 odoo_api/b2b_stock.py` | [下方章节](#b2b-可用库存每天odoo_apib2b_stockpy) + [odoo_api/README.md](odoo_api/README.md) | 在用（2026-11-15 起，Windows 定时待装） |
 | `odoo_api/stock_report.py` | **库存周报**（销量 × 在手 × 安全库存 三合一）——**已搁置**，2026-11-08 起周频定时改跑 `restock.py`；拉数函数仍被它复用 | `python3 odoo_api/discover.py`（环境探针）→ `python3 odoo_api/stock_report.py` | [odoo_api/README.md](odoo_api/README.md) | 搁置 |
 | `lot_entry/` | **入库批次录入**（Odoo 入库单导出 → 操作员录入表 → 批次/效期/数量导回 Odoo 的导入表 + 核对清单；一个入口按文件内容自动分流） | VO 拉单 GUI 的「入库批次」标签页；拖 xlsx 到 `Lot-Entry-Windows.bat` / 双击 `Lot-Entry-Mac.command`；或 `python3 lot_entry/lot_entry.py <xlsx>` | [lot_entry/README.md](lot_entry/README.md) | 建设中（2026-10-11 起，待仓库实测） |
+| `return_intake/` | **天猫退货入库**（ECMS 退货批次导出 → 汇总表 + 按 LP 一包一块的点货表；仓库拆包时**一次点货**填实收 / 不可售 / 批次 / MHD → 差异清单 + 按实收建退货 PO 的导入表 → PO 确认后入库单导出 + 点货表 → Lot_Import；Odoo 只读，**数据对不上整表不出**） | `python -m return_intake.return_intake sheet <导出…> --start N` → `po <点货表…>` → `lot <入库单导出> <点货表…>`（无 GUI，需 Odoo 凭据）；有 skill | [下方章节](#天猫退货入库ecms-退货包裹--一次点货) + 脚本 docstring | 建设中（2026-11-27 起，点货 / lot 待仓库实测） |
 | `make_labels.py` | **储位标签生成**（储位编码 → 每码一页 QR + 人眼可读文字标签 PDF；尺寸驱动、热敏点阵对齐）；`--code128` 出 **Code128 条码贴纸**（条码在上、数字在下） | `python3 make_labels.py <储位.xlsx / codes.txt>`；`python3 make_labels.py --code128 <号码…>` | 脚本 docstring | 在用 |
 | `vo_orders/jd_export.py` | **京东选列导出**（京东后台导出 → 按预设选列） | 无（原 GUI 标签页已移除） | 脚本 docstring | **已下架，代码保留** |
 | `dashboard/` | **采购订单跟踪表**（销售 ↔ 采购，询价与在途阶段不进 ERP）：一个工作簿两张脸——`录入` 照搬 Jürgen 的转置模板、`总览` 行式只读且公式实时联动；另有从 Odoo **只读**离线导出的产品查找表。看板版 `make_board_xlsx.py` 与 artifact 版 `board.html` **均已挂起，代码保留** | `python3 dashboard/make_order_sheet.py`；字典 `python3 dashboard/export_product_dict.py` | [下方章节](#采购订单跟踪表销售--采购) + 脚本 docstring | 建设中 |
@@ -718,6 +719,26 @@ Claude 侧流程见 `.claude/skills/SAD水印归类/SKILL.md`。
   `verify` 子命令用上一批成品逐格回归，PDF 版式可能变了时先跑。
 - 依赖只有 `openpyxl` + 系统 `pdftotext`（Mac `brew install poppler`；Windows Git 自带）。不进 requirements。
 
+## 天猫退货入库（ECMS 退货包裹 → 一次点货）
+
+`return_intake/return_intake.py`（ISSUES [退货入库] A，2026-11-27）。天猫 ECMS 退回来的包裹要核对（LP 单号对不对、
+产品和订单一致吗）再重新入库，入库时还要录批次 / MHD。目标是**货只点一次**。跑法见
+[运行指令 · 二十二](启动说明/运行指令.md)；Claude 侧流程见 `.claude/skills/退货入库/SKILL.md`。
+
+1. **`sheet`**：`VoAbnormalBatchExport*.xlsx`（可多份，同一 `大包号` 并为一批，批间按退货申请时间升序编号，起始号 `--start` 由用户给）
+   → 按 SCP 查 Odoo `VO_TOF_` / `GW_TOF_` 销售单 → `汇总N.xlsx`（SCP / LP / SKU / PZN / 品名 / 数量；PZN 与 SKU 里的数字相同就留空）
+   + `点货表_汇总N.xlsx`（按 LP 号一包一块，单组件套件写成基础品 × 系数照实物点）。
+2. **仓库在电脑上填点货表**：包裹行选 到 / 未到；产品行填实收（不填 = 应收）、不可售、批次、MHD；第二个批次插行续写；多出的产品插行填 PZN。
+3. **`po`**：读回点货表 → `差异清单_汇总N.xlsx`（包裹未到 / 少收 / 多收 / 多出产品 / 不可售 / 备注）
+   + `汇总N_PO导入.xlsx`：**按实收可售件数**（实收 − 不可售）新建退货 PO——供应商同以往退货 PO、
+   Vendor Reference `汇总N   M单ECMS退货包裹YYYY年MM月DD日`、单价 0、税按产品进项税 19%/7% Vorsteuer 换成 19%/7% Einfuhrumsatzsteuer、同产品合并一行、技术名表头无 `id` 列（导入即新建）。
+4. 用户在 Odoo 导入、确认 PO，用入库批次录入那张导出模板导出入库单。
+5. **`lot`**：入库单导出 + 点货表 → `Lot_Import_*.xlsx` + `Lot_Check_*.xlsx`（复用 `lot_entry` 的 MHD 解析、校验和导入格式；同产品同批次跨包合并）。
+
+**护栏（退出码 2，不出任何文件）**：Odoo 已有同号 PO；SCP 找不到销售单 / 订单行件数 ≠ 导出商品数量；多组件套件；产品已归档 / 非库存品 / 进项税不是单一 19% 或 7%；
+点货表包裹行没选到 / 未到、未到的包里填了东西、不可售 > 实收、多批次缺实收或批次、批次格式不对、MHD 认不出 / 已过期 / 超 10 年 / 有 MHD 没批次、多出产品的 PZN 在 Odoo 找不到唯一产品；
+`lot` 时入库单与点货表的产品或件数对不上。`异常拦截状态` 不是 `已出库` 只 ⚠ 提醒（包裹可能还没到仓）。
+
 ## 采购对账（算法就绪，待验证）
 
 采购在一张 PO 里记订购需求，财务按每批实收另建 PO，于是采购单永远显示原始订购量、看不出还缺什么。
@@ -876,6 +897,7 @@ Python + pandas + openpyxl。
 - [x] **当日处理单数 + 按面单生成时间排序**（`build_excel.order_by_label_time`，ISSUES [拣货面单] N）：VOTool 阶段一 VO / GW 两个单数框（CLI `--limit-vo` / `--limit-gw`），按面单生成时间取最早的 N 单进 拣货表+面单 / 扫码清单 / LP清单，其余产出全量；面单排列改为面单生成时间从晚到早。
 - [x] **面单按 SKU 聚合 + 分隔页**（`build_excel.order_by_sku` + `sort_labels.render_separators`，ISSUES [拣货面单] O）：2026-11-24 转正为默认，VOTool 阶段一固定用它（ISSUES [拣货面单] R；CLI `--face-order time` 可回到老排列），选单照旧，面单按货成组（套件归基础品、总件数多的先打包、组内多件单在前且按面单生成时间、多品订单最后，ISSUES [拣货面单] Q）；隐藏 sheet `分隔页` → 面单排序在运单 ≥3 张的 SKU 组下面插分隔页（ISSUES [拣货面单] P；要 reportlab（已进 requirements.txt 与 VOTool.exe）+ 中文字体）。
 - [x] **LP 清单**（`build_excel.build_lp_text` / `_write_lplist`，ISSUES [拣货面单] M）：阶段一每店多出 `…LP清单.txt`，取自 `build_scanlist`（与扫码清单同源同批），每 100 个一段（天猫一次下载上限），供操作员复制去天猫下载面单，再走面单排序。
+- [ ] **天猫退货入库**（`return_intake/`，ISSUES [退货入库] A）：sheet / po 已用 汇总138 真实数据核对（汇总表、PO 与手工版逐格一致）；仓库实填点货表与 lot 一步待实测。
 - [x] **套件对照表离线**（`vo_orders/export_kits.py` + `safety_dynamic.load_kits` / `build_excel.load_kit_map`，ISSUES [拣货面单] S）：程序旁有 `套件对照表.csv` 就只用它、不连 Odoo；没有才连 Odoo。
 - [x] **面单排序**（`vo_orders/sort_labels.py` + VOTool「面单排序」页，ISSUES [拣货面单] L）：天猫下载的面单 PDF（每份 ≤100 页）按每页 LP 号对上拣货表+面单「面单」sheet 的 `VO Tracking No`，重排合并成一份；某页无 LP/多 LP、同单两页、同一 PDF 选两次、缺单、多单任一出现就整份不出（CLI 退出码 2，GUI 弹窗 + 日志列全）。依赖 `pypdfium2`（进主 requirements）。
 - [x] **运单扫码回流**（选用，替代纸质勾选+手工转录）：阶段一 `build_excel.py` 产 `YYYY年MM月DD日{店}{n}单 扫码清单.csv`（订单级白名单，与拣货表+面单同源）；单文件 `扫码/扫码回流.html` 零安装扫 LP 校验四态（首次绿+确认音 / 重复红拒 / 名单外黄屏记录 / 非 LP 红拒），多店清单可一起载入，声音为主、红态挂到下次成功、持久化三层降级（localStorage→IndexedDB→仅内存，顶栏常驻标识）+ 白名单入库**刷新自动恢复**（红色「清空」键彻底清空白名单+存档，作载错清单的换清单逃生口）+ 30 天自动清理，导出**单个 zip**（内含 `有货清单{店}{n}单.csv` + `未知来源运单{n}单.csv`，规避 Chrome 多文件拦截，解压后投）；`stage2.load_shipped_map` 加 `_read_tables` 兼容 `.csv` 投「有货订单清单」入口。走单号集合绕开留空报警；上线须以收工计数对账替代失效护栏。
